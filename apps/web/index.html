@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#070b0a">
+  <title>EV Workstation</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="workstation">
+    <aside class="left-rail">
+      <div class="brand-row"><b>EV</b><div><strong>WORKSTATION</strong><small>LOCAL CONTROL PLANE</small></div><span id="connection-dot"></span></div>
+
+      <div class="rail-section views">
+        <button class="rail-button active" data-view="all"><span>▦</span>All terminals <b id="count-all">0</b></button>
+        <button class="rail-button" data-view="attention"><span>◆</span>Needs attention <b id="count-attention">0</b></button>
+        <button class="rail-button" data-view="working"><span>↯</span>Changing now <b id="count-working">0</b></button>
+      </div>
+
+      <div class="rail-heading"><span>SESSIONS</span><button id="new-runtime" title="New pane, window or session">＋</button></div>
+      <nav id="session-nav"></nav>
+
+      <div class="rail-spacer"></div>
+      <div class="shortcut-list">
+        <div><kbd>/</kbd><span>Search</span></div>
+        <div><kbd>⌘ K</kbd><span>Command selected</span></div>
+        <div><kbd>Esc</kbd><span>Close focus</span></div>
+      </div>
+      <div class="daemon-state"><span class="pulse"></span><div><strong id="daemon-state">CONNECTING</strong><small id="scan-state">Waiting for fleet</small></div></div>
+    </aside>
+
+    <main class="control-stage">
+      <header class="control-bar">
+        <div class="context"><strong id="view-title">All terminals</strong><span id="view-subtitle">live tmux output</span></div>
+        <label class="search"><span>⌕</span><input id="search" placeholder="Filter panes, commands, paths…"><kbd>/</kbd></label>
+        <div class="density" aria-label="Terminal density">
+          <button data-columns="3">3</button><button data-columns="4">4</button><button data-columns="5" class="active">5</button><button data-columns="6">6</button>
+        </div>
+        <button class="top-button" id="pause" title="Pause live capture">Ⅱ</button>
+        <button class="top-button" id="notifications" title="Enable desktop attention notifications">♢</button>
+        <button class="top-button" id="refresh" title="Refresh now">↻</button>
+      </header>
+
+      <section class="fleet-strip">
+        <div><span id="visible-count">0</span> visible</div>
+        <div><i class="attention-dot"></i><span id="strip-attention">0</span> awaiting you</div>
+        <div><i class="working-dot"></i><span id="strip-working">0</span> changing</div>
+        <div><span id="selected-count">0</span> selected</div>
+        <div class="strip-time" id="updated-at">not scanned</div>
+      </section>
+
+      <section class="terminal-wall columns-5" id="terminal-wall">
+        <div class="loading">Connecting to tmux…</div>
+      </section>
+    </main>
+
+    <aside class="right-rail">
+      <section class="attention-panel">
+        <div class="panel-head"><div><strong>ATTENTION INBOX</strong><small>Prompts, permissions, failures</small></div><b id="attention-badge">0</b></div>
+        <div id="attention-list" class="attention-list"><p class="empty-state">No agents currently asking for you.</p></div>
+      </section>
+
+      <section class="orchestrator-panel">
+        <div class="panel-head"><div><strong>ORCHESTRATOR</strong><small>Secondary control and delegation</small></div><span class="prototype-tag">QUEUE</span></div>
+        <div class="orchestrator-input">
+          <textarea id="orchestrator-input" placeholder="Ask about the fleet or delegate a task…"></textarea>
+          <div><span id="orchestrator-context">Context: whole fleet</span><button id="delegate">Delegate ↗</button></div>
+        </div>
+        <p class="orchestrator-reply" id="orchestrator-reply"></p>
+        <div class="queue-head"><span>RECENT HANDOFFS</span><button id="toggle-events">EVENTS</button></div>
+        <div id="task-list" class="task-list"><p class="empty-state">No handoffs yet.</p></div>
+        <div id="event-list" class="event-list hidden"></div>
+      </section>
+    </aside>
+  </div>
+
+  <section class="broadcast-dock" id="broadcast-dock">
+    <div class="selected-summary"><strong id="dock-count">0 PANES</strong><button id="clear-selection">clear</button></div>
+    <input id="broadcast-input" placeholder="Send the same command to selected panes…">
+    <button class="dock-key" data-broadcast-key="C-c">CTRL-C</button>
+    <button class="dock-key" data-broadcast-key="Enter">ENTER</button>
+    <button id="broadcast-send">SEND ↵</button>
+  </section>
+
+  <section class="focus-overlay" id="focus-overlay" aria-hidden="true">
+    <div class="focus-window">
+      <header><div><span id="focus-session">SESSION</span><strong id="focus-title">%0 · terminal</strong><small id="focus-path">/</small></div><div><button class="key-button" data-focus-key="C-c">CTRL-C</button><button class="key-button" data-focus-key="Tab">TAB</button><button class="key-button" data-focus-key="Up">↑</button><button class="key-button" data-focus-key="Down">↓</button><button class="key-button" data-focus-key="C-d">CTRL-D</button><button id="close-focus">×</button></div></header>
+      <pre id="focus-terminal"></pre>
+      <form id="focus-command"><span>❯</span><input id="focus-input" autocomplete="off" placeholder="Type into this tmux pane"><button>SEND ↵</button></form>
+    </div>
+  </section>
+
+  <dialog id="spawn-dialog">
+    <form method="dialog" id="spawn-form">
+      <div class="dialog-head"><div><strong>NEW RUNTIME</strong><small>Launch through tmux</small></div><button type="button" data-close-spawn>×</button></div>
+      <label>Placement<select id="spawn-mode"><option value="pane">Pane in existing window</option><option value="window">Window in existing session</option><option value="session">New session</option></select></label>
+      <label id="spawn-target-label">Target<select id="spawn-target"></select></label>
+      <label>Name <span>(required for a session)</span><input id="spawn-name" placeholder="feature-work"></label>
+      <label>Working directory<input id="spawn-cwd" value="/home/vulbsti/proj/ev"></label>
+      <label>Initial command<input id="spawn-command" placeholder="codex, claude, npm test, or leave blank for shell"></label>
+      <p id="spawn-error"></p>
+      <div class="dialog-actions"><button type="button" data-close-spawn>Cancel</button><button id="spawn-submit">Launch runtime</button></div>
+    </form>
+  </dialog>
+
+  <aside class="attention-popup" id="attention-popup" aria-hidden="true">
+    <div><span>AGENT NEEDS YOU</span><button id="dismiss-popup">×</button></div>
+    <strong id="popup-title">Pane</strong><p id="popup-evidence"></p>
+    <footer><button id="popup-dismiss">Dismiss</button><button id="popup-focus">Open terminal</button></footer>
+  </aside>
+
+  <div class="toast-stack" id="toast-stack"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

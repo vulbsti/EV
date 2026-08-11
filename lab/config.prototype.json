@@ -1,0 +1,12 @@
+{
+  "concurrency": 2,
+  "tmuxSamples": 3,
+  "tmuxCaptureLines": 80,
+  "requestTimeoutMs": 60000,
+  "openrouter": {
+    "sttModel": "x-ai/grok-stt-1.0",
+    "ttsModel": "x-ai/grok-voice-tts-1.0",
+    "ttsVoice": "eve",
+    "transcript": "EV can observe agents without allowing its voice companion to mutate terminals."
+  }
+}

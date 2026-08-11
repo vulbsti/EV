@@ -1,0 +1,19 @@
+{
+  "name": "ev-experiment-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pre-build experiment and evidence suite for EV Mission Control",
+  "scripts": {
+    "test": "node --test lab/tests/*.test.mjs apps/daemon/tests/*.test.mjs",
+    "lab": "node scripts/run-lab.mjs",
+    "lab:quick": "node scripts/run-lab.mjs --mode mock --profile quick",
+    "lab:live": "node scripts/run-lab.mjs --mode live --profile full",
+    "lab:browser": "node scripts/serve-browser-lab.mjs",
+    "lab:summarize": "node scripts/summarize-lab.mjs",
+    "prototype": "node apps/daemon/server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

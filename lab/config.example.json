@@ -1,0 +1,17 @@
+{
+  "concurrency": 4,
+  "tmuxSamples": 3,
+  "tmuxCaptureLines": 80,
+  "requestTimeoutMs": 30000,
+  "xai": {
+    "model": "grok-voice-think-fast-2.0",
+    "voice": "Eve",
+    "prompt": "Reply with one short sentence confirming that the voice transport works."
+  },
+  "openrouter": {
+    "sttModel": "openai/whisper-1",
+    "ttsModel": "",
+    "ttsVoice": "alloy",
+    "transcript": "EV can observe agents without allowing its voice companion to mutate terminals."
+  }
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EV Browser Audio Probe</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <p class="eyebrow">EV EXPERIMENT LAB / BROWSER AUDIO</p>
+    <h1>Measure the microphone before choosing the voice stack.</h1>
+    <p>This page sends audio nowhere. It measures permission time, actual browser sample rate, chunk timing, level, recording size, and playback support. Export the JSON and WebM to use as a labelled STT fixture.</p>
+    <section class="controls">
+      <button id="start">Start probe</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="play" disabled>Play recording</button>
+      <button id="download" disabled>Download audio</button>
+      <button id="export" disabled>Export metrics</button>
+    </section>
+    <label>Say this reference phrase
+      <textarea id="reference">EV can observe agents without allowing its voice companion to mutate terminals.</textarea>
+    </label>
+    <div class="meter"><span id="level"></span></div>
+    <pre id="output">Ready. Use headphones to avoid echo during later round-trip tests.</pre>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

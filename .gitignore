@@ -1,0 +1,7 @@
+artifacts/
+data/*.jsonl
+.env
+*.pcm
+*.wav
+*.mp3
+*.webm
