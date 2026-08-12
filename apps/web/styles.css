@@ -72,6 +72,8 @@ kbd { min-width: 25px; padding: 2px 4px; border: 1px solid #30443d; background: 
 .terminal-head input { accent-color: var(--blue); margin: 0; }.terminal-head strong { min-width: 0; color: #cbd9d4; font: 700 9px ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .terminal-head small { min-width: 0; flex: 1; color: #5f7770; font: 7px ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .terminal-status { color: var(--muted); font: 700 7px ui-monospace, monospace; letter-spacing: .08em; }
+.explain-button { height: 19px; padding: 0 4px; border: 1px solid #315465; background: #0b1a21; color: var(--blue); font: 6px ui-monospace, monospace; }
+.explain-button:hover { border-color: var(--blue); color: #b9d9ff; }
 .expand-button { width: 20px; height: 20px; padding: 0; border: 0; background: transparent; color: var(--muted); }
 .terminal-output { min-height: 0; margin: 0; padding: 6px 7px; overflow: hidden; color: #9db1aa; background: #030706; font: 7.5px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .terminal-card.needs-attention .terminal-output { background: linear-gradient(180deg, #16090a, #030706 36%); }

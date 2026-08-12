@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080b10">
+  <title>EV Explanation Window</title>
+  <link rel="stylesheet" href="explain.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><b>EV</b><div><strong>EXPLANATION WINDOW</strong><small id="target-label">Connecting to executor evidence…</small></div></div>
+    <div class="boundary"><i></i><span>READ ONLY</span><b>SEPARATE AGENT THREAD</b></div>
+    <div class="evidence-state"><span id="evidence-state">EVIDENCE —</span><small id="captured-at">not captured</small></div>
+    <button id="close-window">Close</button>
+  </header>
+
+  <main class="explanation-layout">
+    <aside class="evidence-rail">
+      <section>
+        <div class="section-title"><span>LIVE TARGET</span><button id="refresh-evidence" title="Refresh evidence">↻</button></div>
+        <dl class="facts">
+          <div><dt>Pane</dt><dd id="fact-pane">—</dd></div>
+          <div><dt>Process</dt><dd id="fact-command">—</dd></div>
+          <div><dt>Activity</dt><dd id="fact-activity">—</dd></div>
+          <div><dt>Working directory</dt><dd id="fact-cwd">—</dd></div>
+          <div><dt>Branch / head</dt><dd id="fact-git">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="project-anchor">
+        <div class="section-title"><span>PROJECT ANCHOR</span><em id="project-sources">—</em></div>
+        <strong id="project-name">Finding project context…</strong>
+        <p id="project-summary">The project goal anchors every explanation.</p>
+      </section>
+
+      <section class="changes-section">
+        <div class="section-title"><span>OBSERVED CHANGES</span><b id="change-count">0</b></div>
+        <div id="change-list" class="change-list"><p class="empty">No Git evidence loaded.</p></div>
+      </section>
+
+      <section>
+        <div class="section-title"><span>VALIDATION SIGNALS</span><em>console heuristic</em></div>
+        <div id="validation-list" class="signal-list"><p class="empty">No test signal observed yet.</p></div>
+      </section>
+
+      <section class="terminal-evidence">
+        <div class="section-title"><span>TERMINAL EVIDENCE</span><em>heuristic</em></div>
+        <pre id="terminal-preview">Waiting for the selected pane…</pre>
+      </section>
+    </aside>
+
+    <section class="conversation-stage">
+      <div class="conversation-head">
+        <div><strong>UNDERSTAND THE MECHANISM</strong><small>Deep analysis is compiled into a selectable causal path.</small></div>
+        <span id="session-label">NEW SESSION</span>
+      </div>
+
+      <div id="conversation" class="conversation">
+        <article class="message system-message">
+          <div class="message-meta">HOW THIS WINDOW WORKS</div>
+          <p>Ask one question. The explainer anchors it in the project goal, builds the full mechanics privately, then shows only the causal path you need. Select a step or edge case to inspect it.</p>
+        </article>
+      </div>
+
+      <div class="prompt-chips" id="prompt-chips">
+        <button data-question="What project goal was this work trying to advance, and is the implementation aligned with it?">Goal alignment</button>
+        <button data-question="Show the smallest complete mechanism from input to visible result.">Exact mechanism</button>
+        <button data-question="What key behavior changed, and which behavior stayed unchanged?">Change impact</button>
+        <button data-question="Show the normal path and the material edge cases that change its outcome.">Edge cases</button>
+        <button data-question="Which failure does each relevant test catch, and what remains unproven?">Test mechanics</button>
+      </div>
+
+      <form id="question-form" class="composer">
+        <textarea id="question" placeholder="Question any step, file, test, assumption, or visible behavior…" maxlength="8000"></textarea>
+        <div><span id="ask-status">Fresh evidence will be attached automatically.</span><button id="ask">Ask explainer ↗</button></div>
+      </form>
+    </section>
+
+    <aside class="learning-rail">
+      <section>
+        <div class="section-title"><span>CONTEXT BOUNDARY</span></div>
+        <div class="boundary-map" aria-label="Executor and explainer context flow">
+          <div class="node executor">EXECUTOR<small>implements</small></div>
+          <div class="arrow">effects ↓</div>
+          <div class="node evidence">EVIDENCE PLANE<small>project · bounded console · Git · events</small></div>
+          <div class="arrow split"><span>read ↓</span><span>never ↑</span></div>
+          <div class="node explainer">EXPLAINER<small>questions stay here</small></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title"><span>TEACHING PROFILE</span><em id="feedback-count">0 explicit</em></div>
+        <div id="profile-list" class="profile-list"><p class="empty">Your questions and feedback will tune later answers.</p></div>
+      </section>
+
+      <section>
+        <div class="section-title"><span>TUNE THE NEXT ANSWER</span></div>
+        <div class="feedback-grid">
+          <button data-feedback="more_concrete">More concrete</button>
+          <button data-feedback="more_visual">More visual</button>
+          <button data-feedback="less_technical">Less technical</button>
+          <button data-feedback="deeper_mechanics">Go deeper</button>
+          <button class="good" data-feedback="good">This worked</button>
+          <button class="reset" data-feedback="reset_profile">Reset learning profile</button>
+        </div>
+        <p class="feedback-note" id="feedback-note">Feedback changes the explainer profile only.</p>
+      </section>
+
+      <section>
+        <div class="section-title"><span>HONEST LIMITS</span></div>
+        <ul id="limitations">
+          <li>Terminal evidence is bounded recent console text, not every action or hidden thought.</li>
+          <li>Tests are evidence only when their result is observed.</li>
+          <li>Generic panes have heuristic status until a structured adapter is connected.</li>
+        </ul>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module" src="explain.js"></script>
+</body>
+</html>

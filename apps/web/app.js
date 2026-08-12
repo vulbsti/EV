@@ -15,7 +15,7 @@ const state = {
   eventsVisible: false
 };
 
-const ids = ["connection-dot", "count-all", "count-attention", "count-working", "session-nav", "daemon-state", "scan-state", "view-title", "view-subtitle", "search", "pause", "notifications", "refresh", "visible-count", "strip-attention", "strip-working", "selected-count", "updated-at", "terminal-wall", "attention-badge", "attention-list", "orchestrator-input", "orchestrator-context", "delegate", "orchestrator-reply", "toggle-events", "task-list", "event-list", "broadcast-dock", "dock-count", "clear-selection", "broadcast-input", "broadcast-send", "focus-overlay", "focus-session", "focus-title", "focus-path", "focus-terminal", "focus-command", "focus-input", "close-focus", "spawn-dialog", "spawn-form", "spawn-mode", "spawn-target-label", "spawn-target", "spawn-name", "spawn-cwd", "spawn-command", "spawn-error", "new-runtime", "attention-popup", "dismiss-popup", "popup-title", "popup-evidence", "popup-dismiss", "popup-focus", "toast-stack"];
+const ids = ["connection-dot", "count-all", "count-attention", "count-working", "session-nav", "daemon-state", "scan-state", "view-title", "view-subtitle", "search", "pause", "notifications", "refresh", "visible-count", "strip-attention", "strip-working", "selected-count", "updated-at", "terminal-wall", "attention-badge", "attention-list", "orchestrator-input", "orchestrator-context", "delegate", "orchestrator-reply", "toggle-events", "task-list", "event-list", "broadcast-dock", "dock-count", "clear-selection", "broadcast-input", "broadcast-send", "focus-overlay", "focus-session", "focus-title", "focus-path", "focus-terminal", "focus-command", "focus-input", "open-explainer", "close-focus", "spawn-dialog", "spawn-form", "spawn-mode", "spawn-target-label", "spawn-target", "spawn-name", "spawn-cwd", "spawn-command", "spawn-error", "new-runtime", "attention-popup", "dismiss-popup", "popup-title", "popup-evidence", "popup-dismiss", "popup-focus", "toast-stack"];
 const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function escapeHtml(value) {
@@ -91,6 +91,7 @@ function renderTerminalWall() {
         <strong>${escapeHtml(pane.paneId)} · ${escapeHtml(pane.command)}</strong>
         <small>${escapeHtml(pane.sessionName)} · ${escapeHtml(pane.path)}</small>
         <span class="terminal-status">${attention ? "NEEDS YOU" : pane.activity === "working" ? "CHANGING" : "STEADY"}</span>
+        <button class="explain-button" data-explain-pane="${escapeHtml(pane.paneId)}" title="Open a separate explanation window">WHY?</button>
         <button class="expand-button" data-focus-pane="${escapeHtml(pane.paneId)}" title="Focus terminal">⛶</button>
       </header>
       <pre class="terminal-output">${escapeHtml(tailWindow(pane.tail, lineCount) || "No captured output")}</pre>
@@ -238,6 +239,13 @@ function closeFocus() {
   renderSelection();
 }
 
+function openExplainer(paneId) {
+  const url = `/explain.html?pane=${encodeURIComponent(paneId)}`;
+  const name = `ev-explainer-${paneId.replace(/[^A-Za-z0-9_-]/g, "")}`;
+  const popup = window.open(url, name, "popup,width=1280,height=900");
+  if (!popup) toast("The browser blocked the explanation window. Allow popups for this localhost page.");
+}
+
 async function refreshLedger() {
   try {
     const [taskResponse, eventResponse] = await Promise.all([api("/api/tasks"), api("/api/events?limit=30")]);
@@ -306,6 +314,8 @@ document.addEventListener("click", (event) => {
   if (session) { state.sessionId = session.dataset.session; renderNavigation(); renderTerminalWall(); renderStatus(); return; }
   const focus = event.target.closest("[data-focus-pane]");
   if (focus) return openFocus(focus.dataset.focusPane);
+  const explain = event.target.closest("[data-explain-pane]");
+  if (explain) return openExplainer(explain.dataset.explainPane);
   const select = event.target.closest("[data-select-pane]");
   if (select) { select.checked ? state.selected.add(select.dataset.selectPane) : state.selected.delete(select.dataset.selectPane); renderTerminalWall(); renderSelection(); return; }
   const send = event.target.closest("[data-send-pane]");
@@ -340,6 +350,7 @@ el["clear-selection"].onclick = () => { state.selected.clear(); renderTerminalWa
 el["broadcast-send"].onclick = () => { const text = el["broadcast-input"].value; if (!text) return; safeControl(async () => { await Promise.all([...state.selected].map((paneId) => sendInput(paneId, text))); el["broadcast-input"].value = ""; }); };
 el["broadcast-input"].onkeydown = (event) => { if (event.key === "Enter") el["broadcast-send"].click(); };
 el["close-focus"].onclick = closeFocus;
+el["open-explainer"].onclick = () => { if (state.focusedPaneId) openExplainer(state.focusedPaneId); };
 el["focus-command"].onsubmit = (event) => { event.preventDefault(); const text = el["focus-input"].value; if (!text || !state.focusedPaneId) return; safeControl(async () => { await sendInput(state.focusedPaneId, text); el["focus-input"].value = ""; }); };
 el.delegate.onclick = delegateRequest;
 el["orchestrator-input"].onkeydown = (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") delegateRequest(); };

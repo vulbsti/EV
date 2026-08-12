@@ -1,7 +1,7 @@
 # EV control workstation prototype
 
 Date: 2026-08-11  
-Status: runnable localhost control panel; orchestrator execution is the next layer
+Status: runnable localhost control panel with a separate evidence-synchronized explanation window; orchestrator execution is the next layer
 
 ## Workstation model
 
@@ -69,6 +69,14 @@ orchestrator sees normalized fleet, terminal activity and attention
 
 Voice APIs remain in the daemon for prior experiments but have been removed from the active workstation UI.
 
+## Explanation window
+
+Every terminal card and focused terminal has a `WHY?` action. It opens a separate browser window bound to that pane. Explanation questions run in a dedicated read-only Codex thread and never enter the executor context. Before each question, the daemon refreshes project-purpose documents, bounded recent console text, Git, diff, validation-signal, and event-ledger evidence and assigns it a revision.
+
+Each question uses two turns in the same Codex thread: a full mechanics investigation followed by a presentation compiler. The compiler produces a direct answer, project-goal alignment, selectable causal steps, and normal/edge-case paths. The daemon enforces field limits after generation, so compactness is a separate presentation operation rather than a restriction on the investigation.
+
+The conversation survives browser and daemon restarts because EV records the explanation session, Codex thread ID, questions, structured answers, evidence revisions, and feedback as events. Question-derived interests weakly tune later explanations; explicit teaching feedback has stronger visible weight. See [EXPLANATION_WINDOW.md](EXPLANATION_WINDOW.md) for the exact mechanics, safety boundary, tests, and current limitations.
+
 ## Start it
 
 ```bash
@@ -92,6 +100,10 @@ The server binds to `127.0.0.1`. There is no authentication, so do not expose it
 | `GET /api/tasks` | durable orchestrator handoffs |
 | `GET /api/events` | append-only control and orchestration ledger |
 | `POST /api/companion` | fleet query or orchestrator handoff |
+| `GET /api/explain/context` | bounded public evidence summary for one pane |
+| `GET /api/explain/sessions/:id` | reconstruct a multi-turn explanation session |
+| `POST /api/explain/ask` | ask from fresh evidence in the separate read-only thread |
+| `POST /api/explain/feedback` | update the visible explainer-only teaching profile |
 
 ## Verified behavior
 
@@ -102,8 +114,9 @@ The server binds to `127.0.0.1`. There is no authentication, so do not expose it
 - Printed `Agent paused: Do you want to proceed? [y/N]` in a temporary pane. The detector returned one critical `Confirmation requested` item with the exact evidence and the browser promoted it to the top of the terminal wall and attention inbox.
 - Removed all temporary sessions after testing; the original fleet returned to 3 sessions and 16 panes.
 - Persisted redacted `pane.input_sent`, `pane.key_sent`, and `pane.spawned` ledger events.
-- Passed all nine automated policy, delegation, attention, redaction, resilience, and statistics tests.
+- Passed all 14 automated policy, delegation, attention, evidence-redaction, explainer-isolation, presentation-budget, resilience, and statistics tests.
 - Loaded the complete control surface in headless Chrome with no JavaScript console errors.
+- Created a real Codex app-server explanation thread, resumed the same multi-turn thread after a daemon restart, attached a new evidence revision, persisted the answer, and applied explainer-only visual feedback.
 
 ## Remaining limitations
 
@@ -112,4 +125,6 @@ The server binds to `127.0.0.1`. There is no authentication, so do not expose it
 - Direct command broadcast is powerful. There is no role-based access, per-pane adoption, or confirmation tier yet.
 - The orchestrator queues work but does not yet spawn, supervise, verify, or stop agents.
 - Task state is append-only and currently remains `awaiting_orchestrator`.
+- Generic panes do not yet expose structured executor plans, tool calls, or authoritative test results; explanations label tmux-derived facts as heuristic.
+- Explanation answers currently complete over one HTTP request rather than streaming deltas to the browser.
 - Remote access and multi-user authentication are not implemented.

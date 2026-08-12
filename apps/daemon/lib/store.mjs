@@ -50,4 +50,62 @@ export class EventStore {
       }))
       .reverse();
   }
+
+  async explanationSession(sessionId) {
+    const events = (await this.all()).filter((event) => event.correlationId === sessionId);
+    const started = events.find((event) => event.type === "explanation.session.started");
+    if (!started) return null;
+    const messages = events
+      .filter((event) => event.type === "explanation.question" || event.type === "explanation.answer")
+      .map((event) => ({
+        role: event.type === "explanation.question" ? "user" : "assistant",
+        text: event.payload.text,
+        questionId: event.payload.questionId,
+        evidenceRevision: event.payload.evidenceRevision,
+        occurredAt: event.occurredAt,
+        durationMs: event.payload.durationMs ?? null,
+        presentation: event.payload.presentation ?? null
+      }));
+    return {
+      sessionId,
+      paneId: started.payload.paneId,
+      cwd: started.payload.cwd,
+      codexThreadId: started.payload.codexThreadId,
+      createdAt: started.occurredAt,
+      messages,
+      feedback: events.filter((event) => event.type === "explanation.feedback").map((event) => event.payload)
+    };
+  }
+
+  async explanationProfile() {
+    const allEvents = await this.all();
+    const lastReset = allEvents.findLastIndex((event) => event.type === "explanation.profile.reset");
+    const events = allEvents.slice(lastReset + 1);
+    const weights = { concrete: 0, visual: 0, accessible: 0, mechanics: 0, tests: 0, impact: 0 };
+    const feedbackMap = {
+      more_concrete: "concrete",
+      more_visual: "visual",
+      less_technical: "accessible",
+      deeper_mechanics: "mechanics"
+    };
+    let explicitFeedbackCount = 0;
+    for (const event of events) {
+      if (event.type === "explanation.feedback") {
+        explicitFeedbackCount += 1;
+        const preference = feedbackMap[event.payload.signal];
+        if (preference) weights[preference] += 3;
+      }
+      if (event.type !== "explanation.question") continue;
+      const text = event.payload.text.toLowerCase();
+      if (/\b(exact|exactly|mechanic|step by step|data flow|control flow)\b/.test(text)) weights.mechanics += 1;
+      if (/\b(show|visual|diagram|map|picture)\b/.test(text)) weights.visual += 1;
+      if (/\b(test|assert|prove|verification|failure)\b/.test(text)) weights.tests += 1;
+      if (/\b(impact|change|break|before|after|affect)\b/.test(text)) weights.impact += 1;
+    }
+    const preferences = Object.entries(weights)
+      .filter(([, weight]) => weight > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, weight]) => ({ name, weight }));
+    return { explicitFeedbackCount, weights, preferences };
+  }
 }

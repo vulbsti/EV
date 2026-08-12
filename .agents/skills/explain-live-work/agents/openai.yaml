@@ -1,0 +1,4 @@
+interface:
+  display_name: "Explain Live Work"
+  short_description: "Map project-aligned mechanics and edge cases"
+  default_prompt: "Use $explain-live-work to map how the current work advances the project goal, including its exact mechanics and edge cases."

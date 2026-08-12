@@ -1,7 +1,7 @@
 # EV Mission Control: Product and Implementation Blueprint
 
 Date: 2026-08-11  
-Status: architecture and delivery plan; pre-build experiment lab implemented, integrated product not yet started
+Status: architecture and delivery plan; runnable tmux workstation and separate evidence-synchronized explanation window implemented, durable orchestrator not yet started
 
 ## 1. What is being built
 
