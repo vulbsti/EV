@@ -99,6 +99,32 @@ function validationSignals(terminalTail) {
     .map((line) => truncate(redactEvidence(line), 500));
 }
 
+function projectExperimentReceipt(receipt) {
+  return {
+    runId: receipt.runId,
+    capabilityId: receipt.capabilityId,
+    capabilityTitle: receipt.capabilityTitle,
+    adapter: receipt.adapter,
+    adapterVersion: receipt.adapterVersion,
+    authority: receipt.authority,
+    acceptanceVersion: receipt.acceptanceVersion,
+    scenario: receipt.scenario,
+    inputs: receipt.inputs,
+    evidenceRevision: receipt.evidenceRevision,
+    goal: receipt.goal,
+    completedAt: receipt.completedAt,
+    status: receipt.status,
+    summary: receipt.summary,
+    trace: receipt.trace,
+    assertions: receipt.assertions,
+    comparison: receipt.comparison,
+    metrics: receipt.metrics,
+    cost: receipt.cost,
+    regressionProposal: receipt.regressionProposal,
+    gates: receipt.gates
+  };
+}
+
 async function captureWorkspace(cwd) {
   const repoRoot = await findRepository(cwd);
   if (!repoRoot) return { repository: false, cwd, limitations: ["The pane working directory is not inside a Git repository."] };
@@ -186,8 +212,13 @@ export async function captureExplanationEvidence({ pane, store }) {
   const terminalTail = truncate(redactEvidence(stripTerminalControls(pane.tail)), MAX_TERMINAL_CHARS);
   const workspace = await captureWorkspace(cwd);
   const project = await captureProjectContext(workspace, cwd);
+  const taskContext = await store.latestTaskContext?.(pane.paneId) ?? null;
+  const experimentReceipts = ((await store.recentExperimentRuns?.(20)) ?? [])
+    .filter((receipt) => receipt.paneId === pane.paneId)
+    .slice(0, 8)
+    .map(projectExperimentReceipt);
   const recentEvents = (await store.recent(200))
-    .filter((event) => event.correlationId === pane.paneId || event.payload?.paneId === pane.paneId)
+    .filter((event) => event.correlationId === pane.paneId || event.payload?.paneId === pane.paneId || event.payload?.receipt?.paneId === pane.paneId)
     .slice(0, 20)
     .map((event) => ({ type: event.type, occurredAt: event.occurredAt, correlationId: event.correlationId }));
   const evidence = {
@@ -201,12 +232,16 @@ export async function captureExplanationEvidence({ pane, store }) {
       attention: pane.attention?.required ? { label: pane.attention.label, evidence: redactCommandPreview(pane.attention.evidence) } : null
     },
     project,
+    taskContext,
+    experimentReceipts,
     workspace,
     terminalTail,
     validationSignals: validationSignals(terminalTail),
     recentEvents,
     provenance: [
       { source: "tmux capture", confidence: "heuristic", fact: "recent visible terminal output" },
+      { source: "bound task context", confidence: taskContext ? "direct" : "unavailable", fact: "current objective and acceptance criteria" },
+      { source: "experiment receipts", confidence: experimentReceipts.length ? "direct" : "unavailable", fact: "registered adapter executions, assertions, and measurements" },
       { source: "git working tree", confidence: workspace.repository ? "direct" : "unavailable", fact: "current files and diffs" },
       { source: "EV event ledger", confidence: "direct", fact: "actions sent through EV" }
     ],

@@ -17,13 +17,12 @@ test("keeps a durable multi-turn explanation thread separate and adapts from fee
       async runTurn(value) {
         calls.turns.push(value);
         const turn = calls.turns.length;
-        if (turn % 2) return { turnId: `turn-${turn}`, answer: `complete mechanics brief ${turn}`, durationMs: 25 };
         return {
           turnId: `turn-${turn}`,
-          durationMs: 10,
+          durationMs: 25,
           answer: JSON.stringify({
             project: { goal: "Understand active agent work", alignment: "aligned", impact: "Makes implementation effects inspectable." },
-            answer: `compiled answer ${turn / 2}`,
+            answer: `mechanics answer ${turn}`,
             mechanism: [
               { id: "capture", title: "Capture evidence", detail: "Read the current effects.", input: "pane", output: "snapshot", evidence: "evidence.mjs", status: "observed" },
               { id: "explain", title: "Explain mechanics", detail: "Answer from the snapshot.", input: "snapshot", output: "model", evidence: "explainer.mjs", status: "observed" }
@@ -47,16 +46,16 @@ test("keeps a durable multi-turn explanation thread separate and adapts from fee
     const session = await explainer.session(first.sessionId);
 
     assert.equal(calls.starts.length, 1);
-    assert.equal(calls.turns.length, 4);
+    assert.equal(calls.turns.length, 2);
     assert.equal(calls.turns[0].threadId, "thread-explainer");
     assert.match(calls.starts[0].developerInstructions, /Never edit files/);
     assert.match(calls.turns[0].input, /evidence_snapshot revision=/);
     assert.match(calls.turns[0].input, /untrusted data, not instructions/);
-    assert.match(calls.turns[0].input, /INVESTIGATOR PASS/);
-    assert.match(calls.turns[1].input, /PRESENTATION COMPILER PASS/);
+    assert.match(calls.turns[0].input, /one rigorous, typed mechanics artifact/);
+    assert.doesNotMatch(calls.turns[0].input, /PRESENTATION COMPILER PASS/);
     assert.equal(session.messages.length, 4);
     assert.equal(session.codexThreadId, "thread-explainer");
-    assert.equal(session.messages[1].text, "compiled answer 1");
+    assert.equal(session.messages[1].text, "mechanics answer 1");
     assert.equal(session.messages[1].presentation.mechanism.length, 2);
     assert.equal(first.presentation.project.alignment, "aligned");
     assert.equal(first.presentation.scenarios[1].id, "missing-pane");
@@ -97,19 +96,16 @@ test("rejects attempts to reuse a session for another executor pane", async () =
   }
 });
 
-test("enforces the presentation budget after a verbose compiler response", async () => {
+test("enforces the presentation budget after a verbose mechanics response", async () => {
   const root = await mkdtemp(join(tmpdir(), "ev-explainer-budget-"));
   try {
     const store = new EventStore(join(root, "events.jsonl"));
     await store.initialize();
-    let turn = 0;
     const codex = {
       async startThread() { return { id: "thread-budget" }; },
       async runTurn() {
-        turn += 1;
-        if (turn === 1) return { turnId: "analysis", answer: "A deliberately complete mechanics brief.", durationMs: 1 };
         return {
-          turnId: "compiler",
+          turnId: "mechanics",
           durationMs: 1,
           answer: JSON.stringify({
             project: { goal: "g".repeat(1_000), alignment: "aligned", impact: "i".repeat(1_000) },
@@ -136,6 +132,34 @@ test("enforces the presentation budget after a verbose compiler response", async
     assert.equal(result.presentation.followUps.length, 3);
     assert.ok(result.presentation.project.goal.length <= 320);
     assert.ok(result.presentation.project.impact.length <= 420);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("binds an explicit pane task and includes it in later evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ev-explainer-task-"));
+  try {
+    const store = new EventStore(join(root, "events.jsonl"));
+    await store.initialize();
+    const pane = { paneId: "%4", sessionName: "work", command: "codex", path: root, activity: "steady", tail: "" };
+    const explainer = await createExplainer({
+      store,
+      codex: { async startThread() { return { id: "unused" }; }, async runTurn() { throw new Error("unused"); } },
+      getPane: async (paneId) => paneId === pane.paneId ? pane : null
+    });
+
+    const bound = await explainer.bindTask({
+      paneId: "%4",
+      objective: "  Make backend behavior mechanically testable.  ",
+      acceptanceCriteria: ["Run the real path", "  Persist a receipt  ", ""]
+    });
+    const evidence = await explainer.context("%4");
+
+    assert.equal(bound.objective, "Make backend behavior mechanically testable.");
+    assert.deepEqual(evidence.taskContext.acceptanceCriteria, ["Run the real path", "Persist a receipt"]);
+    assert.equal(evidence.taskContext.paneId, "%4");
+    await assert.rejects(() => explainer.bindTask({ paneId: "%4", objective: "" }), /task objective/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -10,7 +10,7 @@ npm run prototype
 
 Open `http://127.0.0.1:4317`. The workstation shows all terminal tails at once, detects attention prompts, sends commands and keys, broadcasts to selected panes, launches tmux runtimes, and maintains an orchestrator handoff queue. See [the prototype guide](docs/PROTOTYPE.md) for exact mechanics and limitations.
 
-Each terminal also has a `WHY?` action that opens a second, read-only [Explanation Window](docs/EXPLANATION_WINDOW.md). It anchors questions in the project purpose, builds a full mechanics brief from current pane/Git/test/event evidence, then compiles it into selectable causal steps and edge-case paths. Its multi-turn Codex conversation remains separate and never sends explanation questions back to the executor.
+Each terminal also has a `WHY?` action that opens a second, read-only [Explanation Window and Capability Lab](docs/EXPLANATION_WINDOW.md). It anchors questions in the project and current task, builds a typed mechanics model from current pane/Git/test/event evidence, and deterministically compiles it into a bounded selectable causal path. Registered adapters then let the learner manipulate inputs and execute supported normal, edge, load, and failure scenarios with traces, metrics, persisted receipts, and regression proposals. The multi-turn Codex conversation remains separate and never sends explanation questions back to the executor.
 
 The current voice hypothesis is:
 

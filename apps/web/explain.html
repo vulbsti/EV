@@ -34,6 +34,12 @@
         <p id="project-summary">The project goal anchors every explanation.</p>
       </section>
 
+      <section class="task-anchor">
+        <div class="section-title"><span>CURRENT TASK</span><button id="bind-task">SET</button></div>
+        <strong id="task-objective">No exact task objective is bound.</strong>
+        <ul id="task-criteria"><li>Project intent will be used as a weaker fallback.</li></ul>
+      </section>
+
       <section class="changes-section">
         <div class="section-title"><span>OBSERVED CHANGES</span><b id="change-count">0</b></div>
         <div id="change-list" class="change-list"><p class="empty">No Git evidence loaded.</p></div>
@@ -53,28 +59,65 @@
     <section class="conversation-stage">
       <div class="conversation-head">
         <div><strong>UNDERSTAND THE MECHANISM</strong><small>Deep analysis is compiled into a selectable causal path.</small></div>
+        <div class="stage-tabs"><button class="active" data-stage="explanation">EXPLANATION</button><button data-stage="lab">CAPABILITY LAB</button></div>
         <span id="session-label">NEW SESSION</span>
       </div>
 
-      <div id="conversation" class="conversation">
-        <article class="message system-message">
-          <div class="message-meta">HOW THIS WINDOW WORKS</div>
-          <p>Ask one question. The explainer anchors it in the project goal, builds the full mechanics privately, then shows only the causal path you need. Select a step or edge case to inspect it.</p>
-        </article>
+      <div id="explanation-view" class="explanation-view">
+        <div id="conversation" class="conversation">
+          <article class="message system-message">
+            <div class="message-meta">HOW THIS WINDOW WORKS</div>
+            <p>Ask one question. The explainer anchors it in the project goal, builds the full mechanics privately, then shows only the causal path you need. Select a step or edge case to inspect it.</p>
+          </article>
+        </div>
+
+        <div class="prompt-chips" id="prompt-chips">
+          <button data-question="What project goal was this work trying to advance, and is the implementation aligned with it?">Goal alignment</button>
+          <button data-question="Show the smallest complete mechanism from input to visible result.">Exact mechanism</button>
+          <button data-question="What key behavior changed, and which behavior stayed unchanged?">Change impact</button>
+          <button data-question="Show the normal path and the material edge cases that change its outcome.">Edge cases</button>
+          <button data-question="Which failure does each relevant test catch, and what remains unproven?">Test mechanics</button>
+        </div>
+
+        <form id="question-form" class="composer">
+          <textarea id="question" placeholder="Question any step, file, test, assumption, or visible behavior…" maxlength="8000"></textarea>
+          <div><span id="ask-status">Fresh evidence will be attached automatically.</span><button id="ask">Ask explainer ↗</button></div>
+        </form>
       </div>
 
-      <div class="prompt-chips" id="prompt-chips">
-        <button data-question="What project goal was this work trying to advance, and is the implementation aligned with it?">Goal alignment</button>
-        <button data-question="Show the smallest complete mechanism from input to visible result.">Exact mechanism</button>
-        <button data-question="What key behavior changed, and which behavior stayed unchanged?">Change impact</button>
-        <button data-question="Show the normal path and the material edge cases that change its outcome.">Edge cases</button>
-        <button data-question="Which failure does each relevant test catch, and what remains unproven?">Test mechanics</button>
-      </div>
-
-      <form id="question-form" class="composer">
-        <textarea id="question" placeholder="Question any step, file, test, assumption, or visible behavior…" maxlength="8000"></textarea>
-        <div><span id="ask-status">Fresh evidence will be attached automatically.</span><button id="ask">Ask explainer ↗</button></div>
-      </form>
+      <section id="lab-view" class="lab-view" hidden>
+        <header class="lab-head">
+          <div><span>EXECUTABLE UNDERSTANDING</span><strong id="lab-title">Loading capability adapters…</strong><p id="lab-objective">The lab runs supported code and records what actually happens.</p></div>
+          <b id="lab-score">0/10</b>
+        </header>
+        <div class="lab-toolbar">
+          <label>Capability<select id="capability-select"></select></label>
+          <label>Scenario<select id="scenario-select"></select></label>
+          <button id="run-experiment">Run experiment</button>
+          <button id="run-suite">Run 10/10 suite</button>
+        </div>
+        <div id="lab-unsupported" class="lab-unsupported" hidden></div>
+        <div class="lab-workbench">
+          <aside>
+            <div class="section-title"><span>INPUTS</span><em>bounded</em></div>
+            <div id="lab-controls" class="lab-controls"></div>
+          </aside>
+          <section class="lab-main">
+            <div class="lab-run-head"><strong id="lab-run-status">READY</strong><span id="lab-run-id">No experiment yet</span></div>
+            <div id="lab-run-tabs" class="lab-run-tabs"></div>
+            <div id="lab-pipeline" class="lab-pipeline"></div>
+            <div id="lab-summary" class="lab-summary">Choose a scenario and run it against the registered adapter.</div>
+            <div id="lab-metrics" class="lab-metrics"></div>
+            <div class="lab-detail-grid">
+              <section><div class="section-title"><span>OBSERVED TRACE</span></div><div id="lab-trace" class="lab-list"></div></section>
+              <section><div class="section-title"><span>ASSERTIONS</span></div><div id="lab-assertions" class="lab-list"></div></section>
+              <section><div class="section-title"><span>BASELINE ↔ CANDIDATE</span></div><div id="lab-comparison" class="lab-list"></div></section>
+              <section><div class="section-title"><span>REGRESSION PROPOSAL</span></div><div id="lab-regression" class="lab-list"></div></section>
+            </div>
+          </section>
+        </div>
+        <footer><div id="lab-acceptance" class="lab-acceptance"></div><span id="lab-note">Experiments never send input to the executor pane.</span></footer>
+      </section>
     </section>
 
     <aside class="learning-rail">
@@ -117,6 +160,16 @@
       </section>
     </aside>
   </main>
+
+  <dialog id="task-dialog">
+    <form id="task-form">
+      <header><strong>BIND CURRENT TASK</strong><button type="button" id="cancel-task">×</button></header>
+      <label>Objective<textarea id="task-objective-input" maxlength="2000" placeholder="What is the executor trying to achieve?"></textarea></label>
+      <label>Acceptance criteria<textarea id="task-criteria-input" maxlength="5000" placeholder="One observable criterion per line"></textarea></label>
+      <p id="task-error"></p>
+      <footer><button type="button" id="cancel-task-footer">Cancel</button><button type="submit">Bind to pane</button></footer>
+    </form>
+  </dialog>
 
   <script type="module" src="explain.js"></script>
 </body>

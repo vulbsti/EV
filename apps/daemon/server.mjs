@@ -11,6 +11,7 @@ import { EventStore } from "./lib/store.mjs";
 import { handleCompanion } from "./lib/companion.mjs";
 import { CodexAppServer } from "./lib/codex-app-server.mjs";
 import { createExplainer } from "./lib/explainer.mjs";
+import { createExperimentRunner } from "./lib/experiment-runner.mjs";
 import { inspectAttention, redactCommandPreview, stripTerminalControls, terminalDigest } from "./lib/attention.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -40,6 +41,11 @@ const explainer = await createExplainer({
   store,
   codex,
   getPane: async (paneId) => (await controlSnapshot(72)).panes.find((pane) => pane.paneId === paneId) ?? null
+});
+const experiments = createExperimentRunner({
+  store,
+  getPane: async (paneId) => (await controlSnapshot(72)).panes.find((pane) => pane.paneId === paneId) ?? null,
+  baseUrl: `http://${config.host}:${config.port}`
 });
 
 function json(response, status, value) {
@@ -176,7 +182,7 @@ async function spawnTmux(body) {
 
 async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json(response, 200, { ok: true, tmux: true, voiceConfigured: Boolean(config.openrouterKey), explainer: codex.status(), models: { stt: config.sttModel, tts: config.ttsModel, explainer: codex.model ?? "Codex default", explainerProvider: codex.modelProvider } });
+    return json(response, 200, { ok: true, tmux: true, voiceConfigured: Boolean(config.openrouterKey), explainer: codex.status(), experimentAdapters: [...experiments.adapters], models: { stt: config.sttModel, tts: config.ttsModel, explainer: codex.model ?? "Codex default", explainerProvider: codex.modelProvider } });
   }
   if (request.method === "GET" && url.pathname === "/api/fleet") return json(response, 200, await getFleet());
   if (request.method === "GET" && url.pathname === "/api/control-snapshot") return json(response, 200, await controlSnapshot(url.searchParams.get("lines")));
@@ -216,6 +222,21 @@ async function handleApi(request, response, url) {
   if (request.method === "POST" && url.pathname === "/api/explain/feedback") {
     const body = await readJson(request);
     return json(response, 200, await explainer.feedback(body));
+  }
+  if (request.method === "POST" && url.pathname === "/api/explain/task-context") return json(response, 200, await explainer.bindTask(await readJson(request)));
+  if (request.method === "GET" && url.pathname === "/api/capabilities") {
+    const paneId = url.searchParams.get("paneId");
+    if (!paneId) throw Object.assign(new Error("paneId is required"), { statusCode: 400 });
+    return json(response, 200, await experiments.catalog(paneId));
+  }
+  if (request.method === "POST" && url.pathname === "/api/experiments/run") return json(response, 200, await experiments.run(await readJson(request)));
+  if (request.method === "POST" && url.pathname === "/api/experiments/acceptance-suite") return json(response, 200, await experiments.runAcceptanceSuite(await readJson(request)));
+  if (request.method === "GET" && url.pathname === "/api/experiments/recent") return json(response, 200, { runs: await experiments.recent(Number(url.searchParams.get("limit")) || 20) });
+  if (request.method === "GET" && url.pathname.startsWith("/api/experiments/")) {
+    const runId = decodeURIComponent(url.pathname.slice("/api/experiments/".length));
+    const receipt = await experiments.get(runId);
+    if (!receipt) throw Object.assign(new Error("Experiment was not found"), { statusCode: 404 });
+    return json(response, 200, receipt);
   }
   if (request.method === "POST" && url.pathname === "/api/companion") {
     const body = await readJson(request);

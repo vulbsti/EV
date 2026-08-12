@@ -7,10 +7,13 @@ const state = {
   questionId: null,
   evidence: null,
   profile: null,
-  asking: false
+  asking: false,
+  catalog: null,
+  capabilityId: null,
+  labRunning: false
 };
 
-const ids = ["target-label", "evidence-state", "captured-at", "close-window", "refresh-evidence", "fact-pane", "fact-command", "fact-activity", "fact-cwd", "fact-git", "project-name", "project-summary", "project-sources", "change-count", "change-list", "validation-list", "terminal-preview", "session-label", "conversation", "prompt-chips", "question-form", "question", "ask", "ask-status", "feedback-count", "profile-list", "feedback-note", "limitations"];
+const ids = ["target-label", "evidence-state", "captured-at", "close-window", "refresh-evidence", "fact-pane", "fact-command", "fact-activity", "fact-cwd", "fact-git", "project-name", "project-summary", "project-sources", "task-objective", "task-criteria", "bind-task", "task-dialog", "task-form", "task-objective-input", "task-criteria-input", "task-error", "cancel-task", "cancel-task-footer", "change-count", "change-list", "validation-list", "terminal-preview", "session-label", "conversation", "prompt-chips", "question-form", "question", "ask", "ask-status", "feedback-count", "profile-list", "feedback-note", "limitations", "explanation-view", "lab-view", "lab-title", "lab-objective", "lab-score", "capability-select", "scenario-select", "run-experiment", "run-suite", "lab-unsupported", "lab-controls", "lab-run-status", "lab-run-id", "lab-run-tabs", "lab-pipeline", "lab-summary", "lab-metrics", "lab-trace", "lab-assertions", "lab-comparison", "lab-regression", "lab-acceptance", "lab-note"];
 const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 async function api(path, options) {
@@ -168,6 +171,10 @@ function renderEvidence(evidence) {
   el["project-name"].textContent = evidence.project?.name ?? "Project not identified";
   el["project-summary"].textContent = evidence.project?.summary ?? "No explicit project goal was found.";
   el["project-sources"].textContent = `${evidence.project?.sourcePaths?.length ?? 0} sources`;
+  el["task-objective"].textContent = evidence.taskContext?.objective ?? "No exact task objective is bound.";
+  el["task-criteria"].replaceChildren();
+  const criteria = evidence.taskContext?.acceptanceCriteria?.length ? evidence.taskContext.acceptanceCriteria : ["Project intent will be used as a weaker fallback."];
+  for (const criterion of criteria) el["task-criteria"].append(textNode("li", "", criterion));
   const changes = evidence.workspace.changes ?? [];
   el["change-count"].textContent = changes.length;
   el["change-list"].innerHTML = "";
@@ -199,6 +206,33 @@ function renderEvidence(evidence) {
   }
 }
 
+function openTaskDialog() {
+  const task = state.evidence?.taskContext;
+  el["task-objective-input"].value = task?.objective ?? "";
+  el["task-criteria-input"].value = (task?.acceptanceCriteria ?? []).join("\n");
+  el["task-error"].textContent = "";
+  el["task-dialog"].showModal();
+  el["task-objective-input"].focus();
+}
+
+async function bindTask(event) {
+  event.preventDefault();
+  const objective = el["task-objective-input"].value.trim();
+  const acceptanceCriteria = el["task-criteria-input"].value.split("\n").map((item) => item.trim()).filter(Boolean);
+  el["task-error"].textContent = "";
+  try {
+    await api("/api/explain/task-context", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paneId: state.paneId, objective, acceptanceCriteria })
+    });
+    await refreshEvidence();
+    el["task-dialog"].close();
+  } catch (error) {
+    el["task-error"].textContent = error.message;
+  }
+}
+
 function renderProfile(profile) {
   state.profile = profile;
   el["feedback-count"].textContent = `${profile.explicitFeedbackCount} explicit`;
@@ -221,6 +255,262 @@ function renderProfile(profile) {
     weight.textContent = preference.weight;
     item.append(name, bar, weight);
     el["profile-list"].append(item);
+  }
+}
+
+function switchStage(name) {
+  const lab = name === "lab";
+  el["explanation-view"].hidden = lab;
+  el["lab-view"].hidden = !lab;
+  document.querySelectorAll("[data-stage]").forEach((button) => button.classList.toggle("active", button.dataset.stage === name));
+}
+
+function selectedCapability() {
+  return state.catalog?.capabilities?.find((capability) => capability.id === state.capabilityId) ?? null;
+}
+
+function renderAcceptance(acceptance) {
+  el["lab-acceptance"].replaceChildren();
+  el["lab-score"].textContent = acceptance?.score ?? "0/10";
+  for (const gate of acceptance?.gates ?? []) {
+    const item = textNode("span", gate.passed ? "passed" : "", `${gate.passed ? "✓" : "○"} ${gate.id}`);
+    item.title = gate.label;
+    el["lab-acceptance"].append(item);
+  }
+}
+
+function renderPipeline(capability, trace = []) {
+  el["lab-pipeline"].replaceChildren();
+  capability.pipeline.forEach((step, index) => {
+    const event = trace.findLast((item) => item.stage === step.id);
+    const item = document.createElement("article");
+    if (event?.status) item.className = event.status;
+    item.append(textNode("strong", "", step.label), textNode("small", "", event ? event.status.toUpperCase() : "NOT RUN"));
+    if (event?.detail) item.title = event.detail;
+    el["lab-pipeline"].append(item);
+    if (index < capability.pipeline.length - 1) el["lab-pipeline"].append(textNode("i", "", "→"));
+  });
+}
+
+function renderControls(capability) {
+  el["lab-controls"].replaceChildren();
+  for (const control of capability.controls) {
+    const label = document.createElement("label");
+    label.dataset.controlLabel = control.id;
+    const title = document.createElement("span");
+    title.append(document.createTextNode(control.label));
+    let input;
+    if (control.type === "select") {
+      input = document.createElement("select");
+      for (const option of control.options) {
+        const item = document.createElement("option");
+        item.value = String(option);
+        item.textContent = String(option);
+        input.append(item);
+      }
+    } else {
+      input = document.createElement("input");
+      input.type = control.type === "boolean" ? "checkbox" : control.type;
+      if (control.type === "range") {
+        input.min = control.min;
+        input.max = control.max;
+        input.step = control.step;
+        const output = document.createElement("output");
+        title.append(output);
+        input.oninput = () => { output.textContent = input.value; };
+      }
+      if (control.type === "text") input.maxLength = control.maxLength;
+    }
+    input.dataset.labControl = control.id;
+    if (control.type === "boolean") label.className = "boolean-control";
+    label.append(title, input);
+    el["lab-controls"].append(label);
+  }
+}
+
+function applyScenario() {
+  const capability = selectedCapability();
+  if (!capability) return;
+  const scenario = capability.scenarios.find((item) => item.id === el["scenario-select"].value) ?? capability.scenarios[0];
+  for (const control of capability.controls) {
+    const input = el["lab-controls"].querySelector(`[data-lab-control="${CSS.escape(control.id)}"]`);
+    const value = Object.hasOwn(scenario.overrides, control.id) ? scenario.overrides[control.id] : control.default;
+    if (control.type === "boolean") input.checked = Boolean(value);
+    else input.value = String(value);
+    input.dispatchEvent(new Event("input"));
+  }
+}
+
+function renderCapability(capability) {
+  state.capabilityId = capability?.id ?? null;
+  el["scenario-select"].replaceChildren();
+  el["lab-controls"].replaceChildren();
+  el["lab-unsupported"].hidden = true;
+  if (!capability) {
+    el["lab-title"].textContent = "No executable capability";
+    el["lab-objective"].textContent = state.catalog?.unsupported?.message ?? "No capability manifest was found.";
+    el["lab-unsupported"].textContent = el["lab-objective"].textContent;
+    el["lab-unsupported"].hidden = false;
+    el["run-experiment"].disabled = true;
+    el["run-suite"].disabled = true;
+    renderAcceptance(null);
+    return;
+  }
+  el["lab-title"].textContent = capability.title;
+  el["lab-objective"].textContent = `${capability.objective} ${capability.change}`;
+  for (const scenario of capability.scenarios) {
+    const option = document.createElement("option");
+    option.value = scenario.id;
+    option.textContent = scenario.label;
+    el["scenario-select"].append(option);
+  }
+  renderControls(capability);
+  applyScenario();
+  renderPipeline(capability);
+  renderAcceptance(capability.acceptance);
+  const executable = capability.support === "executable";
+  el["run-experiment"].disabled = !executable;
+  el["run-suite"].disabled = !executable;
+  if (!executable) {
+    el["lab-unsupported"].textContent = `Missing adapter: ${capability.missingAdapter}. The model may explain this capability, but EV will not pretend it can execute it.`;
+    el["lab-unsupported"].hidden = false;
+  }
+  el["lab-run-status"].textContent = "READY";
+  el["lab-run-status"].className = "";
+  el["lab-run-id"].textContent = "No experiment yet";
+  el["lab-run-tabs"].replaceChildren();
+  el["lab-summary"].textContent = "Choose a scenario and run it against the registered adapter.";
+  for (const id of ["lab-metrics", "lab-trace", "lab-assertions", "lab-comparison", "lab-regression"]) el[id].replaceChildren();
+}
+
+async function loadCapabilities() {
+  state.catalog = await api(`/api/capabilities?paneId=${encodeURIComponent(state.paneId)}`);
+  el["capability-select"].replaceChildren();
+  for (const capability of state.catalog.capabilities) {
+    const option = document.createElement("option");
+    option.value = capability.id;
+    option.textContent = `${capability.title}${capability.support === "executable" ? "" : " · adapter missing"}`;
+    el["capability-select"].append(option);
+  }
+  const selected = state.catalog.capabilities.find((capability) => capability.id === state.capabilityId) ?? state.catalog.capabilities[0] ?? null;
+  if (selected) el["capability-select"].value = selected.id;
+  renderCapability(selected);
+}
+
+function readLabInputs() {
+  const capability = selectedCapability();
+  return Object.fromEntries(capability.controls.map((control) => {
+    const input = el["lab-controls"].querySelector(`[data-lab-control="${CSS.escape(control.id)}"]`);
+    const value = control.type === "boolean" ? input.checked : control.type === "range" ? Number(input.value) : input.value;
+    return [control.id, value];
+  }));
+}
+
+function listItem(title, detail, className = "") {
+  const article = document.createElement("article");
+  article.className = className;
+  article.append(textNode("strong", "", title), textNode("span", "", detail));
+  return article;
+}
+
+function renderReceiptTabs(receipts, selectedRunId) {
+  el["lab-run-tabs"].replaceChildren();
+  for (const receipt of receipts) {
+    const button = textNode("button", receipt.status, `${receipt.scenario.label} · ${receipt.status}`);
+    button.type = "button";
+    button.classList.toggle("active", receipt.runId === selectedRunId);
+    button.onclick = () => renderRun(receipt);
+    button.dataset.runId = receipt.runId;
+    el["lab-run-tabs"].append(button);
+  }
+}
+
+function renderRun(receipt) {
+  const capability = selectedCapability();
+  el["lab-run-tabs"].querySelectorAll("[data-run-id]").forEach((button) => button.classList.toggle("active", button.dataset.runId === receipt.runId));
+  el["lab-run-status"].textContent = receipt.status.toUpperCase();
+  el["lab-run-status"].className = receipt.status;
+  el["lab-run-id"].textContent = `${receipt.runId} · evidence ${receipt.evidenceRevision ?? "legacy"} · ${receipt.adapter}@${receipt.adapterVersion}`;
+  el["lab-summary"].textContent = receipt.summary;
+  renderPipeline(capability, receipt.trace);
+
+  el["lab-metrics"].replaceChildren();
+  const metricValues = [
+    ["ITERATIONS", receipt.metrics?.iterations],
+    ["CONCURRENCY", receipt.metrics?.concurrency],
+    ["P50", receipt.metrics?.latency ? `${receipt.metrics.latency.p50Ms} ms` : null],
+    ["P95", receipt.metrics?.latency ? `${receipt.metrics.latency.p95Ms} ms` : null],
+    ["THROUGHPUT", receipt.metrics ? `${receipt.metrics.throughputPerSecond}/s` : null],
+    ["ERROR RATE", receipt.metrics ? `${(receipt.metrics.errorRate * 100).toFixed(1)}%` : null],
+    ["ASSERTION FAIL", Number.isFinite(receipt.metrics?.assertionFailureRate) ? `${(receipt.metrics.assertionFailureRate * 100).toFixed(1)}%` : null],
+    ["HEAP Δ", receipt.metrics ? `${receipt.metrics.heapDeltaBytes} B` : null],
+    ["EXTERNAL COST", receipt.cost ? `$${receipt.cost.externalApiUsd.toFixed(4)}` : null]
+  ];
+  for (const [label, value] of metricValues.filter(([, value]) => value !== null && value !== undefined)) {
+    const item = document.createElement("div");
+    item.className = "lab-metric";
+    item.append(textNode("span", "", label), textNode("b", "", value));
+    el["lab-metrics"].append(item);
+  }
+
+  el["lab-trace"].replaceChildren(...receipt.trace.map((event) => listItem(`${event.stage} · ${event.status}`, event.detail, event.status)));
+  el["lab-assertions"].replaceChildren(...receipt.assertions.map((assertion) => listItem(`${assertion.passed ? "PASS" : "FAIL"} · ${assertion.label}`, `expected ${JSON.stringify(assertion.expected)} · actual ${JSON.stringify(assertion.actual)}`, assertion.passed ? "passed" : "failed")));
+  el["lab-comparison"].replaceChildren(
+    listItem("BASELINE", JSON.stringify(receipt.comparison?.baseline ?? "unavailable")),
+    listItem("CANDIDATE", JSON.stringify(receipt.comparison?.candidate ?? "unavailable")),
+    listItem("DELTA", JSON.stringify(receipt.comparison?.delta ?? "unavailable"))
+  );
+  el["lab-regression"].replaceChildren(receipt.regressionProposal
+    ? listItem(receipt.regressionProposal.title, `${receipt.regressionProposal.suggestedTest} Status: ${receipt.regressionProposal.status}.`, "failed")
+    : listItem("No failed contract", "A regression proposal is created automatically when an assertion fails.", "passed"));
+}
+
+async function refreshLabAcceptance() {
+  const fresh = await api(`/api/capabilities?paneId=${encodeURIComponent(state.paneId)}`);
+  state.catalog = fresh;
+  const capability = selectedCapability();
+  renderAcceptance(capability?.acceptance);
+}
+
+async function runLabExperiment(suite = false) {
+  const capability = selectedCapability();
+  if (!capability || state.labRunning) return;
+  state.labRunning = true;
+  el["run-experiment"].disabled = true;
+  el["run-suite"].disabled = true;
+  el["lab-run-status"].textContent = suite ? "RUNNING SUITE" : "RUNNING";
+  el["lab-run-status"].className = "running";
+  try {
+    if (suite) {
+      const result = await api("/api/experiments/acceptance-suite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paneId: state.paneId, capabilityId: capability.id })
+      });
+      const receipt = result.runs.find((run) => run.status === "failed") ?? result.runs.at(-1);
+      renderReceiptTabs(result.runs, receipt.runId);
+      renderRun(receipt);
+      renderAcceptance(result.acceptance);
+      el["lab-run-status"].textContent = result.acceptance.complete ? "SUITE 10/10" : `SUITE ${result.acceptance.score}`;
+    } else {
+      const receipt = await api("/api/experiments/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paneId: state.paneId, capabilityId: capability.id, scenarioId: el["scenario-select"].value, inputs: readLabInputs() })
+      });
+      renderReceiptTabs([receipt], receipt.runId);
+      renderRun(receipt);
+      await refreshLabAcceptance();
+    }
+  } catch (error) {
+    el["lab-run-status"].textContent = "ERROR";
+    el["lab-run-status"].className = "error";
+    el["lab-summary"].textContent = error.message;
+  } finally {
+    state.labRunning = false;
+    const executable = selectedCapability()?.support === "executable";
+    el["run-experiment"].disabled = !executable;
+    el["run-suite"].disabled = !executable;
   }
 }
 
@@ -318,9 +608,18 @@ el["prompt-chips"].onclick = (event) => {
   el.question.focus();
 };
 document.querySelectorAll("[data-feedback]").forEach((button) => button.onclick = () => sendFeedback(button.dataset.feedback));
+document.querySelectorAll("[data-stage]").forEach((button) => button.onclick = () => switchStage(button.dataset.stage));
+el["capability-select"].onchange = () => renderCapability(state.catalog.capabilities.find((capability) => capability.id === el["capability-select"].value));
+el["scenario-select"].onchange = applyScenario;
+el["run-experiment"].onclick = () => runLabExperiment(false);
+el["run-suite"].onclick = () => runLabExperiment(true);
+el["bind-task"].onclick = openTaskDialog;
+el["task-form"].onsubmit = bindTask;
+el["cancel-task"].onclick = () => el["task-dialog"].close();
+el["cancel-task-footer"].onclick = () => el["task-dialog"].close();
 
 try {
-  await Promise.all([refreshEvidence(), restoreSession()]);
+  await Promise.all([refreshEvidence(), restoreSession(), loadCapabilities()]);
 } catch (error) {
   addMessage({ role: "system", text: error.message, className: "error" });
 }

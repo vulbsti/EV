@@ -28,10 +28,35 @@ test("captures Git effects while withholding sensitive paths and raw patches fro
     await writeFile(join(root, "feature.js"), "export const api_key = 'topsecret';\nexport const ready = true;\n");
     await writeFile(join(root, "new-feature.js"), "export const newBehavior = 'visible';\n");
     await writeFile(join(root, ".env.local"), "PASSWORD=do-not-leak\n");
+    const experimentReceipt = {
+      runId: "experiment-proof",
+      paneId: "%1",
+      capabilityId: "parser",
+      capabilityTitle: "Parser",
+      adapter: "presentation-pipeline",
+      adapterVersion: 1,
+      authority: "in-memory-read-only",
+      scenario: { id: "stress", label: "Stress" },
+      inputs: { iterations: 100 },
+      completedAt: "2026-08-12T00:00:00.000Z",
+      status: "passed",
+      summary: "Real path completed.",
+      trace: [{ stage: "parse", status: "observed", detail: "Parsed." }],
+      output: { omitted: "large internal output" },
+      assertions: [{ id: "bounded", passed: true, actual: 6, expected: "<= 6" }],
+      comparison: { baseline: { steps: 10 }, candidate: { steps: 6 } },
+      metrics: { iterations: 100, throughputPerSecond: 1000 },
+      cost: { externalApiUsd: 0 },
+      regressionProposal: null,
+      gates: { execution: true }
+    };
 
     const evidence = await captureExplanationEvidence({
       pane: { paneId: "%1", sessionName: "test", command: "codex", path: root, activity: "working", tail: "npm test\n10 tests passed" },
-      store: { async recent() { return []; } }
+      store: {
+        async recent() { return []; },
+        async recentExperimentRuns() { return [experimentReceipt]; }
+      }
     });
     assert.equal(evidence.workspace.repository, true);
     assert.equal(evidence.workspace.changes.some((change) => change.path === "feature.js"), true);
@@ -44,6 +69,9 @@ test("captures Git effects while withholding sensitive paths and raw patches fro
     assert.match(evidence.project.summary, /active agent work understandable/);
     assert.match(evidence.project.sources.find((source) => source.path === "README.md").excerpt, /observable effects/);
     assert.match(evidence.limitations[0], /bounded recent console capture/);
+    assert.equal(evidence.experimentReceipts[0].runId, "experiment-proof");
+    assert.equal(evidence.experimentReceipts[0].metrics.iterations, 100);
+    assert.equal("output" in evidence.experimentReceipts[0], false, "large adapter output must stay out of explainer evidence");
 
     const visible = publicEvidence(evidence);
     assert.equal("patch" in visible.workspace, false);
@@ -55,7 +83,7 @@ test("captures Git effects while withholding sensitive paths and raw patches fro
     await new Promise((resolve) => setTimeout(resolve, 2));
     const recaptured = await captureExplanationEvidence({
       pane: { paneId: "%1", sessionName: "test", command: "codex", path: root, activity: "working", tail: "npm test\n10 tests passed" },
-      store: { async recent() { return []; } }
+      store: { async recent() { return []; }, async recentExperimentRuns() { return [experimentReceipt]; } }
     });
     assert.equal(recaptured.revision, evidence.revision, "capture time alone must not change the evidence revision");
   } finally {

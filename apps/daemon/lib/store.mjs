@@ -64,7 +64,8 @@ export class EventStore {
         evidenceRevision: event.payload.evidenceRevision,
         occurredAt: event.occurredAt,
         durationMs: event.payload.durationMs ?? null,
-        presentation: event.payload.presentation ?? null
+        presentation: event.payload.presentation ?? null,
+        presentationDiagnostics: event.payload.presentationDiagnostics ?? null
       }));
     return {
       sessionId,
@@ -107,5 +108,33 @@ export class EventStore {
       .sort((a, b) => b[1] - a[1])
       .map(([name, weight]) => ({ name, weight }));
     return { explicitFeedbackCount, weights, preferences };
+  }
+
+  async latestTaskContext(paneId) {
+    const event = (await this.all()).findLast((item) => item.type === "task.context.bound" && item.payload?.paneId === paneId);
+    return event ? { ...event.payload, boundAt: event.occurredAt } : null;
+  }
+
+  async experimentRun(runId) {
+    const events = (await this.all()).filter((event) => event.correlationId === runId);
+    const started = events.find((event) => event.type === "experiment.started");
+    const completed = events.findLast((event) => event.type === "experiment.completed" || event.type === "experiment.failed");
+    if (!started) return null;
+    return completed?.payload?.receipt ?? {
+      runId,
+      capabilityId: started.payload.capabilityId,
+      scenarioId: started.payload.scenarioId,
+      status: "running",
+      startedAt: started.occurredAt,
+      inputs: started.payload.inputs
+    };
+  }
+
+  async recentExperimentRuns(limit = 20) {
+    return (await this.all())
+      .filter((event) => event.type === "experiment.completed" || event.type === "experiment.failed")
+      .slice(-Math.max(1, Math.min(100, limit)))
+      .reverse()
+      .map((event) => event.payload.receipt);
   }
 }
