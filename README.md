@@ -51,6 +51,14 @@ npm run validate:assistant-run -- artifacts/assistant-runs/2026-09-21/phase0-b0-
 
 The run deliberately omits screenshots when the live terminal wall contains unrelated private content; it retains the computer-use journey and correlated event receipts instead.
 
+The first Phase 2 worker canary is intentionally narrower than product integration: it gives a pinned Pi process no tools, passes one bounded local fixture as text, and lets EV write and verify the returned artifact.
+
+```bash
+npm run assistant:phase2-canary
+```
+
+Outputs and retained Pi sessions stay under ignored `data/assistant-worker/`. A successful command proves the adapter/supervisor/artifact path, not the browser lifecycle or the full Phase 2 exit gate.
+
 Each run creates private-permission JSON/JSONL evidence under `artifacts/lab/<run-id>/`. Terminal capture stores sizes, timing, line counts, and hashes—not raw terminal contents.
 
 For the manual browser microphone probe:

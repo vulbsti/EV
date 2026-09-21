@@ -3,6 +3,7 @@ data/*.jsonl
 data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
+data/assistant-worker/
 .env
 *.pcm
 *.wav

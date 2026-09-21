@@ -13,6 +13,7 @@
     "lab:summarize": "node scripts/summarize-lab.mjs",
     "validate:assistant-run": "node scripts/validate-assistant-run.mjs",
     "assistant:phase0": "node scripts/create-phase0-run.mjs",
+    "assistant:phase2-canary": "node scripts/run-phase2-worker-canary.mjs",
     "prototype": "node apps/daemon/server.mjs"
   },
   "engines": {

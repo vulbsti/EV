@@ -201,6 +201,8 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 
 ### Phase 2 — one real supervised worker
 
+**Status (2026-09-21):** started. The standalone live canary now has a pinned no-tool Pi adapter, a single-process persisted lifecycle with lease tokens, process-group timeout/cancel primitives, and EV-side artifact verification. Three real launch-brief runs completed; the first exposed stale run-context wording, the corrected rerun passed review, and the third proved the exact Pi version gate. Cross-process transactional ownership, supervisor-driven cancellation, reconciled restart recovery, conversation/UI integration, and browser fault journeys remain open, so Phase 2 is not complete.
+
 **Question:** Can EV complete, verify, and return one bounded local task while chat remains usable?
 
 **Indicative effort:** 4–7 working days.

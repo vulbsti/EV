@@ -190,6 +190,31 @@ The task-truth and reconnect ambiguity that blocked a worker is resolved. Phase 
 
 Phase 2 should start with one local-files-only supervised worker, while preserving this same client-ID, transaction, honest-state, and browser-recovery behavior. Do not add connectors or personal memory in that phase.
 
+## Phase 2 S1 — real no-tool Pi worker canary
+
+Date: 2026-09-21
+
+### Implemented direction
+
+- Added a single-process persisted supervisor canary with lease tokens, terminal-state guards, manual requeue recovery, and artifact receipt verification. Unit tests cover these state transitions, but cross-process locking and reconciliation are not implemented.
+- Added a Pi adapter pinned to the installed `0.84.4` CLI for the live canary. It starts a retained session with structured JSONL and disables built-in tools, extensions, skills, prompt templates, themes, context files, and project approval.
+- The first capability passes one bounded local fixture as prompt text. Pi has no filesystem or shell tools. EV writes the returned Markdown and verifies its size, SHA-256 digest, location, and required sections before marking the supervisor task complete.
+
+### Actual worker results
+
+- A provider-readiness check passed for `opencode-go` without exposing credentials.
+- A minimal live Pi probe returned the expected final answer using 435 tokens at a reported cost of USD 0.00006615.
+- The first launch-brief canary completed with a verified 2,708-byte artifact. It used 1,610 tokens at a reported cost of USD 0.00061545.
+- Review found a semantic lag despite the mechanical pass: the brief repeated “add the worker” as a next action even though that worker was producing the brief.
+- The run context and acceptance check were tightened. The second canary completed with a verified 2,270-byte artifact, correctly describing the live canary as present and browser integration/recovery as pending. It used 1,659 tokens at a reported cost of USD 0.0006102.
+- A third canary exercised the exact Pi `0.84.4` version gate and completed with a verified 2,696-byte artifact. It used 1,826 tokens at a reported cost of USD 0.0007104.
+- Supervisor evidence for each successful run is `created -> leased -> started -> completed`; the artifact hash and byte count are re-read from EV-owned storage before completion.
+- Adapter timeout/cancel can terminate the Pi process group, but supervisor cancellation is not wired to that adapter yet. No browser cancellation or daemon-restart recovery claim is made.
+
+### Assessment and next decision
+
+The worker/model is already useful for the bounded synthesis task, and the first observed miss was context framing rather than orchestration failure. Do not change models yet. The next slice must first replace the single-process JSON writer with one authoritative transactional owner and wire cancellation to the process. Then product integration can route only this fixed capability from conversation, show authoritative queued/working/completed/failed/cancelled state, return the verified artifact, and exercise cancellation plus daemon restart through computer use. General filesystem tools, connectors, memory, and broad host access remain excluded.
+
 ## Future entry format
 
 Each new entry links to its run bundle and records:
