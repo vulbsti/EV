@@ -60,6 +60,24 @@ test("material source change creates one prepare-only receipt and preserves inje
   } finally { await f.close(); }
 });
 
+test("baseline-only mandate records the initial provider revision without preparing work", async () => {
+  const f = await fixture();
+  try {
+    await f.store.createResponsibility({
+      responsibilityId: "baseline-watch",
+      ownerId: "user-1",
+      mandate: { ...mandate, initialObservation: "baseline_only" }
+    });
+    const baseline = await f.store.observe({ responsibilityId: "baseline-watch", observation: { sourceRevision: "100", payload: { date: "2026-10-01", blocker: "review" } } });
+    assert.equal(baseline.observation.state, "unchanged");
+    assert.equal(baseline.observation.reason, "baseline established without preparing work");
+    assert.equal(baseline.task, null);
+    const changed = await f.store.observe({ responsibilityId: "baseline-watch", observation: { sourceRevision: "101", payload: { date: "2026-10-02", blocker: "review" } } });
+    assert.equal(changed.observation.state, "fresh");
+    assert.ok(changed.task);
+  } finally { await f.close(); }
+});
+
 test("material fields suppress irrelevant changes and queue a later material revision", async () => {
   const f = await fixture();
   try {
@@ -104,6 +122,34 @@ test("numeric source revisions reject out-of-order data without moving the curso
   } finally { await f.close(); }
 });
 
+test("timestamp-hash source revisions reject an older connected snapshot", async () => {
+  const f = await fixture();
+  try {
+    await create(f);
+    await f.store.observe({ responsibilityId: "launch-watch", observation: { sourceRevision: "1790018478000:aaaaaaaaaaaaaaaa", cursor: "cursor:new", payload: { date: "2026-10-10" } } });
+    const old = await f.store.observe({ responsibilityId: "launch-watch", observation: { sourceRevision: "1790018477000:bbbbbbbbbbbbbbbb", cursor: "cursor:old", payload: { date: "2026-10-09" } } });
+    assert.equal(old.observation.state, "out_of_order");
+    assert.equal(old.task, null);
+    const saved = await f.store.getResponsibility("launch-watch");
+    assert.equal(saved.lastSourceRevision, "1790018478000:aaaaaaaaaaaaaaaa");
+    assert.equal(saved.lastCursor, "cursor:new");
+  } finally { await f.close(); }
+});
+
+test("only one active responsibility can watch the same owner resource and destination", async () => {
+  const f = await fixture();
+  try {
+    await create(f);
+    await assert.rejects(
+      f.store.createResponsibility({ responsibilityId: "duplicate-watch", ownerId: "user-1", mandate }),
+      (error) => error?.code === "RESPONSIBILITY_SCOPE_EXISTS"
+    );
+    await f.store.revokeResponsibility({ responsibilityId: "launch-watch", reason: "replace watcher" });
+    const replacement = await f.store.createResponsibility({ responsibilityId: "replacement-watch", ownerId: "user-1", mandate });
+    assert.equal(replacement.status, "active");
+  } finally { await f.close(); }
+});
+
 test("revocation cancels queued receipts and blocks later observations", async () => {
   const f = await fixture();
   try {
@@ -119,6 +165,21 @@ test("revocation cancels queued receipts and blocks later observations", async (
     const later = await f.store.observe({ responsibilityId: "launch-watch", observation: { sourceRevision: "2", payload: { date: "2026-10-02" } } });
     assert.equal(later.observation.state, "revoked");
     assert.equal(later.task, null);
+  } finally { await f.close(); }
+});
+
+test("revocation invalidates a consumed receipt before submission is confirmed", async () => {
+  const f = await fixture();
+  try {
+    await create(f);
+    const first = await f.store.observe({ responsibilityId: "launch-watch", observation: { sourceRevision: "1", payload: { date: "2026-10-01" } } });
+    await f.store.consumePreparedTask({ taskId: first.task.taskId, supervisorTaskId: "standing-prepared-race" });
+    await f.store.revokeResponsibility({ responsibilityId: "launch-watch", reason: "revoke during submit" });
+    assert.equal((await f.store.getPreparedTask(first.task.taskId)).status, "revoked");
+    await assert.rejects(
+      f.store.confirmPreparedTaskSubmission({ taskId: first.task.taskId, supervisorTaskId: "standing-prepared-race" }),
+      (error) => error?.code === "PREPARED_TASK_AUTHORITY_REVOKED"
+    );
   } finally { await f.close(); }
 });
 

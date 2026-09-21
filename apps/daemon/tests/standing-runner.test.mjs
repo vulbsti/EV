@@ -22,6 +22,8 @@ class FakeWorkerService {
     this.calls = [];
     this.accepted = 0;
     this.failAfterAccept = false;
+    this.onSubmit = null;
+    this.cancelled = [];
   }
 
   async submitTask(input) {
@@ -31,10 +33,19 @@ class FakeWorkerService {
     const task = { taskId: input.taskId, status: "queued", input: structuredClone(input) };
     this.tasks.set(input.taskId, task);
     this.accepted += 1;
+    if (this.onSubmit) await this.onSubmit(structuredClone(task));
     if (this.failAfterAccept) {
       this.failAfterAccept = false;
       throw Object.assign(new Error("runner crashed after supervisor accepted task"), { code: "SIMULATED_CRASH" });
     }
+    return structuredClone(task);
+  }
+
+  async cancelTask({ taskId, reason }) {
+    this.cancelled.push({ taskId, reason });
+    const task = this.tasks.get(taskId) ?? { taskId };
+    task.status = "cancelled";
+    this.tasks.set(taskId, task);
     return structuredClone(task);
   }
 }
@@ -85,6 +96,24 @@ test("one tick observes a local fixture and submits one scoped prepare-only task
   } finally { await f.close(); }
 });
 
+test("standing work receives reviewed personal context without changing its authority", async () => {
+  const f = await fixture();
+  try {
+    const result = await new StandingResponsibilityRunner({
+      store: f.store,
+      connector: f.connector,
+      workerService: f.worker,
+      workspaceRoot: f.workspaceRoot,
+      responsibilityId: "launch-watch",
+      buildContext: async ({ taskId }) => ({ text: "# Personal guidance\n\n- Keep this concise.", manifestId: `manifest:${taskId}` })
+    }).tick();
+    assert.equal(result.status, "submitted");
+    assert.match(f.worker.calls[0].context, /Keep this concise/);
+    assert.match(f.worker.calls[0].metadata.contextManifestId, /^manifest:/);
+    assert.equal(f.worker.calls[0].metadata.approvalBoundary, "prepare_only");
+  } finally { await f.close(); }
+});
+
 test("restart after supervisor acceptance retries the same idempotency key without duplicate work", async () => {
   const f = await fixture();
   let restartedStore;
@@ -124,6 +153,24 @@ test("revoked responsibility does not read its source or submit work", async () 
     assert.equal(result.status, "inactive");
     assert.equal(reads, 0);
     assert.equal(f.worker.calls.length, 0);
+  } finally { await f.close(); }
+});
+
+test("runner cancels a supervisor task when authority is revoked during submission", async () => {
+  const f = await fixture();
+  try {
+    f.worker.onSubmit = async () => {
+      await f.store.revokeResponsibility({ responsibilityId: "launch-watch", reason: "race canary" });
+    };
+    await assert.rejects(
+      f.runner().tick(),
+      (error) => error?.code === "PREPARED_TASK_AUTHORITY_REVOKED"
+    );
+    assert.equal(f.worker.accepted, 1);
+    assert.deepEqual(f.worker.cancelled, [{
+      taskId: f.worker.calls[0].taskId,
+      reason: "standing-authority-revoked-before-confirmation"
+    }]);
   } finally { await f.close(); }
 });
 

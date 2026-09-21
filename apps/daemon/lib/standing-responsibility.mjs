@@ -86,6 +86,12 @@ CREATE TABLE IF NOT EXISTS standing_events (
 );
 CREATE INDEX IF NOT EXISTS standing_event_order
   ON standing_events(responsibility_id, revision, event_id);
+CREATE UNIQUE INDEX IF NOT EXISTS standing_active_resource
+  ON standing_responsibilities(
+    owner_id,
+    json_extract(mandate_json, '$.resourceRef'),
+    json_extract(mandate_json, '$.reportingDestination')
+  ) WHERE status = 'active';
 `;
 
 function codedError(code, message) {
@@ -149,11 +155,21 @@ function revisionNumber(value) {
   return null;
 }
 
+function timestampRevision(value) {
+  if (typeof value !== "string") return null;
+  const match = value.match(/^(\d+):[a-f0-9]{8,64}$/i);
+  if (!match) return null;
+  try { return BigInt(match[1]); } catch { return null; }
+}
+
 function compareRevision(incoming, current) {
   if (incoming === current) return 0;
   const a = revisionNumber(incoming);
   const b = revisionNumber(current);
   if (a !== null && b !== null) return a < b ? -1 : 1;
+  const timestampA = timestampRevision(incoming);
+  const timestampB = timestampRevision(current);
+  if (timestampA !== null && timestampB !== null && timestampA !== timestampB) return timestampA < timestampB ? -1 : 1;
   return null;
 }
 
@@ -176,6 +192,9 @@ function mandateShape(mandate) {
     freshnessMs,
     preparedOutput: { ...preparedOutput, instructions },
     approvalBoundary,
+    connector: mandate.connector ?? null,
+    initialObservation: mandate.initialObservation === "baseline_only" ? "baseline_only" : "prepare",
+    attentionRule: mandate.attentionRule ?? "material_change_prepare_quietly",
     budget: mandate.budget ?? null,
     expiresAt: mandate.expiresAt ? iso(mandate.expiresAt, "mandate.expiresAt") : null,
     reportingDestination: mandate.reportingDestination ?? "conversation"
@@ -339,17 +358,24 @@ export class StandingResponsibilityStore {
     requiredText(ownerId, "ownerId");
     const normalized = mandateShape(mandate);
     const now = this._now();
-    this._transaction(() => {
-      if (this._row(responsibilityId)) throw codedError("RESPONSIBILITY_EXISTS", `Responsibility ${responsibilityId} already exists`);
-      const revision = this._nextRevision();
-      this.database.prepare(`INSERT INTO standing_responsibilities
-        (responsibility_id, owner_id, status, mandate_version, mandate_json, created_at, updated_at, revision)
-        VALUES (?, ?, 'active', 1, ?, ?, ?, ?)`)
-        .run(responsibilityId, ownerId, json(normalized, "mandate"), now, now, revision);
-      this.database.prepare("INSERT INTO standing_events (event_id, responsibility_id, type, data_json, at, revision) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(randomUUID(), responsibilityId, "created", "{}", now, revision);
-      this._expireRowIfDue(this._row(responsibilityId), now);
-    });
+    try {
+      this._transaction(() => {
+        if (this._row(responsibilityId)) throw codedError("RESPONSIBILITY_EXISTS", `Responsibility ${responsibilityId} already exists`);
+        const revision = this._nextRevision();
+        this.database.prepare(`INSERT INTO standing_responsibilities
+          (responsibility_id, owner_id, status, mandate_version, mandate_json, created_at, updated_at, revision)
+          VALUES (?, ?, 'active', 1, ?, ?, ?, ?)`)
+          .run(responsibilityId, ownerId, json(normalized, "mandate"), now, now, revision);
+        this.database.prepare("INSERT INTO standing_events (event_id, responsibility_id, type, data_json, at, revision) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(randomUUID(), responsibilityId, "created", "{}", now, revision);
+        this._expireRowIfDue(this._row(responsibilityId), now);
+      });
+    } catch (error) {
+      if (error?.code === "SQLITE_CONSTRAINT_UNIQUE" || /standing_active_resource/.test(String(error?.message ?? ""))) {
+        throw codedError("RESPONSIBILITY_SCOPE_EXISTS", "An active responsibility already watches this resource for this destination");
+      }
+      throw error;
+    }
     return this.getResponsibility(responsibilityId);
   }
 
@@ -380,7 +406,7 @@ export class StandingResponsibilityStore {
       const event = this._event(responsibilityId, "revoked", { reason: safeReason, mandateVersion: row.mandate_version });
       this.database.prepare("UPDATE standing_responsibilities SET status = 'revoked', revoked_at = ?, revoke_reason = ?, updated_at = ?, revision = ? WHERE responsibility_id = ?")
         .run(now, safeReason, event.at, event.revision, responsibilityId);
-      this.database.prepare("UPDATE standing_prepared_tasks SET status = 'revoked' WHERE responsibility_id = ? AND status = 'queued'")
+      this.database.prepare("UPDATE standing_prepared_tasks SET status = 'revoked' WHERE responsibility_id = ? AND (status = 'queued' OR (status = 'consumed' AND submission_confirmed_at IS NULL))")
         .run(responsibilityId);
     });
     return this.getResponsibility(responsibilityId);
@@ -422,7 +448,11 @@ export class StandingResponsibilityStore {
         state = "out_of_order";
         reason = "source revision is older than the accepted revision";
       } else if (explicitState === "fresh") {
-        if (row.last_source_revision === null || row.last_material_hash !== incomingMaterialHash) {
+        if (row.last_source_revision === null && mandate.initialObservation === "baseline_only") {
+          isMaterial = false;
+          state = "unchanged";
+          reason = "baseline established without preparing work";
+        } else if (row.last_source_revision === null || row.last_material_hash !== incomingMaterialHash) {
           isMaterial = true;
           state = "fresh";
           reason = "material change";
@@ -513,6 +543,26 @@ export class StandingResponsibilityStore {
     return clone(mapObservation(row));
   }
 
+  async listObservations({ responsibilityId = null, limit = 20 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw codedError("INVALID_INPUT", "limit must be between 1 and 200");
+    const rows = responsibilityId
+      ? this.database.prepare("SELECT * FROM standing_observations WHERE responsibility_id = ? ORDER BY received_at DESC, observation_id DESC LIMIT ?").all(responsibilityId, limit)
+      : this.database.prepare("SELECT * FROM standing_observations ORDER BY received_at DESC, observation_id DESC LIMIT ?").all(limit);
+    return clone(rows.map(mapObservation));
+  }
+
+  async recordWakeFailure({ responsibilityId, error }) {
+    requiredText(responsibilityId, "responsibilityId");
+    const code = typeof error?.code === "string" && error.code.length <= 128 ? error.code : "STANDING_WAKE_FAILED";
+    const message = typeof error?.message === "string" ? error.message.slice(0, 1000) : "Standing responsibility check failed";
+    let event;
+    this._transaction(() => {
+      this._require(responsibilityId);
+      event = this._event(responsibilityId, "wake_failed", { code, message });
+    });
+    return clone(event);
+  }
+
   async getPreparedTask(taskId) {
     this._expireDueResponsibilities();
     return clone(mapTask(this.database.prepare("SELECT * FROM standing_prepared_tasks WHERE task_id = ?").get(taskId)));
@@ -559,6 +609,10 @@ export class StandingResponsibilityStore {
     return clone(this._transaction(() => {
       const row = this.database.prepare("SELECT * FROM standing_prepared_tasks WHERE task_id = ?").get(taskId);
       if (!row) throw codedError("PREPARED_TASK_NOT_FOUND", `Unknown prepared task: ${taskId}`);
+      const responsibility = this._expireRowIfDue(this._require(row.responsibility_id));
+      if (responsibility.status !== "active" || row.mandate_version !== responsibility.mandate_version || row.status === "revoked") {
+        throw codedError("PREPARED_TASK_AUTHORITY_REVOKED", "Prepared task authority was revoked before submission was confirmed");
+      }
       if (row.status !== "consumed" || row.supervisor_task_id !== supervisorTaskId) {
         throw codedError("PREPARED_TASK_LINK_CONFLICT", "Prepared task is not reserved for this supervisor task");
       }

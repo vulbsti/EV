@@ -288,13 +288,13 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 
 ### Phase 4 — one read-only connected standing responsibility
 
-**Status (2026-09-21):** provider-neutral core and local live canary complete; real connected alpha blocked on provider selection/authentication. The SQLite mandate/reconciliation boundary versions responsibilities, cursors and source revisions, suppresses duplicate/out-of-order events, reports stale/no-data states, treats connected text as untrusted data, revokes queued work, and hands material changes to one deterministic prepare-only worker task. Two local source revisions produced verified scoped artifacts, a repeated revision produced no task, and revocation blocked the later revision. This is readiness evidence, not the three-real-change exit gate.
+**Status (2026-09-22):** bounded GitHub pull-request alpha accepted. The selected provider/test workspace is GitHub PR #2 through a strict read-only host connector. The product renders the mandate before activation, establishes a baseline without inventing work, polls with the browser closed, injects explicit memory through an exact context manifest, and projects recent verified outcomes back into the assistant UI. Three real PR-body changes produced three distinct attributed artifacts; repeated polling produced no duplicates. The third run survived a graceful daemon restart as `started -> interrupted -> started -> completed`. A source injection was identified as untrusted and not followed. Revocation persisted before a later real PR update, which produced no fourth task. The deterministic stale/no-data canary produced no task or invented current data. This accepts the narrow technical Phase 4 gate; repeated personal use must still confirm the measured setup actually saves attention.
 
 **Question:** Can EV notice a meaningful external change while the browser is closed and prepare a useful, current result without taking consequential action?
 
 **Indicative effort:** 5–8 working days after the selected connection is available.
 
-**Implementation precondition:** Select one real repeated workflow and one provider. The working default is a chosen Notion launch tracker, but the provider is not frozen until its test workspace, scopes, and access method are confirmed. Start with a mock adapter using the same contract; then move to a limited real account or test workspace.
+**Selected workflow:** Watch a reviewed GitHub pull request used as the launch-status source. Material title, body, state, draft-status, or head-revision changes may prepare a briefing and storyboard draft. The connection is host-side and read-only; no GitHub credential or write method is available to Pi.
 
 **Implement**
 

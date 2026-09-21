@@ -14,6 +14,10 @@ import { planAssistantTurn } from "./lib/assistant-intake.mjs";
 import { AssistantSupervisor } from "./lib/assistant-supervisor.mjs";
 import { AssistantWorkerService } from "./lib/assistant-worker-service.mjs";
 import { AssistantMemoryStore } from "./lib/assistant-memory.mjs";
+import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
+import { StandingResponsibilityStore } from "./lib/standing-responsibility.mjs";
+import { StandingResponsibilityRunner } from "./lib/standing-runner.mjs";
+import { StandingResponsibilityScheduler } from "./lib/standing-scheduler.mjs";
 import { CodexAppServer } from "./lib/codex-app-server.mjs";
 import { createExplainer } from "./lib/explainer.mjs";
 import { createExperimentRunner } from "./lib/experiment-runner.mjs";
@@ -37,6 +41,8 @@ const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSuper
 await assistantWorkers.start();
 const assistantMemory = AssistantMemoryStore.open({ path: join(projectRoot, "data", "assistant-memory.sqlite") });
 const assistantOwnerId = "default-person";
+const standingStore = StandingResponsibilityStore.open({ path: join(projectRoot, "data", "assistant-standing.sqlite") });
+const githubStandingConnector = new GitHubPullRequestConnector();
 
 const config = {
   host: configuredHost,
@@ -45,8 +51,31 @@ const config = {
   sttModel: process.env.OPENROUTER_STT_MODEL ?? "x-ai/grok-stt-1.0",
   ttsModel: process.env.OPENROUTER_TTS_MODEL ?? "x-ai/grok-voice-tts-1.0",
   ttsVoice: process.env.OPENROUTER_TTS_VOICE ?? "eve",
-  maxAudioBytes: 15 * 1024 * 1024
+  maxAudioBytes: 15 * 1024 * 1024,
+  standingPollMs: Math.max(1_000, Number(process.env.EV_STANDING_POLL_MS ?? 60_000) || 60_000)
 };
+const standingScheduler = new StandingResponsibilityScheduler({
+  intervalMs: config.standingPollMs,
+  listResponsibilities: () => standingStore.listResponsibilities({ status: "active" }),
+  createRunner: (responsibility) => {
+    if (responsibility.mandate.connector !== "github-pull-request-v1" || !responsibility.mandate.resourceRef.startsWith("github://")) {
+      throw Object.assign(new Error("No reviewed connector is registered for this responsibility"), { code: "CONNECTOR_NOT_ALLOWED" });
+    }
+    return new StandingResponsibilityRunner({
+      store: standingStore,
+      connector: githubStandingConnector,
+      workerService: assistantWorkers,
+      workspaceRoot: join(assistantWorkerRoot, "workspaces"),
+      responsibilityId: responsibility.responsibilityId,
+      buildContext: buildStandingPersonalContext
+    });
+  },
+  onFailure: async (failure) => {
+    if (failure.responsibilityId) await standingStore.recordWakeFailure({ responsibilityId: failure.responsibilityId, error: failure.error });
+  }
+});
+await standingScheduler.tickNow();
+standingScheduler.start();
 const paneActivity = new Map();
 let snapshotPromise = null;
 let snapshotExpiresAt = 0;
@@ -87,6 +116,60 @@ function publicTask(task) {
     revision: task.revision,
     contextManifestId: task.input?.metadata?.contextManifestId ?? null,
     history: task.history
+  };
+}
+
+async function buildStandingPersonalContext({ responsibility, taskId }) {
+  const guidance = assistantMemory.recall({ ownerId: assistantOwnerId, scope: "global" });
+  const claimRevisionIds = guidance.map((claim) => claim.current.revisionId);
+  const sourceIds = [...new Set(guidance.flatMap((claim) => claim.sources.map((source) => source.sourceId)))];
+  const conversationId = responsibility.mandate.reportingDestination ?? "default";
+  const manifest = assistantMemory.buildContextManifest({
+    ownerId: assistantOwnerId,
+    taskId,
+    conversationId,
+    scope: "global",
+    claimRevisionIds,
+    sourceIds,
+    tokenBudget: 1200
+  });
+  return {
+    manifestId: manifest.manifestId,
+    text: guidance.length
+      ? `# Personal guidance\n\n${guidance.map((claim) => `- ${String(claim.current.value)}`).join("\n")}\n\nContext manifest: ${manifest.manifestId}`
+      : `Context manifest: ${manifest.manifestId} (no active personal guidance)`
+  };
+}
+
+async function publicResponsibility(responsibility) {
+  const observations = await standingStore.listObservations({ responsibilityId: responsibility.responsibilityId, limit: 1 });
+  const prepared = await standingStore.listPreparedTasks({ responsibilityId: responsibility.responsibilityId });
+  const latestPrepared = prepared.at(-1) ?? null;
+  const task = latestPrepared?.supervisorTaskId
+    ? await assistantSupervisor.getTask(latestPrepared.supervisorTaskId).catch(() => null)
+    : null;
+  const latestFailure = [...(responsibility.events ?? [])].reverse().find((event) => event.type === "wake_failed") ?? null;
+  const updates = await Promise.all(prepared.slice(-10).reverse().map(async (preparedTask) => ({
+    preparedTask,
+    observation: await standingStore.getObservation(preparedTask.observationId),
+    task: preparedTask.supervisorTaskId
+      ? publicTask(await assistantSupervisor.getTask(preparedTask.supervisorTaskId).catch(() => null))
+      : null
+  })));
+  return {
+    responsibilityId: responsibility.responsibilityId,
+    status: responsibility.status,
+    revision: responsibility.revision,
+    mandateVersion: responsibility.mandateVersion,
+    mandate: responsibility.mandate,
+    createdAt: responsibility.createdAt,
+    updatedAt: responsibility.updatedAt,
+    lastSourceRevision: responsibility.lastSourceRevision,
+    lastObservation: observations[0] ?? null,
+    latestFailure,
+    preparedTask: latestPrepared,
+    task: publicTask(task),
+    updates
   };
 }
 
@@ -312,6 +395,88 @@ async function handleApi(request, response, url) {
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
     return json(response, 200, { conversationId, ...await publicConversation(conversationId, after) });
   }
+  if (request.method === "POST" && url.pathname === "/api/assistant/connections/github/verify") {
+    const body = await readJson(request);
+    const resourceRef = githubStandingConnector.normalizeResourceRef(String(body.resourceRef ?? ""));
+    const observation = await githubStandingConnector.read({ resourceRef });
+    return json(response, 200, {
+      connection: { provider: "github", mode: "read_only", credentialLocation: "trusted-host", writesAllowed: false },
+      source: {
+        resourceRef,
+        sourceRevision: observation.sourceRevision,
+        title: observation.payload.pullRequest.title,
+        state: observation.payload.pullRequest.state,
+        updatedAt: observation.payload.pullRequest.updatedAt,
+        url: observation.payload.pullRequest.url
+      }
+    });
+  }
+  if (request.method === "GET" && url.pathname === "/api/assistant/responsibilities") {
+    const responsibilities = await standingStore.listResponsibilities();
+    return json(response, 200, { responsibilities: await Promise.all(responsibilities.map(publicResponsibility)) });
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/responsibilities") {
+    const body = await readJson(request);
+    const conversationId = String(body.conversationId ?? "default");
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
+    const resourceRef = githubStandingConnector.normalizeResourceRef(String(body.resourceRef ?? ""));
+    const expiry = body.expiresAt ? new Date(body.expiresAt) : new Date(Date.now() + 30 * 24 * 60 * 60_000);
+    if (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now()) throw Object.assign(new Error("expiresAt must be a future timestamp"), { statusCode: 400 });
+    const existing = (await standingStore.listResponsibilities({ status: "active" }))
+      .find((item) => item.mandate.resourceRef === resourceRef && item.mandate.reportingDestination === conversationId);
+    if (existing) return json(response, 200, { replayed: true, responsibility: await publicResponsibility(existing) });
+    const initial = await githubStandingConnector.read({ resourceRef });
+    let responsibility;
+    try {
+      responsibility = await standingStore.createResponsibility({
+        ownerId: assistantOwnerId,
+        mandate: {
+          connector: "github-pull-request-v1",
+          resourceRef,
+          trigger: { kind: "poll", intervalMs: config.standingPollMs },
+          materialFields: ["pullRequest.title", "pullRequest.body", "pullRequest.state", "pullRequest.isDraft", "pullRequest.headSha"],
+          freshnessMs: Math.max(config.standingPollMs * 3, 5 * 60_000),
+          initialObservation: "baseline_only",
+          attentionRule: "material_change_prepare_quietly",
+          preparedOutput: { instructions: "Prepare a concise launch-change briefing and next storyboard draft. Preserve the exact source revision and do not publish, comment, merge, push, label, or message anyone." },
+          approvalBoundary: "prepare_only",
+          budget: { maxRunsPerDay: 24, maxInterruptionsPerDay: 3 },
+          expiresAt: expiry.toISOString(),
+          reportingDestination: conversationId
+        }
+      });
+    } catch (error) {
+      if (error?.code !== "RESPONSIBILITY_SCOPE_EXISTS") throw error;
+      const replay = (await standingStore.listResponsibilities({ status: "active" }))
+        .find((item) => item.ownerId === assistantOwnerId && item.mandate.resourceRef === resourceRef && item.mandate.reportingDestination === conversationId);
+      if (!replay) throw error;
+      return json(response, 200, { replayed: true, responsibility: await publicResponsibility(replay) });
+    }
+    await standingStore.observe({ responsibilityId: responsibility.responsibilityId, observation: initial });
+    return json(response, 201, { replayed: false, responsibility: await publicResponsibility(await standingStore.getResponsibility(responsibility.responsibilityId)) });
+  }
+  if (request.method === "POST" && /^\/api\/assistant\/responsibilities\/[^/]+\/commands$/.test(url.pathname)) {
+    const responsibilityId = decodeURIComponent(url.pathname.slice("/api/assistant/responsibilities/".length, -"/commands".length));
+    const body = await readJson(request);
+    const commandId = String(body.commandId ?? "");
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(commandId)) throw Object.assign(new Error("A safe commandId is required"), { statusCode: 400 });
+    const current = await standingStore.getResponsibility(responsibilityId);
+    if (body.expectedRevision !== current.revision) throw Object.assign(new Error("Responsibility changed; reload before retrying"), { statusCode: 409, code: "RESPONSIBILITY_REVISION_CONFLICT" });
+    if (body.type === "revoke") {
+      const revoked = await standingStore.revokeResponsibility({ responsibilityId, reason: "revoked by user" });
+      const prepared = await standingStore.listPreparedTasks({ responsibilityId });
+      await Promise.all(prepared
+        .filter((item) => item.status === "revoked" && item.supervisorTaskId)
+        .map((item) => assistantWorkers.cancelTask({ taskId: item.supervisorTaskId, reason: "standing-authority-revoked" }).catch(() => null)));
+      return json(response, 200, { responsibility: await publicResponsibility(revoked) });
+    }
+    if (body.type === "check_now") {
+      const [result] = await standingScheduler.tickNow({ responsibilityId });
+      const refreshed = await standingStore.getResponsibility(responsibilityId);
+      return json(response, 200, { check: result, responsibility: await publicResponsibility(refreshed) });
+    }
+    throw Object.assign(new Error("type must be check_now or revoke"), { statusCode: 400 });
+  }
   if (request.method === "GET" && url.pathname === "/api/assistant/tasks") {
     const after = Number(url.searchParams.get("after") ?? 0);
     if (!Number.isInteger(after) || after < 0) throw Object.assign(new Error("after must be a non-negative integer"), { statusCode: 400 });
@@ -535,7 +700,16 @@ const server = createServer(async (request, response) => {
       COMMAND_ID_CONFLICT: 409,
       CAPABILITY_NOT_ALLOWED: 400,
       INVALID_ARTIFACT_ID: 400,
-      INVALID_COMMAND_ID: 400
+      INVALID_COMMAND_ID: 400,
+      INVALID_RESOURCE: 400,
+      RESPONSIBILITY_NOT_FOUND: 404,
+      RESPONSIBILITY_REVISION_CONFLICT: 409,
+      CONNECTOR_AUTH_EXPIRED: 401,
+      CONNECTOR_FORBIDDEN: 403,
+      CONNECTOR_RESOURCE_UNAVAILABLE: 404,
+      CONNECTOR_RATE_LIMITED: 429,
+      CONNECTOR_TIMEOUT: 504,
+      CONNECTOR_READ_FAILED: 502
     }[error.code];
     if (!response.headersSent) json(response, error.statusCode ?? codedStatus ?? 500, { error: error.message, code: error.code ?? null });
     else response.end();
@@ -546,6 +720,7 @@ server.listen(config.port, config.host, async () => {
   await store.append("daemon.started", { host: config.host, port: config.port, voiceConfigured: Boolean(config.openrouterKey) });
   console.log(`EV prototype: http://${config.host}:${config.port}`);
   console.log(`Voice: ${config.openrouterKey ? `${config.sttModel} / ${config.ttsModel}` : "not configured"}`);
+  console.log(`Standing responsibility poll: ${config.standingPollMs} ms`);
 });
 
 let stopping = false;
@@ -553,10 +728,12 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {
     if (stopping) return;
     stopping = true;
+    standingScheduler.stop();
     await assistantWorkers.shutdown().catch((error) => console.error(`Worker shutdown failed: ${error.message}`));
     codex.close();
     assistantLedger.close();
     assistantMemory.close();
+    standingStore.close();
     assistantSupervisor.close();
     server.close(() => process.exit(0));
   });

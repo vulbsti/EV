@@ -14,6 +14,8 @@ Open `http://127.0.0.1:4317`. The default surface is a durable conversation back
 
 `Understanding you` exposes the first source-linked memory controls. Explicit global guidance can be inspected, corrected, stopped, or erased and is recorded in the exact context manifest used by later tasks. A new conversation shares that reviewed guidance without copying the previous transcript.
 
+`Responsibilities` exposes the first connected alpha: one read-only GitHub pull request with an inspectable, expiring, revocable mandate. EV establishes the current revision as a baseline, polls while the browser is closed, prepares a verified draft only after a material change, and shows recent outcomes with their exact provider revisions. The connector cannot comment, merge, push, label, publish, or message anyone.
+
 The previous tmux control surface remains available at `http://127.0.0.1:4317/workstation` as a developer view. Its non-executing orchestrator queue has been removed rather than carried into the assistant. See [the prototype guide](docs/PROTOTYPE.md) for its remaining terminal-control mechanics and limitations.
 
 Each terminal also has a `WHY?` action that opens a second, read-only [Explanation Window and Capability Lab](docs/EXPLANATION_WINDOW.md). It anchors questions in the project and current task, builds a typed mechanics model from current pane/Git/test/event evidence, and deterministically compiles it into a bounded selectable causal path. Registered adapters then let the learner manipulate inputs and execute supported normal, edge, load, and failure scenarios with traces, metrics, persisted receipts, and regression proposals. The multi-turn Codex conversation remains separate and never sends explanation questions back to the executor.
@@ -62,11 +64,15 @@ npm run assistant:phase2-extended
 
 Outputs and retained Pi sessions stay under ignored `data/assistant-worker/`. The product route is intentionally exact: `Create a one-page launch-status brief from the selected local fixture.`
 
-The Phase 4 local canary exercises versioned prepare-only mandates, material-change detection, duplicate suppression, revocation, and scoped prepared artifacts. It is not a real connected-provider alpha:
+Phase 4 keeps the local reconciliation canary and adds a real read-only GitHub canary plus explicit stale/no-data faults:
 
 ```bash
 npm run assistant:phase4-local
+npm run assistant:phase4-github
+npm run assistant:phase4-faults
 ```
+
+The GitHub canary defaults to PR #2 and may be pointed at another reviewed pull request with `EV_GITHUB_CANARY_RESOURCE=github://owner/repo/pulls/number`. It uses the trusted host-side `gh` credential store; that connector credential is not copied into Pi's environment, workspace, prompt, metadata, or artifact. Recognizable secret-like strings in pull-request content are redacted before the source snapshot reaches Pi, but this is defense in depth rather than a universal secret detector.
 
 Each run creates private-permission JSON/JSONL evidence under `artifacts/lab/<run-id>/`. Terminal capture stores sizes, timing, line counts, and hashes—not raw terminal contents.
 

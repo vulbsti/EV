@@ -9,6 +9,14 @@ const elements = {
   understandingToggle: document.getElementById("understanding-toggle"),
   understandingClose: document.getElementById("understanding-close"),
   understandingPanel: document.getElementById("understanding-panel"),
+  responsibilitiesToggle: document.getElementById("responsibilities-toggle"),
+  responsibilitiesClose: document.getElementById("responsibilities-close"),
+  responsibilitiesPanel: document.getElementById("responsibilities-panel"),
+  connectionForm: document.getElementById("connection-form"),
+  githubResource: document.getElementById("github-resource"),
+  responsibilityStatus: document.getElementById("responsibility-status"),
+  mandatePreview: document.getElementById("mandate-preview"),
+  responsibilityList: document.getElementById("responsibility-list"),
   memoryForm: document.getElementById("memory-form"),
   memoryValue: document.getElementById("memory-value"),
   memoryStatus: document.getElementById("memory-status"),
@@ -28,6 +36,8 @@ let retrying = false;
 let synchronizing = false;
 let memoryClaims = [];
 let editingClaimId = null;
+let responsibilities = [];
+let verifiedSource = null;
 const PENDING_KEY = `ev.pending-messages.v1.${conversationId}`;
 
 function restorePending() {
@@ -105,6 +115,95 @@ function renderMemory() {
     </article>`).join("") : `<p class="memory-note">No active guidance yet.</p>`;
 }
 
+function renderResponsibilities() {
+  elements.responsibilityList.innerHTML = responsibilities.length ? responsibilities.map((item) => {
+    const observation = item.lastObservation;
+    const task = item.task;
+    const artifact = task?.artifacts?.[0];
+    const failure = item.latestFailure?.data;
+    const updates = item.updates ?? [];
+    return `<article class="responsibility-item" data-responsibility-id="${escapeHtml(item.responsibilityId)}">
+      <div class="responsibility-head"><h3>GitHub launch watch</h3><span class="task-status ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></div>
+      <p><strong>Source:</strong> ${escapeHtml(item.mandate.resourceRef)}</p>
+      <p><strong>Boundary:</strong> prepare only · no comments, merge, push, labels, publishing, or messages</p>
+      <p><strong>Checks:</strong> every ${escapeHtml(Math.round((item.mandate.trigger?.intervalMs ?? 0) / 1000))} seconds · expires ${escapeHtml(new Date(item.mandate.expiresAt).toLocaleString())}</p>
+      ${observation ? `<p><strong>Latest source:</strong> ${escapeHtml(observation.state)} · revision <code>${escapeHtml(observation.sourceRevision)}</code></p>` : `<p>No source observation yet.</p>`}
+      ${task ? `<p><strong>Prepared result:</strong> ${escapeHtml(taskLabel(task.status))}${task.contextManifestId ? ` · memory manifest ${escapeHtml(task.contextManifestId)}` : ""}</p>` : ""}
+      ${artifact ? `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(artifact.artifactId)}" download="${escapeHtml(artifact.relativePath.split("/").at(-1))}">Download verified prepared draft</a>` : ""}
+      ${updates.length ? `<div class="responsibility-updates" aria-label="Prepared outcomes">${updates.map((update) => {
+        const updateArtifact = update.task?.artifacts?.[0];
+        return `<div class="responsibility-update" data-source-revision="${escapeHtml(update.preparedTask.sourceRevision)}">
+          <p><strong>${escapeHtml(update.task ? taskLabel(update.task.status) : update.preparedTask.status)}</strong> · source <code>${escapeHtml(update.preparedTask.sourceRevision)}</code></p>
+          ${updateArtifact ? `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(updateArtifact.artifactId)}" download="${escapeHtml(updateArtifact.relativePath.split("/").at(-1))}">Download verified draft</a>` : ""}
+        </div>`;
+      }).join("")}</div>` : ""}
+      ${failure ? `<p><strong>Last check failed:</strong> ${escapeHtml(failure.code)} — ${escapeHtml(failure.message)}</p>` : ""}
+      ${item.status === "active" ? `<div class="responsibility-actions"><button type="button" data-responsibility-action="check_now">Check now</button><button type="button" data-responsibility-action="revoke">Revoke</button></div>` : ""}
+    </article>`;
+  }).join("") : `<p class="memory-note">No standing responsibility yet.</p>`;
+}
+
+async function loadResponsibilities() {
+  const response = await fetch("/api/assistant/responsibilities", { cache: "no-store" });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error ?? `Responsibility load failed: HTTP ${response.status}`);
+  responsibilities = body.responsibilities ?? [];
+  renderResponsibilities();
+}
+
+function renderMandatePreview(source) {
+  elements.mandatePreview.hidden = false;
+  elements.mandatePreview.innerHTML = `<h3>Review this mandate</h3>
+    <p><strong>Source:</strong> ${escapeHtml(source.resourceRef)}</p>
+    <p><strong>Current title:</strong> ${escapeHtml(source.title)}</p>
+    <p><strong>Watch:</strong> title, body, state, draft status, and head revision.</p>
+    <p><strong>When changed:</strong> quietly prepare a launch-change briefing and next storyboard draft.</p>
+    <p><strong>Authority:</strong> read and prepare only. EV cannot comment, merge, push, label, publish, or message anyone.</p>
+    <p><strong>Expiry:</strong> 30 days; you can revoke it immediately.</p>
+    <button type="button" data-create-responsibility>Start watching</button>`;
+}
+
+async function verifyGitHubSource(resourceRef) {
+  const response = await fetch("/api/assistant/connections/github/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resourceRef })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error ?? `Connection verification failed: HTTP ${response.status}`);
+  verifiedSource = body.source;
+  renderMandatePreview(verifiedSource);
+  return body;
+}
+
+async function createResponsibility() {
+  if (!verifiedSource) return;
+  const response = await fetch("/api/assistant/responsibilities", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resourceRef: verifiedSource.resourceRef, conversationId })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error ?? `Responsibility creation failed: HTTP ${response.status}`);
+  verifiedSource = null;
+  elements.mandatePreview.hidden = true;
+  elements.mandatePreview.innerHTML = "";
+  await loadResponsibilities();
+  return body;
+}
+
+async function commandResponsibility(item, type) {
+  const response = await fetch(`/api/assistant/responsibilities/${encodeURIComponent(item.responsibilityId)}/commands`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ commandId: crypto.randomUUID(), type, expectedRevision: item.revision })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error ?? `Responsibility command failed: HTTP ${response.status}`);
+  await loadResponsibilities();
+  return body;
+}
+
 async function loadMemory() {
   const response = await fetch("/api/assistant/memory?scope=global", { cache: "no-store" });
   const body = await response.json().catch(() => ({}));
@@ -126,6 +225,8 @@ async function memoryCommand(command) {
 }
 
 async function showUnderstanding() {
+  elements.responsibilitiesPanel.hidden = true;
+  elements.responsibilitiesToggle.setAttribute("aria-expanded", "false");
   elements.understandingPanel.hidden = false;
   elements.understandingToggle.setAttribute("aria-expanded", "true");
   elements.memoryStatus.textContent = "Loading source-linked guidance…";
@@ -135,6 +236,26 @@ async function showUnderstanding() {
   } catch (error) {
     elements.memoryStatus.textContent = error.message;
   }
+}
+
+async function showResponsibilities() {
+  elements.understandingPanel.hidden = true;
+  elements.understandingToggle.setAttribute("aria-expanded", "false");
+  elements.responsibilitiesPanel.hidden = false;
+  elements.responsibilitiesToggle.setAttribute("aria-expanded", "true");
+  elements.responsibilityStatus.textContent = "Loading durable responsibility state…";
+  try {
+    await loadResponsibilities();
+    elements.responsibilityStatus.textContent = "GitHub access stays in the trusted connector; workers receive source data, never credentials.";
+  } catch (error) {
+    elements.responsibilityStatus.textContent = error.message;
+  }
+}
+
+function hideResponsibilities() {
+  elements.responsibilitiesPanel.hidden = true;
+  elements.responsibilitiesToggle.setAttribute("aria-expanded", "false");
+  elements.responsibilitiesToggle.focus();
 }
 
 function hideUnderstanding() {
@@ -282,6 +403,7 @@ async function synchronize() {
   try {
     const connected = await loadConversation({ incremental: true });
     if (connected) await loadTasks({ incremental: true });
+    if (connected) await loadResponsibilities();
     if (connected && pending.size) await retryPending({ refresh: false });
   } finally {
     synchronizing = false;
@@ -319,10 +441,54 @@ elements.messages.addEventListener("click", (event) => {
 });
 
 elements.understandingToggle.addEventListener("click", () => { void showUnderstanding(); });
+elements.responsibilitiesToggle.addEventListener("click", () => { void showResponsibilities(); });
 elements.newConversation.addEventListener("click", () => {
   location.href = `/?conversation=${encodeURIComponent(`chat-${crypto.randomUUID()}`)}`;
 });
 elements.understandingClose.addEventListener("click", hideUnderstanding);
+elements.responsibilitiesClose.addEventListener("click", hideResponsibilities);
+elements.connectionForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const resourceRef = elements.githubResource.value.trim();
+  if (!resourceRef) return;
+  elements.responsibilityStatus.textContent = "Verifying read-only GitHub access…";
+  void verifyGitHubSource(resourceRef).then(() => {
+    elements.responsibilityStatus.textContent = "Read-only access verified. Review the mandate before starting.";
+  }).catch((error) => {
+    verifiedSource = null;
+    elements.mandatePreview.hidden = true;
+    elements.responsibilityStatus.textContent = error.message;
+  });
+});
+elements.mandatePreview.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-create-responsibility]");
+  if (!button) return;
+  button.disabled = true;
+  elements.responsibilityStatus.textContent = "Saving the reviewed mandate and baseline revision…";
+  void createResponsibility().then(() => {
+    elements.responsibilityStatus.textContent = "Standing responsibility is active. EV will check it while this browser is closed.";
+  }).catch((error) => {
+    elements.responsibilityStatus.textContent = error.message;
+    button.disabled = false;
+  });
+});
+elements.responsibilityList.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-responsibility-action]");
+  if (!button) return;
+  const card = button.closest("[data-responsibility-id]");
+  const item = responsibilities.find((candidate) => candidate.responsibilityId === card?.dataset.responsibilityId);
+  if (!item) return;
+  const type = button.dataset.responsibilityAction;
+  if (type === "revoke" && !window.confirm("Revoke this standing responsibility? Later source changes will not start work.")) return;
+  button.disabled = true;
+  elements.responsibilityStatus.textContent = type === "revoke" ? "Revoking authority…" : "Checking the source now…";
+  void commandResponsibility(item, type).then(() => {
+    elements.responsibilityStatus.textContent = type === "revoke" ? "Revoked. Later changes cannot start work." : "Check completed against the durable source revision.";
+  }).catch((error) => {
+    elements.responsibilityStatus.textContent = error.message;
+    button.disabled = false;
+  });
+});
 elements.memoryForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const value = elements.memoryValue.value.trim();
@@ -383,6 +549,7 @@ elements.memoryList.addEventListener("submit", (event) => {
 restorePending();
 const connected = await loadConversation();
 if (connected) await loadTasks();
+if (connected) await loadResponsibilities();
 if (connected) await retryPending({ refresh: false });
 elements.input.focus();
 window.addEventListener("online", () => { void synchronize(); });
