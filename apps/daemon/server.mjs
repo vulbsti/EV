@@ -8,7 +8,11 @@ import { run } from "../../lab/lib/process.mjs";
 import { synthesize, transcribeBuffer } from "../../lab/lib/providers/openrouter.mjs";
 import { loadDotEnv } from "./lib/env.mjs";
 import { EventStore } from "./lib/store.mjs";
-import { handleCompanion } from "./lib/companion.mjs";
+import { createAssistantLedger } from "./lib/assistant-ledger.mjs";
+import { planAssistantTurn } from "./lib/assistant-intake.mjs";
+import { CodexAppServer } from "./lib/codex-app-server.mjs";
+import { createExplainer } from "./lib/explainer.mjs";
+import { createExperimentRunner } from "./lib/experiment-runner.mjs";
 import { inspectAttention, redactCommandPreview, stripTerminalControls, terminalDigest } from "./lib/attention.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -16,6 +20,7 @@ const webRoot = join(projectRoot, "apps", "web");
 await loadDotEnv(join(projectRoot, ".env"));
 const store = new EventStore(join(projectRoot, "data", "events.jsonl"));
 await store.initialize();
+const assistantLedger = createAssistantLedger({ path: join(projectRoot, "data", "assistant.sqlite") });
 
 const config = {
   host: process.env.EV_HOST ?? "127.0.0.1",
@@ -29,10 +34,57 @@ const config = {
 const paneActivity = new Map();
 let snapshotPromise = null;
 let snapshotExpiresAt = 0;
+const codex = new CodexAppServer({
+  cwd: projectRoot,
+  model: process.env.EV_EXPLAINER_MODEL ?? null,
+  modelProvider: process.env.EV_CODEX_MODEL_PROVIDER ?? "openai"
+});
+const explainer = await createExplainer({
+  store,
+  codex,
+  getPane: async (paneId) => (await controlSnapshot(72)).panes.find((pane) => pane.paneId === paneId) ?? null
+});
+const experiments = createExperimentRunner({
+  store,
+  getPane: async (paneId) => (await controlSnapshot(72)).panes.find((pane) => pane.paneId === paneId) ?? null,
+  baseUrl: `http://${config.host}:${config.port}`
+});
 
 function json(response, status, value) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   response.end(JSON.stringify(value));
+}
+
+function publicConversation(afterSequence = 0) {
+  const allMessages = assistantLedger.listTurns("default").flatMap((turn) => [
+    { ...turn.userMessage, status: "received" },
+    {
+      ...turn.assistantMessage,
+      status: turn.task?.status ?? "answered",
+      taskId: turn.task?.taskId ?? null,
+      taskStatus: turn.task?.status ?? null
+    }
+  ]);
+  return {
+    messages: allMessages.filter((message) => message.sequence > afterSequence),
+    revision: allMessages.at(-1)?.sequence ?? 0
+  };
+}
+
+function publicTurn(turn) {
+  return {
+    replayed: turn.replayed,
+    messages: [
+      { ...turn.userMessage, status: "received" },
+      {
+        ...turn.assistantMessage,
+        status: turn.task?.status ?? "answered",
+        taskId: turn.task?.taskId ?? null,
+        taskStatus: turn.task?.status ?? null
+      }
+    ],
+    task: turn.task
+  };
 }
 
 async function readBody(request, limit) {
@@ -69,7 +121,7 @@ async function getFleet() {
     const inventory = await inventoryTmux();
     return projectFleet(inventory.panes, new Date().toISOString(), inventory.durationMs);
   } catch (error) {
-    if (/no server running|failed to connect/i.test(String(error?.stderr ?? error))) return projectFleet([], new Date().toISOString(), 0);
+    if (/no server running|failed to connect|error connecting.*no such file|no such file or directory/i.test(String(error?.stderr ?? error))) return projectFleet([], new Date().toISOString(), 0);
     throw error;
   }
 }
@@ -164,7 +216,33 @@ async function spawnTmux(body) {
 
 async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json(response, 200, { ok: true, tmux: true, voiceConfigured: Boolean(config.openrouterKey), models: { stt: config.sttModel, tts: config.ttsModel } });
+    return json(response, 200, { ok: true, tmux: true, voiceConfigured: Boolean(config.openrouterKey), explainer: codex.status(), experimentAdapters: [...experiments.adapters], models: { stt: config.sttModel, tts: config.ttsModel, explainer: codex.model ?? "Codex default", explainerProvider: codex.modelProvider } });
+  }
+  if (request.method === "GET" && url.pathname === "/api/assistant/conversation") {
+    const after = Number(url.searchParams.get("after") ?? 0);
+    if (!Number.isInteger(after) || after < 0) throw Object.assign(new Error("after must be a non-negative integer"), { statusCode: 400 });
+    return json(response, 200, { conversationId: "default", ...publicConversation(after) });
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/messages") {
+    const body = await readJson(request);
+    const clientMessageId = String(body.clientMessageId ?? "");
+    const text = String(body.text ?? "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(clientMessageId)) throw Object.assign(new Error("A safe clientMessageId is required"), { statusCode: 400 });
+    if (!text) throw Object.assign(new Error("text is required"), { statusCode: 400 });
+    if (text.length > 8000) throw Object.assign(new Error("text must not exceed 8000 characters"), { statusCode: 400 });
+    const existing = assistantLedger.findByClientMessageId(clientMessageId);
+    if (existing) return json(response, 200, publicTurn({ ...existing, replayed: true }));
+    const planned = planAssistantTurn({ clientMessageId, transcript: text, fleet: await controlSnapshot(72) });
+    const turn = assistantLedger.recordTurn({
+      conversationId: "default",
+      clientMessageId,
+      userText: text,
+      assistantText: planned.response,
+      intent: { kind: planned.classification, route: planned.route },
+      route: planned.route,
+      taskTitle: text
+    });
+    return json(response, 201, publicTurn(turn));
   }
   if (request.method === "GET" && url.pathname === "/api/fleet") return json(response, 200, await getFleet());
   if (request.method === "GET" && url.pathname === "/api/control-snapshot") return json(response, 200, await controlSnapshot(url.searchParams.get("lines")));
@@ -182,12 +260,41 @@ async function handleApi(request, response, url) {
     return json(response, 200, await sendPaneKey(decodeURIComponent(encoded), body.key));
   }
   if (request.method === "POST" && url.pathname === "/api/tmux/spawn") return json(response, 200, await spawnTmux(await readJson(request)));
-  if (request.method === "GET" && url.pathname === "/api/events") return json(response, 200, { events: await store.recent(Number(url.searchParams.get("limit")) || 40) });
-  if (request.method === "GET" && url.pathname === "/api/tasks") return json(response, 200, { tasks: await store.tasks() });
-  if (request.method === "POST" && url.pathname === "/api/companion") {
+  if (request.method === "GET" && url.pathname === "/api/explain/context") {
+    const paneId = url.searchParams.get("paneId");
+    if (!paneId) throw Object.assign(new Error("paneId is required"), { statusCode: 400 });
+    return json(response, 200, await explainer.context(paneId));
+  }
+  if (request.method === "GET" && url.pathname.startsWith("/api/explain/sessions/")) {
+    const sessionId = decodeURIComponent(url.pathname.slice("/api/explain/sessions/".length));
+    return json(response, 200, await explainer.session(sessionId));
+  }
+  if (request.method === "POST" && url.pathname === "/api/explain/ask") {
     const body = await readJson(request);
-    if (!body.transcript?.trim()) throw Object.assign(new Error("transcript is required"), { statusCode: 400 });
-    return json(response, 200, await handleCompanion({ transcript: body.transcript.trim(), selectedPaneId: body.selectedPaneId ?? null, fleet: await getFleet(), store }));
+    return json(response, 200, await explainer.ask({
+      sessionId: body.sessionId ?? null,
+      paneId: body.paneId,
+      question: body.question
+    }));
+  }
+  if (request.method === "POST" && url.pathname === "/api/explain/feedback") {
+    const body = await readJson(request);
+    return json(response, 200, await explainer.feedback(body));
+  }
+  if (request.method === "POST" && url.pathname === "/api/explain/task-context") return json(response, 200, await explainer.bindTask(await readJson(request)));
+  if (request.method === "GET" && url.pathname === "/api/capabilities") {
+    const paneId = url.searchParams.get("paneId");
+    if (!paneId) throw Object.assign(new Error("paneId is required"), { statusCode: 400 });
+    return json(response, 200, await experiments.catalog(paneId));
+  }
+  if (request.method === "POST" && url.pathname === "/api/experiments/run") return json(response, 200, await experiments.run(await readJson(request)));
+  if (request.method === "POST" && url.pathname === "/api/experiments/acceptance-suite") return json(response, 200, await experiments.runAcceptanceSuite(await readJson(request)));
+  if (request.method === "GET" && url.pathname === "/api/experiments/recent") return json(response, 200, { runs: await experiments.recent(Number(url.searchParams.get("limit")) || 20) });
+  if (request.method === "GET" && url.pathname.startsWith("/api/experiments/")) {
+    const runId = decodeURIComponent(url.pathname.slice("/api/experiments/".length));
+    const receipt = await experiments.get(runId);
+    if (!receipt) throw Object.assign(new Error("Experiment was not found"), { statusCode: 404 });
+    return json(response, 200, receipt);
   }
   if (request.method === "POST" && url.pathname === "/api/voice/transcribe") {
     if (!config.openrouterKey) throw Object.assign(new Error("OpenRouter voice is not configured"), { statusCode: 503 });
@@ -216,7 +323,7 @@ async function handleApi(request, response, url) {
 
 const contentTypes = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
 async function serveStatic(response, url) {
-  const pathname = url.pathname === "/" ? "index.html" : normalize(url.pathname.slice(1));
+  const pathname = url.pathname === "/" ? "assistant.html" : url.pathname === "/workstation" ? "index.html" : normalize(url.pathname.slice(1));
   if (pathname.startsWith("..")) throw Object.assign(new Error("Invalid path"), { statusCode: 400 });
   try {
     const body = await readFile(join(webRoot, pathname));
@@ -251,5 +358,9 @@ server.listen(config.port, config.host, async () => {
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => server.close(() => process.exit(0)));
+  process.on(signal, () => {
+    codex.close();
+    assistantLedger.close();
+    server.close(() => process.exit(0));
+  });
 }

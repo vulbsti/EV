@@ -1,0 +1,4 @@
+interface:
+  display_name: "Explain Live Work"
+  short_description: "Map and test project-aligned mechanics"
+  default_prompt: "Use $explain-live-work to map the current capability, separate observed facts from predictions, and identify the executable lab evidence needed."

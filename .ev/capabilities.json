@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "capabilities": [
+    {
+      "id": "explainer-presentation",
+      "adapter": "presentation-pipeline",
+      "title": "Explanation presentation pipeline",
+      "objective": "Preserve deep mechanical analysis while presenting a bounded, inspectable capability model.",
+      "change": "Compiler output is parsed, normalized, bounded, linked, and rendered through progressive disclosure.",
+      "authority": "in-memory-read-only",
+      "pipeline": [
+        { "id": "receive", "label": "Receive compiler output" },
+        { "id": "parse", "label": "Parse structured result" },
+        { "id": "normalize", "label": "Normalize fields and identifiers" },
+        { "id": "link", "label": "Validate scenario paths" },
+        { "id": "bound", "label": "Enforce presentation budget" },
+        { "id": "render", "label": "Produce interactive model" }
+      ],
+      "controls": [
+        { "id": "format", "label": "Compiler format", "type": "select", "default": "valid", "options": ["valid", "fenced", "malformed"] },
+        { "id": "expectedFallback", "label": "Expect fallback", "type": "boolean", "default": false },
+        { "id": "answerChars", "label": "Answer characters", "type": "range", "default": 240, "min": 20, "max": 4000, "step": 20 },
+        { "id": "stepCount", "label": "Requested steps", "type": "range", "default": 5, "min": 0, "max": 16, "step": 1 },
+        { "id": "scenarioCount", "label": "Requested scenarios", "type": "range", "default": 3, "min": 0, "max": 12, "step": 1 },
+        { "id": "invalidPaths", "label": "Inject invalid paths", "type": "boolean", "default": false },
+        { "id": "iterations", "label": "Iterations", "type": "range", "default": 1, "min": 1, "max": 5000, "step": 1 },
+        { "id": "concurrency", "label": "Concurrency", "type": "range", "default": 1, "min": 1, "max": 32, "step": 1 }
+      ],
+      "scenarios": [
+        { "id": "normal", "label": "Normal", "overrides": {} },
+        { "id": "verbose", "label": "Verbose overflow", "overrides": { "answerChars": 4000, "stepCount": 16, "scenarioCount": 12 } },
+        { "id": "malformed", "label": "Malformed JSON", "overrides": { "format": "malformed" } },
+        { "id": "broken-links", "label": "Broken scenario links", "overrides": { "invalidPaths": true } },
+        { "id": "stress", "label": "Bounded stress", "overrides": { "iterations": 2000, "concurrency": 16 } },
+        { "id": "contract-failure", "label": "Expected-contract failure", "overrides": { "format": "malformed", "expectedFallback": false } }
+      ]
+    },
+    {
+      "id": "ev-loopback-api",
+      "adapter": "loopback-http",
+      "title": "EV loopback API",
+      "objective": "Measure real local API behavior and failure handling without allowing external network access.",
+      "change": "The capability lab can execute bounded local HTTP probes and retain their results.",
+      "authority": "loopback-get-only",
+      "pipeline": [
+        { "id": "prepare", "label": "Validate target" },
+        { "id": "request", "label": "Send loopback request" },
+        { "id": "route", "label": "Execute daemon route" },
+        { "id": "receive", "label": "Read bounded response" },
+        { "id": "assert", "label": "Evaluate expectation" }
+      ],
+      "controls": [
+        { "id": "path", "label": "API path", "type": "select", "default": "/api/health", "options": ["/api/health", "/api/not-found"] },
+        { "id": "expectedStatus", "label": "Expected status", "type": "select", "default": 200, "options": [200, 404] },
+        { "id": "iterations", "label": "Requests", "type": "range", "default": 1, "min": 1, "max": 200, "step": 1 },
+        { "id": "concurrency", "label": "Concurrency", "type": "range", "default": 1, "min": 1, "max": 20, "step": 1 },
+        { "id": "timeoutMs", "label": "Timeout (ms)", "type": "range", "default": 2000, "min": 100, "max": 5000, "step": 100 }
+      ],
+      "scenarios": [
+        { "id": "health", "label": "Healthy route", "overrides": { "path": "/api/health", "expectedStatus": 200 } },
+        { "id": "missing", "label": "Missing route", "overrides": { "path": "/api/not-found", "expectedStatus": 404 } },
+        { "id": "load", "label": "Load envelope", "overrides": { "path": "/api/health", "expectedStatus": 200, "iterations": 100, "concurrency": 10 } },
+        { "id": "contract-failure", "label": "Expected-contract failure", "overrides": { "path": "/api/health", "expectedStatus": 404 } }
+      ]
+    }
+  ]
+}

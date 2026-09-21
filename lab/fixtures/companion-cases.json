@@ -2,6 +2,8 @@
   { "id": "chat-1", "text": "I am feeling stuck on this project", "expected": "conversation" },
   { "id": "read-1", "text": "Which agents need my attention?", "expected": "read_query" },
   { "id": "read-2", "text": "Show me the status of the API task", "expected": "read_query" },
+  { "id": "browser-read-1", "text": "How many terminal panes and tmux sessions are currently running?", "expected": "read_query" },
+  { "id": "browser-read-2", "text": "Summarize which EV terminal currently needs attention. Do not send any commands or change any terminal.", "expected": "read_query" },
   { "id": "reason-1", "text": "Investigate why the browser tests are flaky", "expected": "delegated_reasoning" },
   { "id": "action-1", "text": "Fix the failing API tests", "expected": "action" },
   { "id": "action-2", "text": "Spawn a Codex agent in the payments repository", "expected": "action" },
