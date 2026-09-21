@@ -26,6 +26,23 @@ test("records requested work as not executable without inventing a queue or work
   assert.doesNotMatch(turn.response, /working|queued|handed.*orchestrator/i);
 });
 
+test("routes only the reviewed launch-status fixture request to the Phase 2 worker", () => {
+  const turn = planAssistantTurn({
+    clientMessageId: "message-worker-1",
+    transcript: "Create a one-page launch-status brief from the selected local fixture.",
+    fleet
+  });
+  assert.equal(turn.route, "worker");
+  assert.equal(turn.capability, "extended-launch-brief-v1");
+  assert.equal(turn.task.status, "queued");
+  assert.match(turn.response, /background while we keep talking/i);
+});
+
+test("does not broaden the reviewed worker route to similar arbitrary work", () => {
+  const turn = planAssistantTurn({ clientMessageId: "message-worker-2", transcript: "Create a one-page strategy brief from my home directory", fleet });
+  assert.equal(turn.route, "not_executable");
+});
+
 test("treats the Phase 1 tracking fixture as honest not-executable work", () => {
   const turn = planAssistantTurn({ clientMessageId: "message-3", transcript: "Track this launch question for later", fleet });
   assert.equal(turn.classification, "action");

@@ -19,7 +19,7 @@ import { PiWorkerAdapter } from "../lib/pi-worker-adapter.mjs";
  * records it so the restrictive launch boundary is directly asserted.
  */
 
-async function fixture(mode = "success", { expectedVersion = null } = {}) {
+async function fixture(mode = "success", adapterOptions = {}) {
   const root = await mkdtemp(join(tmpdir(), "ev-pi-adapter-"));
   const sessionDir = join(root, "sessions");
   const workspaceDir = join(root, "workspace");
@@ -44,7 +44,7 @@ process.stdout.write(JSON.stringify({ type: "agent_end", messages: [{ role: "ass
   await chmod(fake, 0o755);
   return {
     root, sessionDir, workspaceDir, argvPath, fake,
-    adapter: new PiWorkerAdapter({ executable: fake, sessionDir, cwd: workspaceDir, timeoutMs: 500, expectedVersion, env: { FAKE_PI_MODE: mode } }),
+    adapter: new PiWorkerAdapter({ executable: fake, sessionDir, cwd: workspaceDir, timeoutMs: 500, ...adapterOptions, env: { FAKE_PI_MODE: mode, ...(adapterOptions.env ?? {}) } }),
     async close() { await rm(root, { recursive: true, force: true }); }
   };
 }
@@ -78,6 +78,26 @@ test("extracts only the final assistant text from JSONL events", async () => {
     assert.equal(result.text, "Verified local brief");
     assert.equal(result.status, "completed");
     assert.equal(result.events.some((event) => event.type === "agent_end"), true);
+  } finally { await f.close(); }
+});
+
+test("loads only an explicit scoped tool, extension, skill, and context bundle", async () => {
+  const f = await fixture("success", {
+    tools: ["workspace_read", "workspace_write"],
+    extensionPaths: ["./scoped-extension.mjs"],
+    skillPaths: ["./task-skill"],
+    contextPaths: ["./CONTEXT.md"]
+  });
+  try {
+    const run = await f.adapter.start({ runId: "run-scoped", prompt: "work inside the workspace" });
+    await run.completion;
+    const args = JSON.parse(await readFile(f.argvPath, "utf8"));
+    assert.ok(args.includes("--no-builtin-tools"));
+    assert.equal(args[args.indexOf("--tools") + 1], "workspace_read,workspace_write");
+    assert.ok(args.includes("--no-extensions") && args.includes("--extension"));
+    assert.ok(args.includes("--no-skills") && args.includes("--skill"));
+    assert.ok(args.includes("--no-context-files") && args.includes("--append-system-prompt"));
+    assert.ok(!args.includes("--no-tools"));
   } finally { await f.close(); }
 });
 

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,7 +30,7 @@ async function fixture() {
   await mkdir(artifactRoot, { recursive: true });
   return {
     root,
-    statePath: join(root, "supervisor-state.json"),
+    statePath: join(root, "supervisor-state.sqlite"),
     artifactRoot,
     async close() {
       await rm(root, { recursive: true, force: true });
@@ -150,10 +150,150 @@ test("recovers an in-flight run after restart and rejects the stale lease token"
     await restarted.startTask({ taskId: "task-restart", runId: "run-restart", fencingToken: newLease.fencingToken });
     assert.equal((await restarted.getTask("task-restart")).status, "running");
 
-    // The state file is JSON so a restart cannot silently replace its durable
-    // task/run record with an in-memory default.
-    const persisted = JSON.parse(await readFile(f.statePath, "utf8"));
-    assert.ok(persisted.tasks["task-restart"]);
+    const snapshot = await restarted.snapshot();
+    assert.ok(snapshot.revision >= 6);
+    assert.ok(snapshot.tasks.some((task) => task.taskId === "task-restart"));
+  } finally {
+    await f.close();
+  }
+});
+
+test("serializes competing leases across two supervisor instances", async () => {
+  const f = await fixture();
+  try {
+    const first = await AssistantSupervisor.open(f);
+    const second = await AssistantSupervisor.open(f);
+    await first.createTask({ taskId: "task-concurrent", input: { prompt: "one lease" } });
+
+    const attempts = await Promise.allSettled([
+      first.leaseTask({ taskId: "task-concurrent", workerId: "worker-a" }),
+      second.leaseTask({ taskId: "task-concurrent", workerId: "worker-b" })
+    ]);
+    assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
+    assert.equal(attempts.filter((attempt) => attempt.status === "rejected" && attempt.reason.code === "TASK_NOT_QUEUED").length, 1);
+
+    const task = await first.getTask("task-concurrent");
+    assert.equal(task.status, "leased");
+    assert.equal(task.lease.workerId, "worker-a");
+    assert.equal(task.history.filter((event) => event.type === "leased").length, 1);
+    assert.ok(task.history.every((event, index, history) => index === 0 || event.sequence > history[index - 1].sequence));
+    const snapshot = await second.snapshot();
+    assert.equal(snapshot.revision, task.revision);
+  } finally {
+    await f.close();
+  }
+});
+
+test("exposes a monotonic snapshot revision and ordered task events for reconnect", async () => {
+  const f = await fixture();
+  try {
+    const supervisor = await AssistantSupervisor.open(f);
+    const before = await supervisor.getSnapshot();
+    assert.equal(before.tasks.length, 0);
+
+    await supervisor.createTask({ taskId: "task-snapshot", input: { capability: "launch-status-brief-v1" } });
+    const lease = await supervisor.leaseTask({ taskId: "task-snapshot", workerId: "worker-snapshot" });
+    await supervisor.startTask({ taskId: "task-snapshot", runId: "run-snapshot", fencingToken: lease.fencingToken });
+
+    const after = await supervisor.snapshot();
+    assert.ok(after.revision > before.revision);
+    const task = after.tasks.find((candidate) => candidate.taskId === "task-snapshot");
+    assert.ok(task, "snapshot must include the task projection");
+    assert.deepEqual(task.history.map((event) => event.type), ["created", "leased", "started"]);
+    assert.ok(task.history.every((event, index, events) => index === 0 || event.sequence > events[index - 1].sequence));
+    assert.ok(task.revision <= after.revision);
+  } finally {
+    await f.close();
+  }
+});
+
+test("makes cancellation idempotent and fences a late worker completion", async () => {
+  const f = await fixture();
+  try {
+    const supervisor = await AssistantSupervisor.open(f);
+    await supervisor.createTask({ taskId: "task-cancel-race", input: { capability: "launch-status-brief-v1" } });
+    const lease = await supervisor.leaseTask({ taskId: "task-cancel-race", workerId: "worker-cancel" });
+    await supervisor.startTask({ taskId: "task-cancel-race", runId: "run-cancel", fencingToken: lease.fencingToken });
+
+    const cancelled = await supervisor.cancelTask({ taskId: "task-cancel-race", reason: "user-requested" });
+    const duplicate = await supervisor.cancelTask({ taskId: "task-cancel-race", reason: "retry-of-user-request" });
+    assert.equal(cancelled.status, "cancelled");
+    assert.deepEqual(duplicate, cancelled);
+    assert.equal(cancelled.history.filter((event) => event.type === "cancelled").length, 1);
+    await assert.rejects(
+      supervisor.completeTask({ taskId: "task-cancel-race", runId: "run-cancel", fencingToken: lease.fencingToken, artifacts: [] }),
+      staleToken
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("rejects artifact receipts that traverse or resolve through a symlink", async () => {
+  const f = await fixture();
+  const outside = await mkdtemp(join(tmpdir(), "ev-supervisor-artifact-outside-"));
+  try {
+    const supervisor = await AssistantSupervisor.open(f);
+    await supervisor.createTask({ taskId: "task-artifact-path", input: {} });
+    const lease = await supervisor.leaseTask({ taskId: "task-artifact-path", workerId: "worker-artifact" });
+    await supervisor.startTask({ taskId: "task-artifact-path", runId: "run-artifact", fencingToken: lease.fencingToken });
+    await writeFile(join(outside, "secret.txt"), "secret\n");
+    const traversal = { artifactId: "escape", relativePath: "../escape.txt", sha256: "0".repeat(64), bytes: 0 };
+    const symlink = join(f.artifactRoot, "linked.txt");
+    const { symlink: createSymlink } = await import("node:fs/promises");
+    await createSymlink(join(outside, "secret.txt"), symlink);
+    const linked = { artifactId: "linked", relativePath: "linked.txt", sha256: "0".repeat(64), bytes: 7 };
+
+    await assert.rejects(
+      supervisor.completeTask({ taskId: "task-artifact-path", runId: "run-artifact", fencingToken: lease.fencingToken, artifacts: [traversal] }),
+      invalidReceipt
+    );
+    await assert.rejects(
+      supervisor.completeTask({ taskId: "task-artifact-path", runId: "run-artifact", fencingToken: lease.fencingToken, artifacts: [linked] }),
+      invalidReceipt
+    );
+    assert.equal((await supervisor.getTask("task-artifact-path")).status, "running");
+  } finally {
+    await f.close();
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("persists replay-safe cancel commands and rejects stale task revisions", async () => {
+  const f = await fixture();
+  try {
+    const supervisor = await AssistantSupervisor.open(f);
+    const created = await supervisor.createTask({ taskId: "task-command", input: {} });
+    await assert.rejects(
+      supervisor.commandTask({ taskId: "task-command", commandId: "cancel-stale", type: "cancel", expectedRevision: created.revision + 1 }),
+      (error) => error?.code === "TASK_REVISION_CONFLICT"
+    );
+    const first = await supervisor.commandTask({ taskId: "task-command", commandId: "cancel-1", type: "cancel", expectedRevision: created.revision });
+    const replay = await supervisor.commandTask({ taskId: "task-command", commandId: "cancel-1", type: "cancel", expectedRevision: created.revision });
+    assert.equal(first.replayed, false);
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.task.status, "cancelled");
+    assert.equal(replay.task.history.filter((event) => event.type === "cancelled").length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("reads only a completed artifact by its verified receipt id", async () => {
+  const f = await fixture();
+  try {
+    const supervisor = await AssistantSupervisor.open(f);
+    await supervisor.createTask({ taskId: "task-download", input: {} });
+    const lease = await supervisor.leaseTask({ taskId: "task-download", workerId: "worker-a" });
+    await supervisor.startTask({ taskId: "task-download", runId: "run-download", fencingToken: lease.fencingToken });
+    const receipt = await receiptFor(f.artifactRoot, "task-download/brief.md", "verified brief\n");
+    receipt.artifactId = "artifact-download";
+    await supervisor.completeTask({ taskId: "task-download", runId: "run-download", fencingToken: lease.fencingToken, artifacts: [receipt] });
+    const artifact = await supervisor.readArtifact("artifact-download");
+    assert.equal(artifact.taskId, "task-download");
+    assert.equal(artifact.filename, "brief.md");
+    assert.equal(artifact.contents.toString("utf8"), "verified brief\n");
+    await assert.rejects(supervisor.readArtifact("missing"), (error) => error?.code === "ARTIFACT_NOT_FOUND");
   } finally {
     await f.close();
   }

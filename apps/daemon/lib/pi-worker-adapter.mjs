@@ -1,7 +1,8 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
-import { extname } from "node:path";
+import { existsSync } from "node:fs";
+import { extname, resolve } from "node:path";
 import { promisify } from "node:util";
+import { ensurePrivateDirectorySync, securePrivateTreeSync } from "./file-permissions.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,6 +33,10 @@ export class PiWorkerAdapter {
     provider = "opencode-go",
     model = "deepseek-v4.1-flash",
     expectedVersion = null,
+    tools = [],
+    extensionPaths = [],
+    skillPaths = [],
+    contextPaths = [],
     env = {}
   }) {
     this.executable = executable;
@@ -41,11 +46,16 @@ export class PiWorkerAdapter {
     this.provider = provider;
     this.model = model;
     this.expectedVersion = expectedVersion;
+    this.tools = [...tools];
+    this.extensionPaths = extensionPaths.map((path) => resolve(path));
+    this.skillPaths = skillPaths.map((path) => resolve(path));
+    this.contextPaths = contextPaths.map((path) => resolve(path));
     this.env = env;
   }
 
   async start({ runId, sessionId = runId, prompt }) {
-    await mkdir(this.sessionDir, { recursive: true });
+    ensurePrivateDirectorySync(this.sessionDir);
+    securePrivateTreeSync(this.sessionDir);
     const command = extname(this.executable) === ".mjs" ? process.execPath : this.executable;
     const prefixArgs = command === process.execPath ? [this.executable] : [];
     if (this.expectedVersion) {
@@ -58,17 +68,23 @@ export class PiWorkerAdapter {
       ...(this.model ? ["--model", this.model] : []),
       "--session-dir", this.sessionDir,
       "--session-id", sessionId,
-      "--no-tools",
+      ...(this.tools.length ? ["--no-builtin-tools", "--tools", this.tools.join(",")] : ["--no-tools"]),
       "--no-extensions",
+      ...this.extensionPaths.flatMap((path) => ["--extension", path]),
       "--no-skills",
+      ...this.skillPaths.flatMap((path) => ["--skill", path]),
       "--no-prompt-templates",
       "--no-themes",
       "--no-context-files",
+      ...this.contextPaths.flatMap((path) => ["--append-system-prompt", path]),
       "--no-approve",
       "--print", "--", prompt
     ];
     const commandArgs = [...prefixArgs, ...argv];
-    const child = spawn(command, commandArgs, {
+    const useParentDeathSignal = process.platform === "linux" && existsSync("/usr/bin/setpriv");
+    const spawnCommand = useParentDeathSignal ? "/usr/bin/setpriv" : command;
+    const spawnArgs = useParentDeathSignal ? ["--pdeathsig", "SIGTERM", "--no-new-privs", "--", command, ...commandArgs] : commandArgs;
+    const child = spawn(spawnCommand, spawnArgs, {
       cwd: this.cwd,
       env: workerEnvironment(this.env),
       stdio: ["ignore", "pipe", "pipe"],

@@ -11,17 +11,29 @@
   <main class="assistant-shell">
     <header class="assistant-header">
       <a class="identity" href="/" aria-label="EV home"><span>EV</span><strong>Your personal assistant</strong></a>
-      <div class="header-actions"><span id="connection-status" role="status">Connecting</span><a href="/workstation" title="Open the developer workstation">Developer view</a></div>
+      <div class="header-actions"><span id="connection-status" role="status">Connecting</span><button id="new-conversation" type="button">New conversation</button><button id="understanding-toggle" type="button" aria-expanded="false" aria-controls="understanding-panel">Understanding you</button><a href="/workstation" title="Open the developer workstation">Developer view</a></div>
     </header>
 
     <section id="conversation" class="conversation" aria-label="Conversation with EV">
       <div id="empty-state" class="empty-state">
         <p class="eyebrow">START HERE</p>
         <h1>What can I help you keep track of?</h1>
-        <p>I currently preserve this conversation and answer read-only questions about EV. Work that needs an agent is saved honestly as not executable until the supervised worker exists.</p>
+        <p>I preserve this conversation and can run one reviewed launch-brief task in an isolated workspace. Other actions remain visibly unavailable until they receive an equally narrow capability.</p>
       </div>
-      <div id="messages" class="messages" aria-live="polite"></div>
+      <div id="messages" class="messages task-card-host" aria-live="polite"></div>
     </section>
+
+    <aside id="understanding-panel" class="understanding-panel" aria-label="Understanding you" hidden>
+      <div class="understanding-head"><div><p class="eyebrow">UNDERSTANDING YOU</p><h2>Guidance EV can use</h2></div><button id="understanding-close" type="button" aria-label="Close understanding panel">Close</button></div>
+      <p class="understanding-intro">Only explicit, source-linked guidance is active here. Memory changes how EV helps; it never grants tools or permission.</p>
+      <form id="memory-form" class="memory-form">
+        <label for="memory-value">Remember guidance</label>
+        <textarea id="memory-value" rows="2" maxlength="2000" placeholder="For example: Keep launch updates concise." required></textarea>
+        <button type="submit">Remember</button>
+      </form>
+      <div id="memory-status" role="status"></div>
+      <div id="memory-list" class="memory-list"></div>
+    </aside>
 
     <form id="composer" class="composer">
       <label for="message-input">Message EV</label>

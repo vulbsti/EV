@@ -10,7 +10,9 @@ A first durable conversation slice is now runnable:
 npm run prototype
 ```
 
-Open `http://127.0.0.1:4317`. The default surface is one conversation backed by SQLite. Messages and honest `not_executable` task states survive reload and daemon restart. EV does not yet run background work.
+Open `http://127.0.0.1:4317`. The default surface is a durable conversation backed by SQLite. EV can run one reviewed launch-status capability through a supervised Pi worker, keep chat usable while it works, cancel it, recover it across a graceful daemon restart, and return a verified artifact. Other actions remain honestly `not_executable`.
+
+`Understanding you` exposes the first source-linked memory controls. Explicit global guidance can be inspected, corrected, stopped, or erased and is recorded in the exact context manifest used by later tasks. A new conversation shares that reviewed guidance without copying the previous transcript.
 
 The previous tmux control surface remains available at `http://127.0.0.1:4317/workstation` as a developer view. Its non-executing orchestrator queue has been removed rather than carried into the assistant. See [the prototype guide](docs/PROTOTYPE.md) for its remaining terminal-control mechanics and limitations.
 
@@ -51,13 +53,20 @@ npm run validate:assistant-run -- artifacts/assistant-runs/2026-09-21/phase0-b0-
 
 The run deliberately omits screenshots when the live terminal wall contains unrelated private content; it retains the computer-use journey and correlated event receipts instead.
 
-The first Phase 2 worker canary is intentionally narrower than product integration: it gives a pinned Pi process no tools, passes one bounded local fixture as text, and lets EV write and verify the returned artifact.
+The original no-tool canary is retained as the narrow lifecycle baseline. The extended canary loads one reviewed skill and extension with workspace-scoped read/write/list/grep and a network-disabled command allowlist:
 
 ```bash
 npm run assistant:phase2-canary
+npm run assistant:phase2-extended
 ```
 
-Outputs and retained Pi sessions stay under ignored `data/assistant-worker/`. A successful command proves the adapter/supervisor/artifact path, not the browser lifecycle or the full Phase 2 exit gate.
+Outputs and retained Pi sessions stay under ignored `data/assistant-worker/`. The product route is intentionally exact: `Create a one-page launch-status brief from the selected local fixture.`
+
+The Phase 4 local canary exercises versioned prepare-only mandates, material-change detection, duplicate suppression, revocation, and scoped prepared artifacts. It is not a real connected-provider alpha:
+
+```bash
+npm run assistant:phase4-local
+```
 
 Each run creates private-permission JSON/JSONL evidence under `artifacts/lab/<run-id>/`. Terminal capture stores sizes, timing, line counts, and hashes—not raw terminal contents.
 

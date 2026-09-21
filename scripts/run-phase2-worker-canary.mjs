@@ -20,7 +20,7 @@ const source = await readFile(sourcePath, "utf8");
 if (Buffer.byteLength(source) > 32_000) throw new Error("The canary source exceeds its 32 KB input budget");
 
 const supervisor = await AssistantSupervisor.open({
-  statePath: join(workerRoot, "supervisor-state.json"),
+  statePath: join(workerRoot, "supervisor-state.sqlite"),
   artifactRoot
 });
 await supervisor.createTask({ taskId, input: { capability: "launch-status-brief-v1", source: "fixtures/assistant/launch-status-source.md" } });
@@ -45,7 +45,6 @@ try {
 } catch (error) {
   result = { status: "failed", code: error.code ?? "PI_START_FAILED", message: "Pi worker could not start with the pinned runtime" };
 }
-
 if (result.status !== "completed") {
   await supervisor.failTask({ taskId, runId, fencingToken: lease.fencingToken, error: { code: result.code, message: result.message } });
   console.error(JSON.stringify({ taskId, runId, status: "failed", code: result.code }));
@@ -86,3 +85,4 @@ if (result.status !== "completed") {
     }, null, 2));
   }
 }
+supervisor.close();

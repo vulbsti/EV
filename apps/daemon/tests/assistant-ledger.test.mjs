@@ -148,6 +148,23 @@ test("the Phase 1 not_executable route creates a durable task and ordered turn",
   });
 });
 
+test("records a worker intent without duplicating the authoritative supervisor task", async () => {
+  await withLedger(async (ledger) => {
+    const turn = ledger.recordTurn({
+      conversationId: "c1",
+      clientMessageId: "phase2-worker",
+      userText: "Create the reviewed brief",
+      assistantText: "I saved the task.",
+      intent: { kind: "action", route: "worker", capability: "extended-launch-brief-v1" },
+      skipTask: true
+    });
+    assert.equal(turn.intent.route, "worker");
+    assert.equal(turn.intent.status, "recorded");
+    assert.equal(turn.task, null);
+    assert.deepEqual(ledger.listTasks("c1"), []);
+  });
+});
+
 test("turn write is transactional when required input is invalid", async () => {
   await withLedger(async (ledger) => {
     assert.throws(() => ledger.recordTurn({ conversationId: "c1", clientMessageId: "bad", userText: "missing assistant" }), /assistantText/);

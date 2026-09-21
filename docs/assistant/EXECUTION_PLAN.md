@@ -201,7 +201,7 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 
 ### Phase 2 — one real supervised worker
 
-**Status (2026-09-21):** started. The standalone live canary now has a pinned no-tool Pi adapter, a single-process persisted lifecycle with lease tokens, process-group timeout/cancel primitives, and EV-side artifact verification. Three real launch-brief runs completed; the first exposed stale run-context wording, the corrected rerun passed review, and the third proved the exact Pi version gate. Cross-process transactional ownership, supervisor-driven cancellation, reconciled restart recovery, conversation/UI integration, and browser fault journeys remain open, so Phase 2 is not complete.
+**Status (2026-09-21):** bounded Phase 2 accepted. SQLite now owns transactional leases, fencing, commands, revisions, and task events across instances. The product conversation routes one exact reviewed capability to Pi with an explicit skill/extension, isolated workspace, scoped file tools, network-disabled command allowlist, reduced environment, budgets, process-group cancellation, receipt-bound downloads, and objective artifact checks. Computer use produced four verified completions and one intentional cancellation; concurrent chat, reload, download, cancellation, and a real `started -> interrupted -> started -> completed` graceful-restart path passed without duplicate cards or artifacts. Mobile visual verification remains unproven because the browser backend ignored viewport overrides.
 
 **Question:** Can EV complete, verify, and return one bounded local task while chat remains usable?
 
@@ -246,6 +246,8 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 
 ### Phase 3 — context, corrections, and personal fit
 
+**Status (2026-09-22):** initial explicit-guidance slice accepted; broader personal-model depth remains later work. SQLite stores sources, active versus candidate claims, immutable revisions, proposals, scoped recall, stop-use, erase epochs, temporary expiry, and exact context manifests. The `Understanding you` UI passed add, explain, correction, persistence, and stop-use journeys. On the same fixture, the no-guidance brief was 685 words and the explicitly guided run was 247 words against an under-250-word instruction; their manifests respectively contain zero claims and the exact one claim/source revision used. A fresh conversation opened with no copied transcript yet retrieved the same reviewed global guidance and produced one verified task. Automated scope, deletion, stale-revision, proposal, and manifest tests pass. Richer conflict and temporary-exception UX remain open.
+
 **Question:** Does explicit, provenance-linked personal context improve assistance without stale assumptions or cross-scope leakage?
 
 **Indicative effort:** 4–7 working days.
@@ -285,6 +287,8 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 **Branch condition:** If explicit structured views equal richer retrieval/graph variants, ship the simpler path and defer the graph. If personality changes do not improve outcomes, keep a stable collaboration policy and defer autonomous adaptation.
 
 ### Phase 4 — one read-only connected standing responsibility
+
+**Status (2026-09-21):** provider-neutral core and local live canary complete; real connected alpha blocked on provider selection/authentication. The SQLite mandate/reconciliation boundary versions responsibilities, cursors and source revisions, suppresses duplicate/out-of-order events, reports stale/no-data states, treats connected text as untrusted data, revokes queued work, and hands material changes to one deterministic prepare-only worker task. Two local source revisions produced verified scoped artifacts, a repeated revision produced no task, and revocation blocked the later revision. This is readiness evidence, not the three-real-change exit gate.
 
 **Question:** Can EV notice a meaningful external change while the browser is closed and prepare a useful, current result without taking consequential action?
 

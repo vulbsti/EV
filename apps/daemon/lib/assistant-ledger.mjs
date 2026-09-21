@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { ensurePrivateDirectorySync, secureDatabaseFilesSync } from "./file-permissions.mjs";
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -116,13 +116,15 @@ function mapTask(row) {
  * intentional here: one transaction is the boundary for an accepted turn.
  */
 export function createAssistantLedger({ path = ":memory:", clock = () => new Date() } = {}) {
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  if (path !== ":memory:") ensurePrivateDirectorySync(dirname(path));
   const db = new DatabaseSync(path);
+  if (path !== ":memory:") secureDatabaseFilesSync(path);
   let initialized = false;
 
   function initialize() {
     if (!initialized) {
       db.exec(SCHEMA);
+      if (path !== ":memory:") secureDatabaseFilesSync(path);
       initialized = true;
     }
     return { path };
@@ -167,7 +169,7 @@ export function createAssistantLedger({ path = ":memory:", clock = () => new Dat
     const timestamp = now();
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
-    const routedAction = input.route === "orchestrator" || input.route === "worker" || input.route === "not_executable" || input.intentKind === "action" || input.intent?.kind === "action" || input.intent?.route === "not_executable";
+    const routedAction = input.skipTask !== true && (input.route === "orchestrator" || input.route === "worker" || input.route === "not_executable" || input.intentKind === "action" || input.intent?.kind === "action" || input.intent?.route === "not_executable");
     const intentInput = input.intent ?? (input.intentKind || input.route ? { kind: input.intentKind ?? "conversation", route: input.route ?? "companion" } : null);
     const hasIntent = Boolean(intentInput || routedAction);
     const intentId = hasIntent ? randomUUID() : null;
