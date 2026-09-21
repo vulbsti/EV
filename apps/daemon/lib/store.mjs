@@ -37,20 +37,6 @@ export class EventStore {
     return (await this.all()).slice(-Math.max(1, Math.min(500, limit))).reverse();
   }
 
-  async tasks() {
-    return (await this.all())
-      .filter((event) => event.type === "task.delegated")
-      .map((event) => ({
-        taskId: event.payload.taskId,
-        utteranceId: event.payload.utteranceId,
-        transcript: event.payload.transcript,
-        selectedPaneId: event.payload.selectedPaneId,
-        status: "awaiting_orchestrator",
-        createdAt: event.occurredAt
-      }))
-      .reverse();
-  }
-
   async explanationSession(sessionId) {
     const events = (await this.all()).filter((event) => event.correlationId === sessionId);
     const started = events.find((event) => event.type === "explanation.session.started");

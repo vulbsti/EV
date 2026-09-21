@@ -1,0 +1,1594 @@
+<!doctype html>
+<html lang="en" data-visualize-standalone>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>EV Personal Assistant — Interface Concept</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="EV Personal Assistant — Interface Concept" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot; data-visualize-standalone&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;EV Personal Assistant — Interface Concept&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(
+    --background,
+    var(--color-background-primary, light-dark(rgb(255 255 255), rgb(24 24 24)))
+  ) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: var(
+    --color-background-primary,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --card-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --popover: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255), rgb(45 45 45))
+  );
+  --popover-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --primary: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --primary-foreground: var(
+    --color-text-inverse,
+    light-dark(rgb(255 255 255), rgb(13 13 13))
+  );
+  --secondary: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+  );
+  --secondary-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: var(
+    --color-text-secondary,
+    light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+  );
+  --accent: var(
+    --color-background-info,
+    light-dark(rgb(229 242 255), rgb(13 39 63))
+  );
+  --accent-foreground: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --destructive: var(
+    --color-text-warning,
+    light-dark(rgb(226 85 7), rgb(255 133 73))
+  );
+  --border: var(
+    --color-border-secondary,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+  --input: var(
+    --color-border-primary,
+    light-dark(
+      rgb(26 28 31 / 11.8%),
+      color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+    )
+  );
+  --ring: var(
+    --color-ring-primary,
+    light-dark(rgb(51 156 255), rgb(131 195 255 / 76%))
+  );
+  --font-size-base: var(--font-text-md-size, 14px);
+  --blue: light-dark(rgb(51 156 255), rgb(51 156 255));
+  --orange: light-dark(rgb(226 85 7), rgb(251 106 34));
+  --green: light-dark(rgb(0 162 64), rgb(64 201 119));
+  --red: light-dark(rgb(224 46 42), rgb(255 103 100));
+  --purple: light-dark(rgb(146 79 247), rgb(173 123 249));
+  --yellow: light-dark(rgb(255 195 0), rgb(255 210 64));
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --icon-size: 16px;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --corner-shape: round;
+  --radius: var(--border-radius-lg, 10px);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  /* Preserve MCP aliases for older inline renderers without creating :root cycles. */
+  --color-background-primary: var(
+    --background,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --color-text-primary: var(
+    --foreground,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --color-border-secondary: var(
+    --border,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+
+  margin: 0;
+  padding: var(--visualize-paint-gutter, 0px);
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans) !important;
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--font-weight-medium, 500);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: var(--corner-shape);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+}
+
+.table :is(th, td) {
+  padding-block: 10px;
+  padding-inline: 0 24px;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table-responsive &gt; .table :is(th, td) {
+  overflow-wrap: break-word;
+}
+
+.table :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+
+.table :is(caption, thead th) {
+  font-weight: 600;
+}
+
+.table thead th {
+  padding-block: 8px;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+.table.table-sm :is(th, td) {
+  padding-block: 6px;
+}
+
+.table.table-sm :is(th, td):not(:last-child) {
+  padding-inline-end: 16px;
+}
+
+.table :is(.text-end, [align=&quot;right&quot;]) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.table :is(.text-center, [align=&quot;center&quot;]) {
+  text-align: center;
+}
+
+.table .text-nowrap {
+  white-space: nowrap;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: var(--corner-shape);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card, .progress) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+hr {
+  width: 100%;
+  height: 1px;
+  margin-block: 6px;
+  border: 0;
+  background: var(--border);
+}
+
+.nav {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.progress {
+  display: flex;
+  height: 8px;
+  margin-block: calc((var(--line-height-normal, 1.5em) - 8px) / 2);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+}
+
+.progress-bar:only-child {
+  border-radius: var(--radius-full);
+}
+
+.progress-bar {
+  height: 100%;
+  flex-shrink: 0;
+  border: 0;
+  background: var(--viz-series-1);
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.nav-link,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn,
+.nav-link {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover,
+.nav-link:not(:disabled):not([aria-disabled=&quot;true&quot;]):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.nav-pills .nav-link {
+  min-width: 0;
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.nav-justified .nav-link {
+  flex: 1 1 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.nav-pills .nav-link.active {
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+.btn:disabled,
+.nav-link:disabled,
+.nav-link[aria-disabled=&quot;true&quot;] {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: var(--corner-shape);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: var(--corner-shape);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+  [aria-pressed=&quot;true&quot;],
+  [aria-selected=&quot;true&quot;],
+  .is-selected
+) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible,
+.nav-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .btn,
+  .nav-link,
+  .form-control,
+  .form-select {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Keep small-screen WebKit from zooming when a text field receives focus. */
+  .form-control,
+  .form-select {
+    font-size: max(16px, var(--font-size-normal));
+  }
+
+  .form-control[type=&quot;file&quot;]::file-selector-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .form-control-color[type=&quot;color&quot;] {
+    width: 44px;
+    height: 44px;
+  }
+
+  .form-control:is(
+    [type=&quot;date&quot;],
+    [type=&quot;datetime-local&quot;],
+    [type=&quot;month&quot;],
+    [type=&quot;time&quot;],
+    [type=&quot;week&quot;]
+  ) {
+    min-width: 0;
+    max-width: 100%;
+    padding-block: 8px;
+  }
+
+  .form-check {
+    min-height: 44px;
+    padding-inline: 15px;
+  }
+
+  .form-check-input {
+    position: relative;
+  }
+
+  .form-check-input::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    content: &quot;&quot;;
+    transform: translate(-50%, -50%);
+  }
+
+  .form-check-label {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .form-range {
+    height: 44px;
+    touch-action: pan-y;
+  }
+
+  .form-range::-webkit-slider-runnable-track {
+    height: 44px;
+  }
+
+  .form-range::-moz-range-track {
+    height: 44px;
+  }
+
+  .form-range::-webkit-slider-thumb {
+    margin-top: 12px;
+  }
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+/* Model-authored chart rules can otherwise stretch icons after these styles load. */
+svg.lucide {
+  display: block;
+  width: var(--icon-size) !important;
+  height: var(--icon-size) !important;
+  flex: none;
+  margin: 0 !important;
+  stroke-width: 1.6;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;ev-assistant-concept&quot; aria-label=&quot;EV personal assistant interface concept&quot;&gt;
+  &lt;style&gt;
+    #ev-assistant-concept { --ev-bg:light-dark(#f7f6f2,#171a19); --ev-panel:light-dark(#ffffff,#202422); --ev-ink:light-dark(#24352e,#e4eee7); --ev-sub:light-dark(#586b60,#adc0b3); --ev-line:light-dark(#d9e1da,#3d4941); --ev-accent:light-dark(#275e47,#abd8bc); --ev-accent-ink:light-dark(#ffffff,#173724); --ev-soft:light-dark(#e8eee6,#2c3a2f); font-family:Inter,ui-sans-serif,system-ui,sans-serif; color:var(--ev-ink); background:var(--ev-bg); border-radius:16px; overflow:clip; }
+    #ev-assistant-concept * { box-sizing:border-box; }
+    #ev-assistant-concept button,#ev-assistant-concept textarea { font:inherit; color:inherit; }
+    #ev-assistant-concept button { cursor:pointer; border:1px solid transparent; background:transparent; padding:9px 12px; border-radius:9px; text-align:left; }
+    #ev-assistant-concept button:hover { background:var(--ev-soft); }
+    #ev-assistant-concept .ev-top { display:flex; align-items:center; gap:12px; padding:18px 22px; border-bottom:1px solid var(--ev-line); flex-wrap:wrap; }
+    #ev-assistant-concept .ev-brand { display:flex; align-items:center; gap:10px; margin-right:auto; }
+    #ev-assistant-concept .ev-mark { border:1px solid var(--ev-line); background:var(--ev-panel); border-radius:50%; padding:10px; letter-spacing:-1px; font-weight:500; }
+    #ev-assistant-concept .ev-sub { color:var(--ev-sub); }
+    #ev-assistant-concept .ev-tag { color:var(--ev-sub); border-left:1px solid var(--ev-line); padding-left:12px; }
+    #ev-assistant-concept .ev-layout { display:grid; grid-template-columns:minmax(0,1fr); }
+    #ev-assistant-concept[data-expanded=&quot;true&quot;] .ev-layout { grid-template-columns:170px minmax(0,1fr); }
+    #ev-assistant-concept .ev-nav { padding:22px 12px; border-right:1px solid var(--ev-line); background:var(--ev-panel); }
+    #ev-assistant-concept .ev-nav button { display:block; width:100%; margin-bottom:6px; }
+    #ev-assistant-concept button[aria-pressed=&quot;true&quot;] { background:var(--ev-soft); color:var(--ev-accent); }
+    #ev-assistant-concept .ev-nav hr { border:0; border-top:1px solid var(--ev-line); margin:20px 10px; }
+    #ev-assistant-concept .ev-main { min-width:0; padding:30px clamp(16px,4vw,48px) 20px; }
+    #ev-assistant-concept .ev-chat { max-width:690px; margin:auto; }
+    #ev-assistant-concept .ev-date { text-align:center; color:var(--ev-sub); margin:0 0 25px; }
+    #ev-assistant-concept .ev-user { max-width:86%; margin:10px 0 10px auto; padding:12px 16px; background:var(--ev-soft); border-radius:16px 16px 4px 16px; width:fit-content; }
+    #ev-assistant-concept .ev-response { margin:25px 0 20px; max-width:95%; }
+    #ev-assistant-concept .ev-response p { margin:10px 0; }
+    #ev-assistant-concept .ev-byline { display:flex; gap:9px; align-items:center; font-weight:500; }
+    #ev-assistant-concept .ev-dot { width:7px; height:7px; border-radius:50%; background:var(--ev-accent); display:inline-block; }
+    #ev-assistant-concept .ev-task { display:flex; align-items:center; gap:12px; padding:14px; margin:12px 0; background:var(--ev-panel); border:1px solid var(--ev-line); border-radius:12px; width:100%; }
+    #ev-assistant-concept .ev-task .ev-task-text { flex:1; min-width:0; }
+    #ev-assistant-concept .ev-task .ev-task-text span { display:block; margin-top:5px; }
+    #ev-assistant-concept .ev-composer { border:1px solid var(--ev-line); background:var(--ev-panel); border-radius:16px; padding:14px; margin:24px 0 8px; }
+    #ev-assistant-concept textarea { border:0; background:transparent; resize:vertical; min-height:64px; width:100%; padding:0; }
+    #ev-assistant-concept .ev-compose-bottom { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; }
+    #ev-assistant-concept .ev-primary { background:var(--ev-accent); color:var(--ev-accent-ink); }
+    #ev-assistant-concept .ev-primary:hover { background:var(--ev-accent); opacity:.9; }
+    #ev-assistant-concept .ev-outline { border-color:var(--ev-line); background:var(--ev-panel); }
+    #ev-assistant-concept .ev-heading { margin:0 0 10px; font-weight:500; }
+    #ev-assistant-concept .ev-section { max-width:760px; margin:auto; }
+    #ev-assistant-concept .ev-section &gt; p { color:var(--ev-sub); margin:8px 0 22px; }
+    #ev-assistant-concept .ev-row { border-bottom:1px solid var(--ev-line); padding:18px 0; }
+    #ev-assistant-concept .ev-row-head { display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap; }
+    #ev-assistant-concept .ev-row p { margin:8px 0; }
+    #ev-assistant-concept .ev-detail { background:var(--ev-panel); border:1px solid var(--ev-line); border-radius:14px; padding:20px; margin:16px 0; }
+    #ev-assistant-concept .ev-detail-top { display:flex; justify-content:space-between; align-items:start; gap:12px; }
+    #ev-assistant-concept .ev-detail p { margin:12px 0; }
+    #ev-assistant-concept .ev-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+    #ev-assistant-concept .ev-steps { list-style:none; padding:0; margin:16px 0; }
+    #ev-assistant-concept .ev-steps li { padding:8px 0; }
+    #ev-assistant-concept .ev-steps li span { color:var(--ev-sub); display:inline-block; width:28px; }
+    #ev-assistant-concept .ev-scenes { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:16px 0; }
+    #ev-assistant-concept .ev-scene { background:var(--ev-soft); padding:16px; border-radius:10px; min-height:140px; }
+    #ev-assistant-concept .ev-scene p { margin:14px 0 0; }
+    #ev-assistant-concept .ev-live { margin:10px 0 0; color:var(--ev-sub); }
+    #ev-assistant-concept [hidden] { display:none!important; }
+    #ev-assistant-concept .ev-bottom { padding:12px 22px; border-top:1px solid var(--ev-line); color:var(--ev-sub); display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    #ev-assistant-concept[data-corners=&quot;square&quot;] button,#ev-assistant-concept[data-corners=&quot;square&quot;] .ev-task,#ev-assistant-concept[data-corners=&quot;square&quot;] .ev-composer { border-radius:5px; }
+    @media(max-width:650px) { #ev-assistant-concept[data-expanded=&quot;true&quot;] .ev-layout { grid-template-columns:minmax(0,1fr); } #ev-assistant-concept .ev-nav { border-right:0; border-bottom:1px solid var(--ev-line); padding:10px; display:flex; flex-wrap:wrap; gap:4px; } #ev-assistant-concept .ev-nav button { width:auto; margin:0; } #ev-assistant-concept .ev-nav hr { display:none; } #ev-assistant-concept .ev-top { padding:14px; } #ev-assistant-concept .ev-tag { border:0; padding:0; } #ev-assistant-concept .ev-scenes { grid-template-columns:1fr; } #ev-assistant-concept .ev-response { max-width:100%; } #ev-assistant-concept textarea { font-size:16px; } }
+    @media(pointer:coarse) { #ev-assistant-concept button { min-height:44px; } }
+  &lt;/style&gt;
+  &lt;header class=&quot;ev-top&quot;&gt;
+    &lt;div class=&quot;ev-brand&quot;&gt;&lt;span class=&quot;ev-mark&quot;&gt;ev&lt;/span&gt;&lt;div&gt;&lt;div&gt;EV&lt;/div&gt;&lt;div class=&quot;ev-sub&quot;&gt;Your personal assistant&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;
+    &lt;button id=&quot;ev-activity&quot; aria-label=&quot;Open background work&quot;&gt;&lt;span class=&quot;ev-dot&quot;&gt;&lt;/span&gt; &lt;span id=&quot;ev-activity-label&quot;&gt;Working on 2 things&lt;/span&gt;&lt;/button&gt;
+    &lt;button id=&quot;ev-expand&quot; class=&quot;ev-outline&quot; aria-expanded=&quot;false&quot; aria-controls=&quot;ev-navigation&quot;&gt;Open workspace&lt;/button&gt;
+  &lt;/header&gt;
+  &lt;div class=&quot;ev-layout&quot;&gt;
+    &lt;nav id=&quot;ev-navigation&quot; class=&quot;ev-nav&quot; aria-label=&quot;Workspace&quot; hidden&gt;
+      &lt;button data-page=&quot;chat&quot; aria-pressed=&quot;true&quot;&gt;Conversation&lt;/button&gt;
+      &lt;button data-page=&quot;work&quot; aria-pressed=&quot;false&quot;&gt;Work&lt;/button&gt;
+      &lt;button data-page=&quot;projects&quot; aria-pressed=&quot;false&quot;&gt;Projects&lt;/button&gt;
+      &lt;button data-page=&quot;history&quot; aria-pressed=&quot;false&quot;&gt;History&lt;/button&gt;
+      &lt;hr&gt;
+      &lt;button data-page=&quot;memory&quot; aria-pressed=&quot;false&quot;&gt;Memory&lt;/button&gt;
+      &lt;button data-page=&quot;connections&quot; aria-pressed=&quot;false&quot;&gt;Connections&lt;/button&gt;
+    &lt;/nav&gt;
+    &lt;main class=&quot;ev-main&quot;&gt;
+      &lt;section id=&quot;ev-page-chat&quot; class=&quot;ev-chat&quot; aria-label=&quot;Conversation&quot;&gt;
+        &lt;div class=&quot;ev-date&quot;&gt;Today&lt;/div&gt;
+        &lt;div class=&quot;ev-user&quot;&gt;What&#x27;s the update on the website launch?&lt;/div&gt;
+        &lt;div class=&quot;ev-user&quot;&gt;Also design a new video reel for it.&lt;/div&gt;
+        &lt;div class=&quot;ev-response&quot;&gt;
+          &lt;div class=&quot;ev-byline&quot;&gt;&lt;span class=&quot;ev-dot&quot;&gt;&lt;/span&gt; EV&lt;/div&gt;
+          &lt;p&gt;The landing page is ready. The domain connection is the last thing holding up the launch.&lt;/p&gt;
+          &lt;p&gt;I&#x27;ll work on the reel using the launch brief. I&#x27;ll bring back a storyboard before the render.&lt;/p&gt;
+          &lt;button class=&quot;ev-task&quot; data-open-task=&quot;launch&quot;&gt;&lt;span&gt;↗&lt;/span&gt;&lt;span class=&quot;ev-task-text&quot;&gt;Website launch&lt;span class=&quot;ev-sub&quot;&gt;Ready for your domain connection&lt;/span&gt;&lt;/span&gt;&lt;span&gt;→&lt;/span&gt;&lt;/button&gt;
+          &lt;button class=&quot;ev-task&quot; data-open-task=&quot;reel&quot;&gt;&lt;span&gt;◌&lt;/span&gt;&lt;span class=&quot;ev-task-text&quot;&gt;Launch reel&lt;span class=&quot;ev-sub&quot; data-reel-state&gt;Developing the storyboard&lt;/span&gt;&lt;/span&gt;&lt;span&gt;→&lt;/span&gt;&lt;/button&gt;
+        &lt;/div&gt;
+        &lt;div id=&quot;ev-chat-additions&quot;&gt;&lt;/div&gt;
+        &lt;div id=&quot;ev-inline-detail&quot; hidden&gt;&lt;/div&gt;
+        &lt;form id=&quot;ev-composer&quot; class=&quot;ev-composer&quot;&gt;
+          &lt;textarea id=&quot;ev-input&quot; aria-label=&quot;Message EV&quot; placeholder=&quot;Tell EV what you need…&quot;&gt;&lt;/textarea&gt;
+          &lt;div class=&quot;ev-compose-bottom&quot;&gt;&lt;span class=&quot;ev-sub&quot;&gt;You can keep talking while I work.&lt;/span&gt;&lt;button id=&quot;ev-send&quot; type=&quot;button&quot; class=&quot;ev-primary&quot;&gt;Send ↑&lt;/button&gt;&lt;/div&gt;
+        &lt;/form&gt;
+        &lt;div class=&quot;ev-live&quot; id=&quot;ev-chat-status&quot; aria-live=&quot;polite&quot;&gt;&lt;/div&gt;
+      &lt;/section&gt;
+      &lt;section id=&quot;ev-page-work&quot; class=&quot;ev-section&quot; hidden aria-label=&quot;Work&quot;&gt;
+        &lt;h2 class=&quot;ev-heading&quot;&gt;Taken care of, in one place.&lt;/h2&gt;&lt;p&gt;See what needs you and what EV is moving forward.&lt;/p&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div class=&quot;ev-sub&quot;&gt;Needs you&lt;/div&gt;&lt;button class=&quot;ev-task&quot; data-open-task=&quot;launch&quot;&gt;&lt;span class=&quot;ev-task-text&quot;&gt;Website launch&lt;span class=&quot;ev-sub&quot;&gt;Connect the domain to finish deployment&lt;/span&gt;&lt;/span&gt;&lt;span&gt;→&lt;/span&gt;&lt;/button&gt;&lt;/div&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div class=&quot;ev-sub&quot;&gt;In progress&lt;/div&gt;&lt;button class=&quot;ev-task&quot; data-open-task=&quot;reel&quot;&gt;&lt;span class=&quot;ev-task-text&quot;&gt;Launch reel&lt;span class=&quot;ev-sub&quot; data-reel-state&gt;Developing the storyboard&lt;/span&gt;&lt;/span&gt;&lt;span&gt;→&lt;/span&gt;&lt;/button&gt;&lt;/div&gt;
+        &lt;div id=&quot;ev-work-detail&quot; hidden&gt;&lt;/div&gt;
+      &lt;/section&gt;
+      &lt;section id=&quot;ev-page-projects&quot; class=&quot;ev-section&quot; hidden aria-label=&quot;Projects&quot;&gt;
+        &lt;h2 class=&quot;ev-heading&quot;&gt;Projects&lt;/h2&gt;&lt;p&gt;EV keeps the brief, decisions, and work together.&lt;/p&gt;
+        &lt;div class=&quot;ev-detail&quot;&gt;&lt;div&gt;Website launch&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;A clear introduction to the product, with a launch page and a short reel.&lt;/p&gt;&lt;p&gt;Latest decision: lead with what the product helps people do.&lt;/p&gt;&lt;div class=&quot;ev-actions&quot;&gt;&lt;button class=&quot;ev-outline&quot; data-open-task=&quot;launch&quot;&gt;Website task&lt;/button&gt;&lt;button class=&quot;ev-outline&quot; data-open-task=&quot;reel&quot;&gt;Reel task&lt;/button&gt;&lt;/div&gt;&lt;/div&gt;
+        &lt;div id=&quot;ev-project-detail&quot; hidden&gt;&lt;/div&gt;
+      &lt;/section&gt;
+      &lt;section id=&quot;ev-page-history&quot; class=&quot;ev-section&quot; hidden aria-label=&quot;History&quot;&gt;
+        &lt;h2 class=&quot;ev-heading&quot;&gt;History&lt;/h2&gt;&lt;p&gt;Conversations, decisions, and the things you made.&lt;/p&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div&gt;Today · Launch and reel&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;Two requests, one conversation.&lt;/p&gt;&lt;button class=&quot;ev-outline&quot; data-go-chat&gt;Open conversation&lt;/button&gt;&lt;/div&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div&gt;Yesterday · Visual direction&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;“Keep the launch clear and minimal. Show the product early.”&lt;/p&gt;&lt;button class=&quot;ev-outline&quot; data-go-memory&gt;View remembered decision&lt;/button&gt;&lt;/div&gt;
+      &lt;/section&gt;
+      &lt;section id=&quot;ev-page-memory&quot; class=&quot;ev-section&quot; hidden aria-label=&quot;Memory&quot;&gt;
+        &lt;h2 class=&quot;ev-heading&quot;&gt;What EV knows&lt;/h2&gt;&lt;p&gt;Useful context, with its source and room to change.&lt;/p&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div class=&quot;ev-row-head&quot;&gt;&lt;span&gt;Keep launch updates concise&lt;/span&gt;&lt;span class=&quot;ev-sub&quot;&gt;You said this&lt;/span&gt;&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;Scope: website launch · Source: yesterday&#x27;s conversation&lt;/p&gt;&lt;div class=&quot;ev-actions&quot;&gt;&lt;button class=&quot;ev-outline&quot; id=&quot;ev-memory-source&quot;&gt;Why I remember this&lt;/button&gt;&lt;button class=&quot;ev-outline&quot; id=&quot;ev-memory-correct&quot;&gt;Add an exception&lt;/button&gt;&lt;button class=&quot;ev-outline&quot; id=&quot;ev-memory-forget&quot;&gt;Stop using&lt;/button&gt;&lt;/div&gt;&lt;p id=&quot;ev-memory-note&quot; aria-live=&quot;polite&quot; hidden&gt;&lt;/p&gt;&lt;/div&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div class=&quot;ev-row-head&quot;&gt;&lt;span&gt;Minimal visuals for the launch&lt;/span&gt;&lt;span class=&quot;ev-sub&quot;&gt;Project decision&lt;/span&gt;&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;Applies to the launch. It is not a general preference for every project.&lt;/p&gt;&lt;/div&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div class=&quot;ev-row-head&quot;&gt;&lt;span&gt;You may prefer three creative directions&lt;/span&gt;&lt;span class=&quot;ev-sub&quot;&gt;Tentative&lt;/span&gt;&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;Inferred from two briefs. EV should check before treating this as a lasting preference.&lt;/p&gt;&lt;/div&gt;
+      &lt;/section&gt;
+      &lt;section id=&quot;ev-page-connections&quot; class=&quot;ev-section&quot; hidden aria-label=&quot;Connections&quot;&gt;
+        &lt;h2 class=&quot;ev-heading&quot;&gt;Give EV the right tools.&lt;/h2&gt;&lt;p&gt;Connect an app when you need it. You control where EV can act.&lt;/p&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div class=&quot;ev-row-head&quot;&gt;&lt;span&gt;Notion&lt;/span&gt;&lt;button class=&quot;ev-outline&quot; data-connect=&quot;Notion&quot;&gt;Connect&lt;/button&gt;&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;Find notes and prepare documents in selected pages.&lt;/p&gt;&lt;/div&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div class=&quot;ev-row-head&quot;&gt;&lt;span&gt;Google Workspace&lt;/span&gt;&lt;button class=&quot;ev-outline&quot; data-connect=&quot;Google Workspace&quot;&gt;Connect&lt;/button&gt;&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;Work with selected documents, mail, and calendars.&lt;/p&gt;&lt;/div&gt;
+        &lt;div class=&quot;ev-row&quot;&gt;&lt;div class=&quot;ev-row-head&quot;&gt;&lt;span&gt;Blender&lt;/span&gt;&lt;button class=&quot;ev-outline&quot; data-connect=&quot;Blender&quot;&gt;Set up&lt;/button&gt;&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;Create and render scenes in an isolated workspace.&lt;/p&gt;&lt;/div&gt;
+        &lt;div id=&quot;ev-connection-detail&quot; class=&quot;ev-detail&quot; hidden aria-live=&quot;polite&quot;&gt;&lt;/div&gt;
+      &lt;/section&gt;
+    &lt;/main&gt;
+  &lt;/div&gt;
+  &lt;footer class=&quot;ev-bottom&quot;&gt;&lt;span&gt;Interface concept · sample data&lt;/span&gt;&lt;span&gt;Conversation first. Details when you need them.&lt;/span&gt;&lt;/footer&gt;
+  &lt;script&gt;
+  (() =&gt; {
+    const root = document.getElementById(&#x27;ev-assistant-concept&#x27;);
+    const one = selector =&gt; root.querySelector(selector);
+    const all = selector =&gt; [...root.querySelectorAll(selector)];
+    const view = { expanded: false, page: &#x27;chat&#x27;, corners: &#x27;soft&#x27; };
+    let paused = false;
+    let storyboardReady = false;
+    const escape = value =&gt; String(value).replace(/[&amp;&lt;&gt;&quot;&#x27;]/g, character =&gt; ({&#x27;&amp;&#x27;:&#x27;&amp;amp;&#x27;,&#x27;&lt;&#x27;:&#x27;&amp;lt;&#x27;,&#x27;&gt;&#x27;:&#x27;&amp;gt;&#x27;,&#x27;&quot;&#x27;:&#x27;&amp;quot;&#x27;,&quot;&#x27;&quot;:&#x27;&amp;#39;&#x27;}[character]));
+    function renderShell() {
+      root.dataset.expanded = String(view.expanded);
+      root.dataset.corners = view.corners;
+      one(&#x27;#ev-navigation&#x27;).hidden = !view.expanded;
+      one(&#x27;#ev-expand&#x27;).textContent = view.expanded ? &#x27;Close workspace&#x27; : &#x27;Open workspace&#x27;;
+      one(&#x27;#ev-expand&#x27;).setAttribute(&#x27;aria-expanded&#x27;, String(view.expanded));
+      all(&#x27;[id^=&quot;ev-page-&quot;]&#x27;).forEach(panel =&gt; panel.hidden = panel.id !== `ev-page-${view.page}`);
+      all(&#x27;[data-page]&#x27;).forEach(button =&gt; button.setAttribute(&#x27;aria-pressed&#x27;, String(button.dataset.page === view.page)));
+    }
+    function show(page) { view.page = page; if (page !== &#x27;chat&#x27;) view.expanded = true; renderShell(); }
+    function updateTaskState() {
+      const label = paused ? &#x27;Paused at your request&#x27; : storyboardReady ? &#x27;Storyboard ready for review&#x27; : &#x27;Developing the storyboard&#x27;;
+      all(&#x27;[data-reel-state]&#x27;).forEach(element =&gt; element.textContent = label);
+      one(&#x27;#ev-activity-label&#x27;).textContent = paused ? &#x27;Reel paused · launch needs you&#x27; : storyboardReady ? &#x27;Storyboard ready&#x27; : &#x27;Working on 2 things&#x27;;
+    }
+    function detail(task, container) {
+      const target = one(container);
+      target.hidden = false;
+      if (task === &#x27;launch&#x27;) {
+        target.innerHTML = &#x27;&lt;div class=&quot;ev-detail&quot;&gt;&lt;div class=&quot;ev-detail-top&quot;&gt;&lt;span&gt;Website launch&lt;/span&gt;&lt;button data-close-detail aria-label=&quot;Close task detail&quot;&gt;×&lt;/button&gt;&lt;/div&gt;&lt;p&gt;The page is built and reviewed. The domain still needs to be connected before deployment can finish.&lt;/p&gt;&lt;ul class=&quot;ev-steps&quot;&gt;&lt;li&gt;&lt;span&gt;✓&lt;/span&gt; Page and copy reviewed&lt;/li&gt;&lt;li&gt;&lt;span&gt;✓&lt;/span&gt; Mobile layout checked&lt;/li&gt;&lt;li&gt;&lt;span&gt;○&lt;/span&gt; Domain connection&lt;/li&gt;&lt;/ul&gt;&lt;button class=&quot;ev-outline&quot; data-draft-domain&gt;Ask EV about the domain&lt;/button&gt;&lt;p class=&quot;ev-sub&quot;&gt;Sample task · no deployment is connected in this concept.&lt;/p&gt;&lt;/div&gt;&#x27;;
+      } else {
+        target.innerHTML = &#x27;&lt;div class=&quot;ev-detail&quot;&gt;&lt;div class=&quot;ev-detail-top&quot;&gt;&lt;span&gt;Launch reel&lt;/span&gt;&lt;button data-close-detail aria-label=&quot;Close task detail&quot;&gt;×&lt;/button&gt;&lt;/div&gt;&lt;p&gt;A short vertical reel using the approved launch brief.&lt;/p&gt;&lt;ul class=&quot;ev-steps&quot;&gt;&lt;li&gt;&lt;span&gt;✓&lt;/span&gt; Launch brief and decisions loaded&lt;/li&gt;&lt;li&gt;&lt;span&gt;◌&lt;/span&gt; &lt;span data-reel-state style=&quot;width:auto&quot;&gt;&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span&gt;○&lt;/span&gt; Render after storyboard review&lt;/li&gt;&lt;/ul&gt;&lt;div class=&quot;ev-actions&quot;&gt;&lt;button class=&quot;ev-outline&quot; data-pause&gt;&#x27;+(paused?&#x27;Resume task&#x27;:&#x27;Pause task&#x27;)+&#x27;&lt;/button&gt;&lt;button class=&quot;ev-outline&quot; data-steer&gt;Make it 20 seconds&lt;/button&gt;&lt;button class=&quot;ev-primary&quot; data-preview&gt;Preview storyboard&lt;/button&gt;&lt;/div&gt;&lt;div data-storyboard hidden&gt;&lt;/div&gt;&lt;p class=&quot;ev-live&quot; data-task-note aria-live=&quot;polite&quot;&gt;&lt;/p&gt;&lt;details&gt;&lt;summary&gt;Activity and access&lt;/summary&gt;&lt;p class=&quot;ev-sub&quot;&gt;Launch brief read → creative task started → storyboard in progress. Access is limited to the project files. Publishing is a separate action.&lt;/p&gt;&lt;/details&gt;&lt;/div&gt;&#x27;;
+      }
+      updateTaskState();
+    }
+    function openTask(task) {
+      const destination = view.page === &#x27;chat&#x27; ? &#x27;#ev-inline-detail&#x27; : view.page === &#x27;projects&#x27; ? &#x27;#ev-project-detail&#x27; : &#x27;#ev-work-detail&#x27;;
+      if (![&#x27;chat&#x27;,&#x27;projects&#x27;,&#x27;work&#x27;].includes(view.page)) show(&#x27;work&#x27;);
+      detail(task, destination);
+    }
+    one(&#x27;#ev-expand&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; { view.expanded = !view.expanded; if (!view.expanded) view.page = &#x27;chat&#x27;; renderShell(); });
+    one(&#x27;#ev-activity&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; show(&#x27;work&#x27;));
+    root.addEventListener(&#x27;click&#x27;, event =&gt; {
+      const button = event.target.closest(&#x27;button&#x27;); if (!button || !root.contains(button)) return;
+      if (button.dataset.page) show(button.dataset.page);
+      if (button.dataset.openTask) openTask(button.dataset.openTask);
+      if (button.hasAttribute(&#x27;data-close-detail&#x27;)) button.closest(&#x27;.ev-detail&#x27;).parentElement.hidden = true;
+      if (button.hasAttribute(&#x27;data-go-chat&#x27;)) show(&#x27;chat&#x27;);
+      if (button.hasAttribute(&#x27;data-go-memory&#x27;)) show(&#x27;memory&#x27;);
+      if (button.hasAttribute(&#x27;data-draft-domain&#x27;)) { show(&#x27;chat&#x27;); one(&#x27;#ev-input&#x27;).value = &#x27;What do you need to connect the domain?&#x27;; one(&#x27;#ev-input&#x27;).focus(); }
+      if (button.hasAttribute(&#x27;data-pause&#x27;)) { paused = !paused; updateTaskState(); button.textContent = paused ? &#x27;Resume task&#x27; : &#x27;Pause task&#x27;; button.closest(&#x27;.ev-detail&#x27;).querySelector(&#x27;[data-task-note]&#x27;).textContent = paused ? &#x27;Sample state: reel paused. Other tasks can continue.&#x27; : &#x27;Sample state: reel resumed from its saved step.&#x27;; }
+      if (button.hasAttribute(&#x27;data-steer&#x27;)) { button.closest(&#x27;.ev-detail&#x27;).querySelector(&#x27;[data-task-note]&#x27;).textContent = &#x27;Sample steering: change received → brief updated to 20 seconds → applied to the storyboard.&#x27;; }
+      if (button.hasAttribute(&#x27;data-preview&#x27;)) {
+        storyboardReady = true; updateTaskState(); const panel = button.closest(&#x27;.ev-detail&#x27;).querySelector(&#x27;[data-storyboard]&#x27;); panel.hidden = false;
+        panel.innerHTML = &#x27;&lt;div class=&quot;ev-scenes&quot;&gt;&lt;div class=&quot;ev-scene&quot;&gt;01 · The hook&lt;p&gt;One place for everything you want to get done.&lt;/p&gt;&lt;/div&gt;&lt;div class=&quot;ev-scene&quot;&gt;02 · The moment&lt;p&gt;A product shot opens into the launch experience.&lt;/p&gt;&lt;/div&gt;&lt;div class=&quot;ev-scene&quot;&gt;03 · The invitation&lt;p&gt;Show the outcome. Invite people to try it.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;&lt;p class=&quot;ev-sub&quot;&gt;Storyboard v1 · illustrative concept. Video rendering has not started.&lt;/p&gt;&#x27;;
+      }
+      if (button.dataset.connect) { const panel=one(&#x27;#ev-connection-detail&#x27;); panel.hidden=false; panel.innerHTML=&#x27;&lt;div&gt;&#x27;+escape(button.dataset.connect)+&#x27;&lt;/div&gt;&lt;p&gt;Choose an account or workspace, then review the actions EV can take.&lt;/p&gt;&lt;p class=&quot;ev-sub&quot;&gt;This is an interface preview. No account connection or credentials are requested here.&lt;/p&gt;&#x27;; }
+    });
+    one(&#x27;#ev-memory-source&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; { const note=one(&#x27;#ev-memory-note&#x27;); note.hidden=false; note.textContent=&#x27;Source: “Keep me posted, but make the launch updates short.” Recorded yesterday for the website launch.&#x27;; });
+    one(&#x27;#ev-memory-correct&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; { const note=one(&#x27;#ev-memory-note&#x27;); note.hidden=false; note.textContent=&#x27;Sample correction: concise launch updates, with full detail when discussing architecture. The exception stays attached to this preference.&#x27;; });
+    one(&#x27;#ev-memory-forget&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; { const note=one(&#x27;#ev-memory-note&#x27;); note.hidden=false; note.textContent=&#x27;Sample state: excluded from future context. Original conversation retained. Erasing the source history would be a separate, explicit action.&#x27;; });
+    one(&#x27;#ev-send&#x27;).addEventListener(&#x27;click&#x27;, event =&gt; {
+      event.preventDefault(); const value=one(&#x27;#ev-input&#x27;).value.trim(); if (!value) return;
+      const user=document.createElement(&#x27;div&#x27;); user.className=&#x27;ev-user&#x27;; user.textContent=value; one(&#x27;#ev-chat-additions&#x27;).append(user);
+      const reply=document.createElement(&#x27;div&#x27;); reply.className=&#x27;ev-response&#x27;;
+      reply.innerHTML=&#x27;&lt;div class=&quot;ev-byline&quot;&gt;&lt;span class=&quot;ev-dot&quot;&gt;&lt;/span&gt; EV&lt;/div&gt;&lt;p&gt;This concept keeps the composer available while work continues. In the built assistant, your message would be saved and routed to the right task.&lt;/p&gt;&#x27;;
+      one(&#x27;#ev-chat-additions&#x27;).append(reply); one(&#x27;#ev-input&#x27;).value=&#x27;&#x27;; one(&#x27;#ev-chat-status&#x27;).textContent=&#x27;Demo message added locally. No agent or external action was started.&#x27;;
+    });
+    renderShell();
+    if (globalThis.Tweak) {
+      const tweak=new Tweak({container:root,onChange:()=&gt;{ if(!view.expanded)view.page=&#x27;chat&#x27;; renderShell(); }});
+      tweak.addToggle(view,&#x27;expanded&#x27;,{label:&#x27;Expanded workspace&#x27;});
+      tweak.addSelect(view,&#x27;corners&#x27;,{label:&#x27;Control shape&#x27;,options:[{label:&#x27;Soft&#x27;,value:&#x27;soft&#x27;},{label:&#x27;Squared&#x27;,value:&#x27;square&#x27;}]});
+    }
+  })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+  let lastPointerWasTouch = false;
+  let pinnedByTouch = false;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    pinnedByTouch = false;
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handlePointer = (event) =&gt; {
+    lastPointerWasTouch =
+      event.type === &quot;pointerdown&quot; &amp;&amp; event.pointerType === &quot;touch&quot;;
+  };
+  const handleTouchClick = (event) =&gt; {
+    const isTouch = event.pointerType === &quot;touch&quot; || lastPointerWasTouch;
+    lastPointerWasTouch = false;
+    if (!isTouch || event.detail === 0) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (
+      trigger == null ||
+      !trigger.isConnected ||
+      getContent(trigger).length === 0 ||
+      (pinnedByTouch &amp;&amp; activeTrigger === trigger)
+    ) {
+      if (pinnedByTouch) {
+        closeTooltip();
+      }
+      return;
+    }
+    openTooltip(trigger);
+    pinnedByTouch = activeTrigger === trigger;
+    window.setTimeout(() =&gt; {
+      if (activeTrigger === trigger &amp;&amp; !trigger.isConnected) {
+        closeTooltip(false);
+      }
+    }, 0);
+  };
+  const handleLeave = (event) =&gt; {
+    if (pinnedByTouch) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    lastPointerWasTouch = false;
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    lastPointerWasTouch = false;
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerdown&quot;, handlePointer);
+    document.removeEventListener(&quot;pointercancel&quot;, handlePointer);
+    document.removeEventListener(&quot;click&quot;, handleTouchClick);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerdown&quot;, handlePointer);
+  document.addEventListener(&quot;pointercancel&quot;, handlePointer);
+  document.addEventListener(&quot;click&quot;, handleTouchClick);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-tabs&quot;&gt;
+(() =&gt; {
+  const selector = &#x27;.nav[role=&quot;tablist&quot;] [role=&quot;tab&quot;]&#x27;;
+  const disabled = &#x27;:disabled,[aria-disabled=&quot;true&quot;]&#x27;;
+  const selectTab = (selected) =&gt; {
+    const panelId = selected.getAttribute(&quot;aria-controls&quot;);
+    for (const tab of selected.closest(&#x27;[role=&quot;tablist&quot;]&#x27;).querySelectorAll(&#x27;[role=&quot;tab&quot;]&#x27;)) {
+      const active = tab === selected;
+      tab.classList.toggle(&quot;active&quot;, active);
+      tab.setAttribute(&quot;aria-selected&quot;, String(active));
+      const id = tab.getAttribute(&quot;aria-controls&quot;);
+      const panel = id &amp;&amp; document.getElementById(id);
+      if (panel != null) {
+        panel.hidden = id !== panelId;
+        if (!panel.hidden &amp;&amp; selected.id) {
+          panel.setAttribute(&quot;aria-labelledby&quot;, selected.id);
+        }
+      }
+    }
+  };
+  const interact = (event) =&gt; {
+    const tab = event.target?.closest?.(selector);
+    if (event.defaultPrevented || tab == null || tab.matches(disabled)) {
+      return;
+    }
+    if (event.type === &quot;click&quot;) {
+      selectTab(tab);
+      return;
+    }
+    const tabs = Array.from(
+      tab.closest(&#x27;[role=&quot;tablist&quot;]&#x27;).querySelectorAll(&#x27;[role=&quot;tab&quot;]&#x27;),
+    ).filter((candidate) =&gt; !candidate.matches(disabled));
+    const current = tabs.indexOf(tab);
+    let next;
+    if (event.key === &quot;ArrowRight&quot; || event.key === &quot;ArrowDown&quot;) {
+      next = (current + 1) % tabs.length;
+    } else if (event.key === &quot;ArrowLeft&quot; || event.key === &quot;ArrowUp&quot;) {
+      next = (current + tabs.length - 1) % tabs.length;
+    } else if (event.key === &quot;Home&quot;) {
+      next = 0;
+    } else if (event.key === &quot;End&quot;) {
+      next = tabs.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    tabs[next].focus();
+    selectTab(tabs[next]);
+  };
+
+  for (const list of document.querySelectorAll(&#x27;.nav[role=&quot;tablist&quot;]&#x27;)) {
+    const selected =
+      list.querySelector(&#x27;[role=&quot;tab&quot;][aria-selected=&quot;true&quot;]&#x27;) ??
+      list.querySelector(&#x27;[role=&quot;tab&quot;].active&#x27;) ??
+      list.querySelector(&#x27;[role=&quot;tab&quot;]&#x27;);
+    if (selected != null) {
+      selectTab(selected);
+    }
+  }
+  document.addEventListener(&quot;click&quot;, interact);
+  document.addEventListener(&quot;keydown&quot;, interact);
+  window.addEventListener(&quot;pagehide&quot;, () =&gt; {
+    document.removeEventListener(&quot;click&quot;, interact);
+    document.removeEventListener(&quot;keydown&quot;, interact);
+  }, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

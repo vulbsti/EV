@@ -1,0 +1,201 @@
+<div id="ev-assistant-concept" aria-label="EV personal assistant interface concept">
+  <style>
+    #ev-assistant-concept { --ev-bg:light-dark(#f7f6f2,#171a19); --ev-panel:light-dark(#ffffff,#202422); --ev-ink:light-dark(#24352e,#e4eee7); --ev-sub:light-dark(#586b60,#adc0b3); --ev-line:light-dark(#d9e1da,#3d4941); --ev-accent:light-dark(#275e47,#abd8bc); --ev-accent-ink:light-dark(#ffffff,#173724); --ev-soft:light-dark(#e8eee6,#2c3a2f); font-family:Inter,ui-sans-serif,system-ui,sans-serif; color:var(--ev-ink); background:var(--ev-bg); border-radius:16px; overflow:clip; }
+    #ev-assistant-concept * { box-sizing:border-box; }
+    #ev-assistant-concept button,#ev-assistant-concept textarea { font:inherit; color:inherit; }
+    #ev-assistant-concept button { cursor:pointer; border:1px solid transparent; background:transparent; padding:9px 12px; border-radius:9px; text-align:left; }
+    #ev-assistant-concept button:hover { background:var(--ev-soft); }
+    #ev-assistant-concept .ev-top { display:flex; align-items:center; gap:12px; padding:18px 22px; border-bottom:1px solid var(--ev-line); flex-wrap:wrap; }
+    #ev-assistant-concept .ev-brand { display:flex; align-items:center; gap:10px; margin-right:auto; }
+    #ev-assistant-concept .ev-mark { border:1px solid var(--ev-line); background:var(--ev-panel); border-radius:50%; padding:10px; letter-spacing:-1px; font-weight:500; }
+    #ev-assistant-concept .ev-sub { color:var(--ev-sub); }
+    #ev-assistant-concept .ev-tag { color:var(--ev-sub); border-left:1px solid var(--ev-line); padding-left:12px; }
+    #ev-assistant-concept .ev-layout { display:grid; grid-template-columns:minmax(0,1fr); }
+    #ev-assistant-concept[data-expanded="true"] .ev-layout { grid-template-columns:170px minmax(0,1fr); }
+    #ev-assistant-concept .ev-nav { padding:22px 12px; border-right:1px solid var(--ev-line); background:var(--ev-panel); }
+    #ev-assistant-concept .ev-nav button { display:block; width:100%; margin-bottom:6px; }
+    #ev-assistant-concept button[aria-pressed="true"] { background:var(--ev-soft); color:var(--ev-accent); }
+    #ev-assistant-concept .ev-nav hr { border:0; border-top:1px solid var(--ev-line); margin:20px 10px; }
+    #ev-assistant-concept .ev-main { min-width:0; padding:30px clamp(16px,4vw,48px) 20px; }
+    #ev-assistant-concept .ev-chat { max-width:690px; margin:auto; }
+    #ev-assistant-concept .ev-date { text-align:center; color:var(--ev-sub); margin:0 0 25px; }
+    #ev-assistant-concept .ev-user { max-width:86%; margin:10px 0 10px auto; padding:12px 16px; background:var(--ev-soft); border-radius:16px 16px 4px 16px; width:fit-content; }
+    #ev-assistant-concept .ev-response { margin:25px 0 20px; max-width:95%; }
+    #ev-assistant-concept .ev-response p { margin:10px 0; }
+    #ev-assistant-concept .ev-byline { display:flex; gap:9px; align-items:center; font-weight:500; }
+    #ev-assistant-concept .ev-dot { width:7px; height:7px; border-radius:50%; background:var(--ev-accent); display:inline-block; }
+    #ev-assistant-concept .ev-task { display:flex; align-items:center; gap:12px; padding:14px; margin:12px 0; background:var(--ev-panel); border:1px solid var(--ev-line); border-radius:12px; width:100%; }
+    #ev-assistant-concept .ev-task .ev-task-text { flex:1; min-width:0; }
+    #ev-assistant-concept .ev-task .ev-task-text span { display:block; margin-top:5px; }
+    #ev-assistant-concept .ev-composer { border:1px solid var(--ev-line); background:var(--ev-panel); border-radius:16px; padding:14px; margin:24px 0 8px; }
+    #ev-assistant-concept textarea { border:0; background:transparent; resize:vertical; min-height:64px; width:100%; padding:0; }
+    #ev-assistant-concept .ev-compose-bottom { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; }
+    #ev-assistant-concept .ev-primary { background:var(--ev-accent); color:var(--ev-accent-ink); }
+    #ev-assistant-concept .ev-primary:hover { background:var(--ev-accent); opacity:.9; }
+    #ev-assistant-concept .ev-outline { border-color:var(--ev-line); background:var(--ev-panel); }
+    #ev-assistant-concept .ev-heading { margin:0 0 10px; font-weight:500; }
+    #ev-assistant-concept .ev-section { max-width:760px; margin:auto; }
+    #ev-assistant-concept .ev-section > p { color:var(--ev-sub); margin:8px 0 22px; }
+    #ev-assistant-concept .ev-row { border-bottom:1px solid var(--ev-line); padding:18px 0; }
+    #ev-assistant-concept .ev-row-head { display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap; }
+    #ev-assistant-concept .ev-row p { margin:8px 0; }
+    #ev-assistant-concept .ev-detail { background:var(--ev-panel); border:1px solid var(--ev-line); border-radius:14px; padding:20px; margin:16px 0; }
+    #ev-assistant-concept .ev-detail-top { display:flex; justify-content:space-between; align-items:start; gap:12px; }
+    #ev-assistant-concept .ev-detail p { margin:12px 0; }
+    #ev-assistant-concept .ev-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+    #ev-assistant-concept .ev-steps { list-style:none; padding:0; margin:16px 0; }
+    #ev-assistant-concept .ev-steps li { padding:8px 0; }
+    #ev-assistant-concept .ev-steps li span { color:var(--ev-sub); display:inline-block; width:28px; }
+    #ev-assistant-concept .ev-scenes { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:16px 0; }
+    #ev-assistant-concept .ev-scene { background:var(--ev-soft); padding:16px; border-radius:10px; min-height:140px; }
+    #ev-assistant-concept .ev-scene p { margin:14px 0 0; }
+    #ev-assistant-concept .ev-live { margin:10px 0 0; color:var(--ev-sub); }
+    #ev-assistant-concept [hidden] { display:none!important; }
+    #ev-assistant-concept .ev-bottom { padding:12px 22px; border-top:1px solid var(--ev-line); color:var(--ev-sub); display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    #ev-assistant-concept[data-corners="square"] button,#ev-assistant-concept[data-corners="square"] .ev-task,#ev-assistant-concept[data-corners="square"] .ev-composer { border-radius:5px; }
+    @media(max-width:650px) { #ev-assistant-concept[data-expanded="true"] .ev-layout { grid-template-columns:minmax(0,1fr); } #ev-assistant-concept .ev-nav { border-right:0; border-bottom:1px solid var(--ev-line); padding:10px; display:flex; flex-wrap:wrap; gap:4px; } #ev-assistant-concept .ev-nav button { width:auto; margin:0; } #ev-assistant-concept .ev-nav hr { display:none; } #ev-assistant-concept .ev-top { padding:14px; } #ev-assistant-concept .ev-tag { border:0; padding:0; } #ev-assistant-concept .ev-scenes { grid-template-columns:1fr; } #ev-assistant-concept .ev-response { max-width:100%; } #ev-assistant-concept textarea { font-size:16px; } }
+    @media(pointer:coarse) { #ev-assistant-concept button { min-height:44px; } }
+  </style>
+  <header class="ev-top">
+    <div class="ev-brand"><span class="ev-mark">ev</span><div><div>EV</div><div class="ev-sub">Your personal assistant</div></div></div>
+    <button id="ev-activity" aria-label="Open background work"><span class="ev-dot"></span> <span id="ev-activity-label">Working on 2 things</span></button>
+    <button id="ev-expand" class="ev-outline" aria-expanded="false" aria-controls="ev-navigation">Open workspace</button>
+  </header>
+  <div class="ev-layout">
+    <nav id="ev-navigation" class="ev-nav" aria-label="Workspace" hidden>
+      <button data-page="chat" aria-pressed="true">Conversation</button>
+      <button data-page="work" aria-pressed="false">Work</button>
+      <button data-page="projects" aria-pressed="false">Projects</button>
+      <button data-page="history" aria-pressed="false">History</button>
+      <hr>
+      <button data-page="memory" aria-pressed="false">Memory</button>
+      <button data-page="connections" aria-pressed="false">Connections</button>
+    </nav>
+    <main class="ev-main">
+      <section id="ev-page-chat" class="ev-chat" aria-label="Conversation">
+        <div class="ev-date">Today</div>
+        <div class="ev-user">What's the update on the website launch?</div>
+        <div class="ev-user">Also design a new video reel for it.</div>
+        <div class="ev-response">
+          <div class="ev-byline"><span class="ev-dot"></span> EV</div>
+          <p>The landing page is ready. The domain connection is the last thing holding up the launch.</p>
+          <p>I'll work on the reel using the launch brief. I'll bring back a storyboard before the render.</p>
+          <button class="ev-task" data-open-task="launch"><span>↗</span><span class="ev-task-text">Website launch<span class="ev-sub">Ready for your domain connection</span></span><span>→</span></button>
+          <button class="ev-task" data-open-task="reel"><span>◌</span><span class="ev-task-text">Launch reel<span class="ev-sub" data-reel-state>Developing the storyboard</span></span><span>→</span></button>
+        </div>
+        <div id="ev-chat-additions"></div>
+        <div id="ev-inline-detail" hidden></div>
+        <form id="ev-composer" class="ev-composer">
+          <textarea id="ev-input" aria-label="Message EV" placeholder="Tell EV what you need…"></textarea>
+          <div class="ev-compose-bottom"><span class="ev-sub">You can keep talking while I work.</span><button id="ev-send" type="button" class="ev-primary">Send ↑</button></div>
+        </form>
+        <div class="ev-live" id="ev-chat-status" aria-live="polite"></div>
+      </section>
+      <section id="ev-page-work" class="ev-section" hidden aria-label="Work">
+        <h2 class="ev-heading">Taken care of, in one place.</h2><p>See what needs you and what EV is moving forward.</p>
+        <div class="ev-row"><div class="ev-sub">Needs you</div><button class="ev-task" data-open-task="launch"><span class="ev-task-text">Website launch<span class="ev-sub">Connect the domain to finish deployment</span></span><span>→</span></button></div>
+        <div class="ev-row"><div class="ev-sub">In progress</div><button class="ev-task" data-open-task="reel"><span class="ev-task-text">Launch reel<span class="ev-sub" data-reel-state>Developing the storyboard</span></span><span>→</span></button></div>
+        <div id="ev-work-detail" hidden></div>
+      </section>
+      <section id="ev-page-projects" class="ev-section" hidden aria-label="Projects">
+        <h2 class="ev-heading">Projects</h2><p>EV keeps the brief, decisions, and work together.</p>
+        <div class="ev-detail"><div>Website launch</div><p class="ev-sub">A clear introduction to the product, with a launch page and a short reel.</p><p>Latest decision: lead with what the product helps people do.</p><div class="ev-actions"><button class="ev-outline" data-open-task="launch">Website task</button><button class="ev-outline" data-open-task="reel">Reel task</button></div></div>
+        <div id="ev-project-detail" hidden></div>
+      </section>
+      <section id="ev-page-history" class="ev-section" hidden aria-label="History">
+        <h2 class="ev-heading">History</h2><p>Conversations, decisions, and the things you made.</p>
+        <div class="ev-row"><div>Today · Launch and reel</div><p class="ev-sub">Two requests, one conversation.</p><button class="ev-outline" data-go-chat>Open conversation</button></div>
+        <div class="ev-row"><div>Yesterday · Visual direction</div><p class="ev-sub">“Keep the launch clear and minimal. Show the product early.”</p><button class="ev-outline" data-go-memory>View remembered decision</button></div>
+      </section>
+      <section id="ev-page-memory" class="ev-section" hidden aria-label="Memory">
+        <h2 class="ev-heading">What EV knows</h2><p>Useful context, with its source and room to change.</p>
+        <div class="ev-row"><div class="ev-row-head"><span>Keep launch updates concise</span><span class="ev-sub">You said this</span></div><p class="ev-sub">Scope: website launch · Source: yesterday's conversation</p><div class="ev-actions"><button class="ev-outline" id="ev-memory-source">Why I remember this</button><button class="ev-outline" id="ev-memory-correct">Add an exception</button><button class="ev-outline" id="ev-memory-forget">Stop using</button></div><p id="ev-memory-note" aria-live="polite" hidden></p></div>
+        <div class="ev-row"><div class="ev-row-head"><span>Minimal visuals for the launch</span><span class="ev-sub">Project decision</span></div><p class="ev-sub">Applies to the launch. It is not a general preference for every project.</p></div>
+        <div class="ev-row"><div class="ev-row-head"><span>You may prefer three creative directions</span><span class="ev-sub">Tentative</span></div><p class="ev-sub">Inferred from two briefs. EV should check before treating this as a lasting preference.</p></div>
+      </section>
+      <section id="ev-page-connections" class="ev-section" hidden aria-label="Connections">
+        <h2 class="ev-heading">Give EV the right tools.</h2><p>Connect an app when you need it. You control where EV can act.</p>
+        <div class="ev-row"><div class="ev-row-head"><span>Notion</span><button class="ev-outline" data-connect="Notion">Connect</button></div><p class="ev-sub">Find notes and prepare documents in selected pages.</p></div>
+        <div class="ev-row"><div class="ev-row-head"><span>Google Workspace</span><button class="ev-outline" data-connect="Google Workspace">Connect</button></div><p class="ev-sub">Work with selected documents, mail, and calendars.</p></div>
+        <div class="ev-row"><div class="ev-row-head"><span>Blender</span><button class="ev-outline" data-connect="Blender">Set up</button></div><p class="ev-sub">Create and render scenes in an isolated workspace.</p></div>
+        <div id="ev-connection-detail" class="ev-detail" hidden aria-live="polite"></div>
+      </section>
+    </main>
+  </div>
+  <footer class="ev-bottom"><span>Interface concept · sample data</span><span>Conversation first. Details when you need them.</span></footer>
+  <script>
+  (() => {
+    const root = document.getElementById('ev-assistant-concept');
+    const one = selector => root.querySelector(selector);
+    const all = selector => [...root.querySelectorAll(selector)];
+    const view = { expanded: false, page: 'chat', corners: 'soft' };
+    let paused = false;
+    let storyboardReady = false;
+    const escape = value => String(value).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+    function renderShell() {
+      root.dataset.expanded = String(view.expanded);
+      root.dataset.corners = view.corners;
+      one('#ev-navigation').hidden = !view.expanded;
+      one('#ev-expand').textContent = view.expanded ? 'Close workspace' : 'Open workspace';
+      one('#ev-expand').setAttribute('aria-expanded', String(view.expanded));
+      all('[id^="ev-page-"]').forEach(panel => panel.hidden = panel.id !== `ev-page-${view.page}`);
+      all('[data-page]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.page === view.page)));
+    }
+    function show(page) { view.page = page; if (page !== 'chat') view.expanded = true; renderShell(); }
+    function updateTaskState() {
+      const label = paused ? 'Paused at your request' : storyboardReady ? 'Storyboard ready for review' : 'Developing the storyboard';
+      all('[data-reel-state]').forEach(element => element.textContent = label);
+      one('#ev-activity-label').textContent = paused ? 'Reel paused · launch needs you' : storyboardReady ? 'Storyboard ready' : 'Working on 2 things';
+    }
+    function detail(task, container) {
+      const target = one(container);
+      target.hidden = false;
+      if (task === 'launch') {
+        target.innerHTML = '<div class="ev-detail"><div class="ev-detail-top"><span>Website launch</span><button data-close-detail aria-label="Close task detail">×</button></div><p>The page is built and reviewed. The domain still needs to be connected before deployment can finish.</p><ul class="ev-steps"><li><span>✓</span> Page and copy reviewed</li><li><span>✓</span> Mobile layout checked</li><li><span>○</span> Domain connection</li></ul><button class="ev-outline" data-draft-domain>Ask EV about the domain</button><p class="ev-sub">Sample task · no deployment is connected in this concept.</p></div>';
+      } else {
+        target.innerHTML = '<div class="ev-detail"><div class="ev-detail-top"><span>Launch reel</span><button data-close-detail aria-label="Close task detail">×</button></div><p>A short vertical reel using the approved launch brief.</p><ul class="ev-steps"><li><span>✓</span> Launch brief and decisions loaded</li><li><span>◌</span> <span data-reel-state style="width:auto"></span></li><li><span>○</span> Render after storyboard review</li></ul><div class="ev-actions"><button class="ev-outline" data-pause>'+(paused?'Resume task':'Pause task')+'</button><button class="ev-outline" data-steer>Make it 20 seconds</button><button class="ev-primary" data-preview>Preview storyboard</button></div><div data-storyboard hidden></div><p class="ev-live" data-task-note aria-live="polite"></p><details><summary>Activity and access</summary><p class="ev-sub">Launch brief read → creative task started → storyboard in progress. Access is limited to the project files. Publishing is a separate action.</p></details></div>';
+      }
+      updateTaskState();
+    }
+    function openTask(task) {
+      const destination = view.page === 'chat' ? '#ev-inline-detail' : view.page === 'projects' ? '#ev-project-detail' : '#ev-work-detail';
+      if (!['chat','projects','work'].includes(view.page)) show('work');
+      detail(task, destination);
+    }
+    one('#ev-expand').addEventListener('click', () => { view.expanded = !view.expanded; if (!view.expanded) view.page = 'chat'; renderShell(); });
+    one('#ev-activity').addEventListener('click', () => show('work'));
+    root.addEventListener('click', event => {
+      const button = event.target.closest('button'); if (!button || !root.contains(button)) return;
+      if (button.dataset.page) show(button.dataset.page);
+      if (button.dataset.openTask) openTask(button.dataset.openTask);
+      if (button.hasAttribute('data-close-detail')) button.closest('.ev-detail').parentElement.hidden = true;
+      if (button.hasAttribute('data-go-chat')) show('chat');
+      if (button.hasAttribute('data-go-memory')) show('memory');
+      if (button.hasAttribute('data-draft-domain')) { show('chat'); one('#ev-input').value = 'What do you need to connect the domain?'; one('#ev-input').focus(); }
+      if (button.hasAttribute('data-pause')) { paused = !paused; updateTaskState(); button.textContent = paused ? 'Resume task' : 'Pause task'; button.closest('.ev-detail').querySelector('[data-task-note]').textContent = paused ? 'Sample state: reel paused. Other tasks can continue.' : 'Sample state: reel resumed from its saved step.'; }
+      if (button.hasAttribute('data-steer')) { button.closest('.ev-detail').querySelector('[data-task-note]').textContent = 'Sample steering: change received → brief updated to 20 seconds → applied to the storyboard.'; }
+      if (button.hasAttribute('data-preview')) {
+        storyboardReady = true; updateTaskState(); const panel = button.closest('.ev-detail').querySelector('[data-storyboard]'); panel.hidden = false;
+        panel.innerHTML = '<div class="ev-scenes"><div class="ev-scene">01 · The hook<p>One place for everything you want to get done.</p></div><div class="ev-scene">02 · The moment<p>A product shot opens into the launch experience.</p></div><div class="ev-scene">03 · The invitation<p>Show the outcome. Invite people to try it.</p></div></div><p class="ev-sub">Storyboard v1 · illustrative concept. Video rendering has not started.</p>';
+      }
+      if (button.dataset.connect) { const panel=one('#ev-connection-detail'); panel.hidden=false; panel.innerHTML='<div>'+escape(button.dataset.connect)+'</div><p>Choose an account or workspace, then review the actions EV can take.</p><p class="ev-sub">This is an interface preview. No account connection or credentials are requested here.</p>'; }
+    });
+    one('#ev-memory-source').addEventListener('click', () => { const note=one('#ev-memory-note'); note.hidden=false; note.textContent='Source: “Keep me posted, but make the launch updates short.” Recorded yesterday for the website launch.'; });
+    one('#ev-memory-correct').addEventListener('click', () => { const note=one('#ev-memory-note'); note.hidden=false; note.textContent='Sample correction: concise launch updates, with full detail when discussing architecture. The exception stays attached to this preference.'; });
+    one('#ev-memory-forget').addEventListener('click', () => { const note=one('#ev-memory-note'); note.hidden=false; note.textContent='Sample state: excluded from future context. Original conversation retained. Erasing the source history would be a separate, explicit action.'; });
+    one('#ev-send').addEventListener('click', event => {
+      event.preventDefault(); const value=one('#ev-input').value.trim(); if (!value) return;
+      const user=document.createElement('div'); user.className='ev-user'; user.textContent=value; one('#ev-chat-additions').append(user);
+      const reply=document.createElement('div'); reply.className='ev-response';
+      reply.innerHTML='<div class="ev-byline"><span class="ev-dot"></span> EV</div><p>This concept keeps the composer available while work continues. In the built assistant, your message would be saved and routed to the right task.</p>';
+      one('#ev-chat-additions').append(reply); one('#ev-input').value=''; one('#ev-chat-status').textContent='Demo message added locally. No agent or external action was started.';
+    });
+    renderShell();
+    if (globalThis.Tweak) {
+      const tweak=new Tweak({container:root,onChange:()=>{ if(!view.expanded)view.page='chat'; renderShell(); }});
+      tweak.addToggle(view,'expanded',{label:'Expanded workspace'});
+      tweak.addSelect(view,'corners',{label:'Control shape',options:[{label:'Soft',value:'soft'},{label:'Squared',value:'square'}]});
+    }
+  })();
+  </script>
+</div>

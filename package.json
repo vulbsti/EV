@@ -11,6 +11,8 @@
     "lab:live": "node scripts/run-lab.mjs --mode live --profile full",
     "lab:browser": "node scripts/serve-browser-lab.mjs",
     "lab:summarize": "node scripts/summarize-lab.mjs",
+    "validate:assistant-run": "node scripts/validate-assistant-run.mjs",
+    "assistant:phase0": "node scripts/create-phase0-run.mjs",
     "prototype": "node apps/daemon/server.mjs"
   },
   "engines": {

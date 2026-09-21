@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f1ea">
+  <title>EV</title>
+  <link rel="stylesheet" href="assistant.css">
+</head>
+<body>
+  <main class="assistant-shell">
+    <header class="assistant-header">
+      <a class="identity" href="/" aria-label="EV home"><span>EV</span><strong>Your personal assistant</strong></a>
+      <div class="header-actions"><span id="connection-status" role="status">Connecting</span><a href="/workstation" title="Open the developer workstation">Developer view</a></div>
+    </header>
+
+    <section id="conversation" class="conversation" aria-label="Conversation with EV">
+      <div id="empty-state" class="empty-state">
+        <p class="eyebrow">START HERE</p>
+        <h1>What can I help you keep track of?</h1>
+        <p>I currently preserve this conversation and answer read-only questions about EV. Work that needs an agent is saved honestly as not executable until the supervised worker exists.</p>
+      </div>
+      <div id="messages" class="messages" aria-live="polite"></div>
+    </section>
+
+    <form id="composer" class="composer">
+      <label for="message-input">Message EV</label>
+      <textarea id="message-input" rows="1" placeholder="Ask EV anything…" required></textarea>
+      <div><span id="composer-status">Replies survive reload and daemon restart.</span><button id="message-submit" type="submit">Send</button></div>
+    </form>
+  </main>
+  <script type="module" src="assistant.js"></script>
+</body>
+</html>

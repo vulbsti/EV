@@ -1,0 +1,205 @@
+# EV real-use evaluation log
+
+This is the human-readable index of actual EV use. Detailed future evidence belongs under `artifacts/assistant-runs/`; this file records the durable conclusion and the phase decision it informed.
+
+Statuses used here:
+
+- **Observed:** seen through the running UI, process, store, or provider.
+- **Derived:** calculated from observed evidence.
+- **Predicted:** expected from code or design but not exercised.
+- **Unknown:** not yet tested.
+
+## Baseline B0 — current workstation prototype
+
+Date: 2026-09-21
+
+Baseline repository revision: `aa40c9d`; repaired candidate remained in the working tree during the run
+
+Entry point: `npm run prototype` at `http://127.0.0.1:4317`
+
+Operator: computer-use browser against the real local UI
+
+External effects authorized: none
+
+### Setup
+
+The daemon started successfully and the EV Workstation loaded through computer use. The interface displayed 25 live panes across three tmux sessions, one attention item, a terminal wall, an attention inbox, and an orchestrator queue. This was a live-fleet observation, so terminal text is not retained in this document.
+
+### Journey B0.1 — read-only fleet question
+
+**User action through EV UI**
+
+> How many terminal panes and tmux sessions are currently running?
+
+**Observed result**
+
+EV answered:
+
+> I can see 25 panes across 3 tmux sessions: 8 omp, 1 node, 3 pi, 13 bash.
+
+The visible header independently showed 25 panes and the session navigation showed three sessions. The response was not added to the task queue.
+
+**Assessment**
+
+- Outcome: passed for a narrow live, read-only fleet query.
+- Management burden: one request; no terminal interpretation needed for the count.
+- Limitation: this is rule-based fleet description, not model reasoning, durable task execution, memory, or personal assistance.
+
+### Journey B0.2 — safe request that required interpretation
+
+**User action through EV UI**
+
+> Summarize which EV terminal currently needs attention. Do not send any commands or change any terminal.
+
+**Observed result**
+
+- EV created `task-51866908`.
+- The UI displayed it as `awaiting_orchestrator`.
+- EV replied that the prototype would not execute it automatically.
+- The durable events recorded classification `action`, route `orchestrator`, the frozen fleet counts, a `task.delegated` event, and the non-execution reply.
+- No summary artifact or later result was produced.
+
+**Assessment**
+
+- Outcome: failed. The requested summary was not completed.
+- Safety: passed narrowly; no terminal command was sent.
+- Truthfulness: passed; the UI explicitly disclosed non-execution.
+- Routing: failed. A semantically read-only request was routed as an action. The negated words “send” and “change” appear to trigger the keyword policy even though they describe forbidden behavior.
+- User management burden: unresolved work was converted into another queue item the user must manage.
+- First causal lag: product/routing policy, followed by absent orchestration/execution.
+
+### Journey B0.3 — repair and browser rerun
+
+The failed B0.2 utterance was first added verbatim as a regression fixture. The policy was changed to remove explicit negated action clauses before looking for action keywords, while retaining action detection when a real requested action precedes the negative constraint.
+
+The same utterance was then submitted again through the actual EV UI. It correctly stayed on the read-only companion route, but answered:
+
+> No terminal panes currently need your attention.
+
+That contradicted the visible attention inbox, which contained one item. Inspection showed a second causal defect: the page used an enriched `controlSnapshot`, while the companion endpoint received raw fleet data without attention state.
+
+After the endpoint was changed to use the same enriched snapshot, the identical browser request returned:
+
+> 1 terminal pane currently needs your attention: %2 (omp) — Review requested.
+
+No `task.delegated` event was created for the corrected correlation. Opening and dismissing the attention popover closed it without sending terminal input.
+
+Reloading the page exposed the next gap: the corrected companion reply disappeared, while historical `task-51866908` remained visible as `awaiting_orchestrator`. This is now the first Phase 1 blocker rather than being obscured by the routing defect.
+
+**Assessment**
+
+- Routing: passed after repair and fixed regression coverage.
+- Live attention truth: passed after unifying the companion and UI data source.
+- Safety: passed for this journey; no terminal-control request was sent.
+- Reply durability: failed; the assistant answer is transient across reload.
+- Queue hygiene: failed; the historical false task remains visible with no cancellation or archival path.
+- Evidence bundle: [phase0-b0-routing](../../artifacts/assistant-runs/2026-09-21/phase0-b0-routing/) was created from the actual event sequence and passed the bundle validator.
+
+### Automated and lab evidence
+
+Run on the same checkout after the browser journeys:
+
+| Check | Result | Scope |
+| --- | --- | --- |
+| `npm test` | 29 passed, 0 failed | Daemon, routing, bundle validation/generation, and lab contract tests |
+| `npm run lab:quick` | 5 experiments passed in mock mode | Companion policy, delegation contract, tmux observation, resilience, and cost model |
+| `npm run assistant:phase0` | Passed | Created and validated the actual Phase 0 browser-canary bundle |
+| Real Pi worker completion | Unknown | Not exercised |
+| Restart/resume of delegated task | Unknown | Current queue has no executor |
+| Connected account or source | Unknown | Not configured or exercised |
+| Cross-chat memory/correction | Unknown | Not implemented |
+| Trusted approval and external write | Unknown | Not implemented |
+
+The test and mock-lab results establish that the current intended prototype contracts are internally consistent. They do not convert the queued task into an assistant outcome.
+
+### Baseline score
+
+| Dimension | Result | Evidence |
+| --- | --- | --- |
+| Read-only fleet observation | Narrow pass | B0.1 UI result matched visible fleet counts |
+| Interpreted read-only summary | Pass after repair | B0.3 named the same attention item shown by the UI |
+| Concurrent conversation and work | Unknown | No executing task |
+| Durable conversation/recovery | Fail | Corrected reply disappeared after reload |
+| Personal context and memory | Not present | No person/context manifest path |
+| Personality/helpfulness | Not meaningfully testable | Fixed rule-based responses |
+| Safety boundary | Partial | Companion did not mutate terminals; no hardened worker/credential boundary tested |
+| User-management reduction | Partial for observation; fail for task work | Direct summary now works, but stale queue state and transient replies remain |
+
+### Decision carried into Phase 1
+
+Keep the existing live fleet observation and evidence-redaction ideas as developer capabilities. Do not treat the terminal wall or the `awaiting_orchestrator` queue as the personal-assistant shell. Phase 1 must establish a conversation-first ledger with honest `not_executable` state, exact input identity, reply reconstruction, reconnect behavior, and historical-task cleanup before any model or connector work is added. The routing regression is now implemented and is a permanent gate.
+
+## Phase 1 S1 — durable conversation and honest task truth
+
+Date: 2026-09-21
+
+Evidence bundle: [phase1-durable-conversation](../../artifacts/assistant-runs/2026-09-21/phase1-durable-conversation/)
+
+### Implemented direction
+
+- `/` is now one assistant conversation backed by SQLite.
+- The terminal control surface moved to `/workstation` and is visibly labelled `DEVELOPER VIEW`.
+- The old orchestrator panel, queue UI, `EventStore.tasks()` projection, and companion/task/event HTTP routes were deleted instead of adapted.
+- Messages, intents, tasks, and assistant events commit in one transaction. A repeated client message ID returns the original turn.
+- Work without a real supervisor is persisted and displayed as `not_executable`, never queued or working.
+
+### Actual computer-use results
+
+- A live fleet question appeared once, received the correct visible response once, and survived reload and daemon restart.
+- `Create a launch brief for EV` appeared once with a visible `NOT EXECUTABLE` result and survived reload and restart.
+- The developer workstation contained no orchestrator or queue panel, and no terminal input was sent.
+- Keyboard-only message submission and reload recovery passed.
+- Narrow/mobile viewport verification remains untested because the computer-use surface did not expose resizing.
+
+### Finding carried forward
+
+The planned request `Track this launch question for later` initially routed as ordinary conversation. The failed turn remains immutable evidence. A narrow `track` action regression was added, and a fresh third fixture then produced and preserved the correct `NOT EXECUTABLE` state.
+
+### Phase decision
+
+Continue Phase 1 without a model, Pi worker, connector, memory, or person model. Next implement browser-owned idempotent retry and reconnect/revision semantics, then run offline/interruption faults, narrow-viewport verification, and four more consecutive reload/restart canaries. This first slice passes its bounded goals but does not satisfy the full Phase 1 exit gate yet.
+
+## Phase 1 S2 — reconnect and recovery reliability
+
+Date: 2026-09-21
+
+Evidence bundle: [phase1-durable-conversation](../../artifacts/assistant-runs/2026-09-21/phase1-durable-conversation/)
+
+### Implemented direction
+
+- The browser keeps unconfirmed sends in local storage with their original client message ID.
+- A failed send is visible as unconfirmed and is retried by the normal synchronization loop after connectivity returns.
+- Conversation reads use an incremental revision cursor, merge by durable message ID, and cannot move the local cursor backwards.
+- SQLite allocates message sequence numbers under its write transaction and enforces one sequence per conversation.
+- Storage failure is surfaced without discarding the in-memory pending message.
+
+### Actual fault and computer-use results
+
+- With the real EV page left open, the daemon was stopped and `Offline retry canary verified` was submitted.
+- The page showed exactly one `RETRYING WHEN CONNECTED` message and no invented assistant reply or working state.
+- After the daemon restarted, the existing page automatically reconciled within the polling interval. The user message and reply each appeared once.
+- Reload preserved each exactly once. An independent Luna computer-use check observed the same result.
+- Five consecutive restart/reload recoveries now pass when the original S1 recovery and the four S2 recoveries are counted together. The target canary remained singular and the page remained `Saved locally` each time.
+- A live lost-response equivalent replay returned the original message IDs, reported `replayed: true`, and left one persisted user copy.
+- A future cursor returned no messages without corrupting the server revision. A malformed cursor returned HTTP 400.
+- The computer-use browser still exposes no viewport resize/emulation control, so the 390px visual journey remains untested. The responsive CSS contract exists, but that is not visual proof.
+
+### Phase decision
+
+The task-truth and reconnect ambiguity that blocked a worker is resolved. Phase 1's core reliability gate is accepted; narrow/mobile visual verification remains an explicit carried check rather than a reason to add more persistence machinery. Projection rebuild and failed outbox delivery are not applicable to this deliberately smaller slice: the UI reads canonical ledger rows directly and no worker outbox exists. Those fault cases become Phase 2 gates when a worker command/outbox is introduced.
+
+Phase 2 should start with one local-files-only supervised worker, while preserving this same client-ID, transaction, honest-state, and browser-recovery behavior. Do not add connectors or personal memory in that phase.
+
+## Future entry format
+
+Each new entry links to its run bundle and records:
+
+1. task and expected useful outcome;
+2. computer-use actions and visible result;
+3. backend/worker/provider verification;
+4. scorecard and user-management burden;
+5. first causal lag and severity;
+6. workaround, if any;
+7. design change carried into the next run or phase.
+
+Do not replace a failed entry after a fix. Add the passing rerun and link the two so the learning remains auditable.

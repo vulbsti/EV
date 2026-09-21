@@ -10,7 +10,7 @@
 <body>
   <div class="workstation">
     <aside class="left-rail">
-      <div class="brand-row"><b>EV</b><div><strong>WORKSTATION</strong><small>LOCAL CONTROL PLANE</small></div><span id="connection-dot"></span></div>
+      <div class="brand-row"><b>EV</b><div><strong>DEVELOPER VIEW</strong><small>TERMINAL WORKSTATION</small></div><span id="connection-dot"></span></div>
 
       <div class="rail-section views">
         <button class="rail-button active" data-view="all"><span>▦</span>All terminals <b id="count-all">0</b></button>
@@ -61,17 +61,6 @@
         <div id="attention-list" class="attention-list"><p class="empty-state">No agents currently asking for you.</p></div>
       </section>
 
-      <section class="orchestrator-panel">
-        <div class="panel-head"><div><strong>ORCHESTRATOR</strong><small>Secondary control and delegation</small></div><span class="prototype-tag">QUEUE</span></div>
-        <div class="orchestrator-input">
-          <textarea id="orchestrator-input" placeholder="Ask about the fleet or delegate a task…"></textarea>
-          <div><span id="orchestrator-context">Context: whole fleet</span><button id="delegate">Delegate ↗</button></div>
-        </div>
-        <p class="orchestrator-reply" id="orchestrator-reply"></p>
-        <div class="queue-head"><span>RECENT HANDOFFS</span><button id="toggle-events">EVENTS</button></div>
-        <div id="task-list" class="task-list"><p class="empty-state">No handoffs yet.</p></div>
-        <div id="event-list" class="event-list hidden"></div>
-      </section>
     </aside>
   </div>
 

@@ -11,11 +11,10 @@ const state = {
   focusedPaneId: null,
   dismissedAttention: new Set(),
   seenAttention: new Set(),
-  popupPaneId: null,
-  eventsVisible: false
+  popupPaneId: null
 };
 
-const ids = ["connection-dot", "count-all", "count-attention", "count-working", "session-nav", "daemon-state", "scan-state", "view-title", "view-subtitle", "search", "pause", "notifications", "refresh", "visible-count", "strip-attention", "strip-working", "selected-count", "updated-at", "terminal-wall", "attention-badge", "attention-list", "orchestrator-input", "orchestrator-context", "delegate", "orchestrator-reply", "toggle-events", "task-list", "event-list", "broadcast-dock", "dock-count", "clear-selection", "broadcast-input", "broadcast-send", "focus-overlay", "focus-session", "focus-title", "focus-path", "focus-terminal", "focus-command", "focus-input", "open-explainer", "close-focus", "spawn-dialog", "spawn-form", "spawn-mode", "spawn-target-label", "spawn-target", "spawn-name", "spawn-cwd", "spawn-command", "spawn-error", "new-runtime", "attention-popup", "dismiss-popup", "popup-title", "popup-evidence", "popup-dismiss", "popup-focus", "toast-stack"];
+const ids = ["connection-dot", "count-all", "count-attention", "count-working", "session-nav", "daemon-state", "scan-state", "view-title", "view-subtitle", "search", "pause", "notifications", "refresh", "visible-count", "strip-attention", "strip-working", "selected-count", "updated-at", "terminal-wall", "attention-badge", "attention-list", "broadcast-dock", "dock-count", "clear-selection", "broadcast-input", "broadcast-send", "focus-overlay", "focus-session", "focus-title", "focus-path", "focus-terminal", "focus-command", "focus-input", "open-explainer", "close-focus", "spawn-dialog", "spawn-form", "spawn-mode", "spawn-target-label", "spawn-target", "spawn-name", "spawn-cwd", "spawn-command", "spawn-error", "new-runtime", "attention-popup", "dismiss-popup", "popup-title", "popup-evidence", "popup-dismiss", "popup-focus", "toast-stack"];
 const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function escapeHtml(value) {
@@ -144,8 +143,6 @@ function renderSelection() {
   el["selected-count"].textContent = state.selected.size;
   el["dock-count"].textContent = `${state.selected.size} PANE${state.selected.size === 1 ? "" : "S"}`;
   el["broadcast-dock"].classList.toggle("visible", state.selected.size > 0);
-  const context = state.selected.size ? [...state.selected].join(", ") : state.focusedPaneId ? state.focusedPaneId : "whole fleet";
-  el["orchestrator-context"].textContent = `Context: ${context}`;
 }
 
 function renderFocus() {
@@ -246,33 +243,6 @@ function openExplainer(paneId) {
   if (!popup) toast("The browser blocked the explanation window. Allow popups for this localhost page.");
 }
 
-async function refreshLedger() {
-  try {
-    const [taskResponse, eventResponse] = await Promise.all([api("/api/tasks"), api("/api/events?limit=30")]);
-    const { tasks } = await taskResponse.json();
-    const { events } = await eventResponse.json();
-    el["task-list"].innerHTML = tasks.length ? tasks.slice(0, 12).map((task) => `<article class="task-item"><span>${escapeHtml(task.status)}</span><strong>${escapeHtml(task.taskId)}${task.selectedPaneId ? ` · ${escapeHtml(task.selectedPaneId)}` : ""}</strong><p>${escapeHtml(task.transcript)}</p></article>`).join("") : '<p class="empty-state">No handoffs yet.</p>';
-    el["event-list"].innerHTML = events.map((event) => `<article class="event-item"><strong>${escapeHtml(event.type)} · ${relativeTime(event.occurredAt)}</strong><p>${escapeHtml(event.correlationId ?? "system")}</p></article>`).join("");
-  } catch {}
-}
-
-async function delegateRequest() {
-  const transcript = el["orchestrator-input"].value.trim();
-  if (!transcript) return;
-  el.delegate.disabled = true;
-  const selectedPaneId = state.selected.size === 1 ? [...state.selected][0] : state.focusedPaneId;
-  try {
-    const response = await api("/api/companion", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transcript, selectedPaneId }) });
-    const result = await response.json();
-    el["orchestrator-reply"].textContent = result.response;
-    el["orchestrator-reply"].classList.add("visible");
-    el["orchestrator-input"].value = "";
-    toast(result.taskId ? `Created ${result.taskId}` : "Orchestrator query answered");
-    await refreshLedger();
-  } catch (error) { toast(`Orchestrator failed: ${error.message}`); }
-  finally { el.delegate.disabled = false; }
-}
-
 function populateSpawnTargets() {
   const mode = el["spawn-mode"].value;
   const options = mode === "pane"
@@ -352,9 +322,6 @@ el["broadcast-input"].onkeydown = (event) => { if (event.key === "Enter") el["br
 el["close-focus"].onclick = closeFocus;
 el["open-explainer"].onclick = () => { if (state.focusedPaneId) openExplainer(state.focusedPaneId); };
 el["focus-command"].onsubmit = (event) => { event.preventDefault(); const text = el["focus-input"].value; if (!text || !state.focusedPaneId) return; safeControl(async () => { await sendInput(state.focusedPaneId, text); el["focus-input"].value = ""; }); };
-el.delegate.onclick = delegateRequest;
-el["orchestrator-input"].onkeydown = (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") delegateRequest(); };
-el["toggle-events"].onclick = () => { state.eventsVisible = !state.eventsVisible; el["event-list"].classList.toggle("hidden", !state.eventsVisible); el["task-list"].classList.toggle("hidden", state.eventsVisible); el["toggle-events"].textContent = state.eventsVisible ? "TASKS" : "EVENTS"; };
 el["new-runtime"].onclick = () => { populateSpawnTargets(); el["spawn-dialog"].showModal(); };
 el["spawn-mode"].onchange = populateSpawnTargets;
 el["spawn-form"].onsubmit = launchRuntime;
@@ -363,6 +330,5 @@ el["dismiss-popup"].onclick = dismissCurrentPopup;
 el["popup-dismiss"].onclick = dismissCurrentPopup;
 el["popup-focus"].onclick = () => { const paneId = state.popupPaneId; dismissCurrentPopup(); if (paneId) openFocus(paneId); };
 
-await Promise.all([refreshSnapshot(true), refreshLedger()]);
+await refreshSnapshot(true);
 setInterval(refreshSnapshot, 1200);
-setInterval(refreshLedger, 4000);

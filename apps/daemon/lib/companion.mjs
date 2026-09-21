@@ -14,6 +14,16 @@ function describeSelectedPane(fleet, paneId) {
   return `Pane ${pane.paneId} is running ${pane.command} in ${pane.path}. It is ${pane.active ? "the active pane in its window" : "not the active pane in its window"}.`;
 }
 
+function describeAttention(fleet) {
+  const panes = fleet.panes.filter((pane) => pane.attention?.required);
+  if (!panes.length) return "No terminal panes currently need your attention.";
+  const summaries = panes.map((pane) => {
+    const label = pane.attention?.label ? ` — ${pane.attention.label}` : "";
+    return `${pane.paneId} (${pane.command})${label}`;
+  });
+  return `${panes.length} terminal pane${panes.length === 1 ? "" : "s"} currently need${panes.length === 1 ? "s" : ""} your attention: ${summaries.join("; ")}.`;
+}
+
 export async function handleCompanion({ transcript, selectedPaneId, fleet, store }) {
   const utteranceId = randomUUID();
   const route = routeUtterance({
@@ -44,7 +54,9 @@ export async function handleCompanion({ transcript, selectedPaneId, fleet, store
 
   const lower = transcript.toLowerCase();
   let response;
-  if (/\b(pane|terminal|agent|running|status|session)\b/.test(lower)) {
+  if (/\battention\b/.test(lower)) {
+    response = describeAttention(fleet);
+  } else if (/\b(pane|terminal|agent|running|status|session)\b/.test(lower)) {
     response = selectedPaneId && /\b(this|that|selected|current|pane)\b/.test(lower)
       ? describeSelectedPane(fleet, selectedPaneId) ?? describeFleet(fleet)
       : describeFleet(fleet);

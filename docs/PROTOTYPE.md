@@ -1,4 +1,4 @@
-# EV control workstation prototype
+# EV developer workstation prototype
 
 Date: 2026-08-11  
 Status: runnable localhost control panel with a separate evidence-synchronized explanation window; orchestrator execution is the next layer
@@ -10,8 +10,8 @@ The browser is no longer organized as an overview page. The useful unit is a liv
 ```text
 session and view filters | live terminal wall                    | attention inbox
                          | pane output + command input             | permissions/review
-                         | multi-select and broadcast              | orchestrator queue
-                         | focused full-screen terminal            | event ledger
+                         | multi-select and broadcast              |
+                         | focused full-screen terminal            |
 ```
 
 The daemon captures 72 terminal lines from all panes concurrently every 1.2 seconds. It removes terminal escape codes, compares hashes to determine which panes are changing, and scans the newest output for permission, confirmation, input, review, and failure signals. Panes requiring the user are sorted first, highlighted red, placed in the attention inbox, and surfaced through an attention popup. Optional desktop notifications can be enabled from the top bar.
@@ -56,7 +56,7 @@ An attention card displays the exact matching line and exposes No, Yes, Enter, a
 
 ## Orchestrator position
 
-The orchestrator is deliberately secondary in this UI. Its panel receives a typed request plus the focused or singly selected pane as context. It can answer simple fleet queries and create durable handoffs, but it does not yet execute them. Recent handoffs and raw event-ledger entries are visible without leaving the workstation.
+The old non-executing orchestrator panel and its `awaiting_orchestrator` queue were removed when the durable assistant surface became the default route. They were misleading seams rather than useful task execution. The workstation now remains only for direct developer inspection and terminal control at `/workstation`.
 
 This creates the correct next integration seam:
 
@@ -85,7 +85,7 @@ The conversation survives browser and daemon restarts because EV records the exp
 npm run prototype
 ```
 
-Open `http://127.0.0.1:4317`.
+Open `http://127.0.0.1:4317/workstation`. The root URL is now the personal-assistant conversation.
 
 The server binds to `127.0.0.1`. There is no authentication, so do not expose it directly to a network.
 
@@ -99,9 +99,6 @@ The server binds to `127.0.0.1`. There is no authentication, so do not expose it
 | `POST /api/panes/:id/input` | send literal text with optional Enter |
 | `POST /api/panes/:id/key` | send an allow-listed terminal key |
 | `POST /api/tmux/spawn` | create a pane, window, or session |
-| `GET /api/tasks` | durable orchestrator handoffs |
-| `GET /api/events` | append-only control and orchestration ledger |
-| `POST /api/companion` | fleet query or orchestrator handoff |
 | `GET /api/explain/context` | bounded public evidence summary for one pane |
 | `GET /api/explain/sessions/:id` | reconstruct a multi-turn explanation session |
 | `POST /api/explain/ask` | ask from fresh evidence in the separate read-only thread |
@@ -131,8 +128,8 @@ The server binds to `127.0.0.1`. There is no authentication, so do not expose it
 - Terminal surfaces are high-frequency tmux captures, not full VT emulators. Mouse-mode TUIs, exact cursor placement, colors, and alternate-screen interaction need an xterm.js plus tmux-control-mode transport.
 - Attention detection is heuristic; Codex app-server and Claude hook/ACP signals should become higher-confidence evidence.
 - Direct command broadcast is powerful. There is no role-based access, per-pane adoption, or confirmation tier yet.
-- The orchestrator queues work but does not yet spawn, supervise, verify, or stop agents.
-- Task state is append-only and currently remains `awaiting_orchestrator`.
+- The developer workstation has no assistant intake or task queue. Those concerns moved to the root assistant surface.
+- The root assistant records unavailable work as `not_executable`; no supervisor or worker exists yet.
 - Generic panes do not yet expose structured executor plans, tool calls, or authoritative test results; explanations label tmux-derived facts as heuristic.
 - Explanation answers currently complete over one HTTP request rather than streaming deltas to the browser.
 - Executable understanding is adapter-scoped. Arbitrary auth, OCR, PDF, browser, database, or production-load behavior remains unsupported until a purpose-built adapter is registered.
