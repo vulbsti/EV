@@ -19,6 +19,28 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function parseJsonObject(value) {
+  const source = String(value ?? "").trim();
+  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+  const start = source.indexOf("{");
+  const end = source.lastIndexOf("}");
+  const candidate = fenced ?? (start >= 0 && end > start ? source.slice(start, end + 1) : "");
+  try {
+    const parsed = JSON.parse(candidate);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    return parsed;
+  } catch {
+    throw codedError("R1_OUTPUT_INVALID", "The content worker returned malformed structured output");
+  }
+}
+
+function boundedOutput(value, field, maxBytes = 64 * 1024) {
+  if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > maxBytes) {
+    throw codedError("R1_OUTPUT_INVALID", `${field} must be non-empty bounded text`);
+  }
+  return value.trim();
+}
+
 function inside(root, candidate) {
   const path = relative(root, candidate);
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !path.startsWith(sep));
@@ -81,6 +103,21 @@ export function createFixedCapabilityProfiles({ projectRoot = PROJECT_ROOT } = {
       requireContext: true,
       requireArtifact: true,
       budget: Object.freeze({ maxTotalTokens: 12_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
+    }),
+    "r1-content-package-v1": Object.freeze({
+      capability: "r1-content-package-v1",
+      tools: Object.freeze([]),
+      extensionPaths: Object.freeze([]),
+      skillPaths: Object.freeze([]),
+      requireContext: true,
+      requireArtifact: true,
+      structuredOutput: "r1-content-package-json",
+      timeoutMs: 180_000,
+      // A real draft-review-revision pass currently lands around 20k tokens
+      // because Pi reports the final turn with accumulated cached context.
+      // Five live packages used 6.7k-11.8k tokens; 16k keeps measured
+      // headroom for recovery variance without reopening tools or cost scope.
+      budget: Object.freeze({ maxTotalTokens: 16_000, maxCostUsd: 0.03, maxToolCalls: 0 }),
     }),
   });
 }
@@ -146,7 +183,7 @@ export class AssistantWorkerService {
       executable: this.executable,
       sessionDir,
       cwd: workspacePath,
-      timeoutMs: this.timeoutMs,
+      timeoutMs: profile.timeoutMs ?? this.timeoutMs,
       provider: this.provider,
       model: this.model,
       expectedVersion: this.expectedVersion,
@@ -328,6 +365,9 @@ export class AssistantWorkerService {
           (profile.budget.maxToolCalls >= 0 && toolCalls > profile.budget.maxToolCalls)) {
         throw codedError("WORKER_BUDGET_EXCEEDED", "The worker exceeded its reviewed task budget", { totalTokens, totalCost, toolCalls });
       }
+      if (profile.structuredOutput === "r1-content-package-json") {
+        await this._materializeR1StructuredOutput(task, result.text, workspacePath);
+      }
       if (this.settlementDelayMs > 0) {
         await new Promise((resolve) => {
           active.releaseSettlement = resolve;
@@ -392,10 +432,51 @@ export class AssistantWorkerService {
         throw codedError("STANDING_ARTIFACT_INVALID", "The standing brief is missing required structure or scoped-tool receipts", { missing, usedTools });
       }
     }
+    if (task.input.capability === "r1-content-package-v1") {
+      const text = contents.toString("utf8");
+      const requiredHeadings = [
+        "## Interpreted brief",
+        "## Build-in-public post",
+        "## Short reel outline",
+        "## Review and revision receipt",
+        "## Assumptions"
+      ];
+      const missing = requiredHeadings.filter((heading) => !text.includes(heading));
+      let draft;
+      let review;
+      try {
+        [draft, review] = await Promise.all([
+          workspace.read("output/draft.md").then((value) => Buffer.from(value)),
+          workspace.read("output/review.md").then((value) => Buffer.from(value))
+        ]);
+      } catch {
+        throw codedError("R1_ARTIFACT_INVALID", "The content package is missing its draft or review receipt");
+      }
+      const reviewText = review.toString("utf8");
+      const missingReview = ["## Issues found", "## Revision decisions"].filter((heading) => !reviewText.includes(heading));
+      const unchanged = createHash("sha256").update(draft).digest("hex") === createHash("sha256").update(contents).digest("hex");
+      if (contents.byteLength < 500 || draft.byteLength < 300 || review.byteLength < 160 || missing.length || missingReview.length || unchanged) {
+        throw codedError("R1_ARTIFACT_INVALID", "The content package did not prove a complete draft-review-revision cycle", {
+          missing,
+          missingReview,
+          unchanged
+        });
+      }
+    }
     const relativeName = `${task.taskId}/${spec.relativePath ?? basename(spec.sourcePath)}`;
     relativePath(relativeName, "artifact destination");
     await writeArtifact(this.supervisor.artifactRoot, relativeName, contents);
     return [{ artifactId: randomUUID(), relativePath: relativeName, sha256: createHash("sha256").update(contents).digest("hex"), bytes: contents.byteLength }];
+  }
+
+  async _materializeR1StructuredOutput(task, text, workspacePath) {
+    const value = parseJsonObject(text);
+    const draft = boundedOutput(value.draft, "draft");
+    const review = boundedOutput(value.review, "review");
+    const final = boundedOutput(value.final, "final");
+    await writeArtifact(workspacePath, "output/draft.md", Buffer.from(`${draft}\n`));
+    await writeArtifact(workspacePath, "output/review.md", Buffer.from(`${review}\n`));
+    await writeArtifact(workspacePath, "output/content-package.md", Buffer.from(`${final}\n`));
   }
 }
 

@@ -26,6 +26,18 @@ test("the default product surface is a minimal durable assistant, not the workst
   assert.match(javascript, /after=\$\{after\}/);
   assert.match(javascript, /revision = Math\.max\(revision, body\.revision\)/);
   assert.match(javascript, /data-message-status=.*unconfirmed/);
+  assert.match(javascript, /Interpreted as:/);
+  assert.match(javascript, /Success criteria and boundaries/);
+  assert.match(javascript, /Context manifest:/);
+  assert.match(javascript, /Open reviewed content package/);
+  assert.match(server, /url\.searchParams\.get\("preview"\) === "1"/);
+  assert.match(server, /r1-content-package-v1/);
+  assert.match(server, /isR1ContentRequest/);
+  assert.match(server, /contextManifestId/);
+  assert.match(server, /clientMessageId belongs to different message text/);
+  assert.match(server, /Honcho-derived context is disabled until provider retention/);
+  assert.doesNotMatch(server, /createHonchoDerivedMemoryAdapter/);
+  assert.match(html, /reviewed build-in-public post and short reel outline/);
 
   assert.doesNotMatch(html, /terminal-wall|broadcast-dock|spawn-dialog|orchestrator-input|task-list/);
   assert.doesNotMatch(javascript, /\/api\/companion|\/api\/tasks|\/api\/events/);

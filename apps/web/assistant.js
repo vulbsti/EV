@@ -85,15 +85,21 @@ function renderTask(task) {
   if (!task) return "";
   const terminal = ["completed", "failed", "cancelled"].includes(task.status);
   const artifact = task.artifacts?.[0];
+  const isR1 = task.capability === "r1-content-package-v1";
   const detail = task.status === "failed" ? task.error?.message ?? "The worker could not complete this task." :
     task.status === "cancelled" ? "Stopped. No late worker result can replace this state." :
-    task.status === "completed" ? task.result?.summary ?? "Finished and verified." :
+    task.status === "completed" ? task.result?.summary ?? (isR1 ? "Finished with a draft, review receipt, and materially different final." : "Finished and verified.") :
     task.status === "queued" ? "Saved and waiting for the reviewed worker." : "The reviewed worker is using its isolated task workspace.";
   return `<section class="task-card ${escapeHtml(task.status)}" data-task-id="${escapeHtml(task.taskId)}" aria-label="Background task">
     <div class="task-card-head"><span class="task-status ${escapeHtml(task.status)}">${escapeHtml(taskLabel(task.status))}</span><span class="task-time">${escapeHtml(task.updatedAt ? new Date(task.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "")}</span></div>
+    <h3>${escapeHtml(task.title ?? "Background task")}</h3>
+    ${task.brief?.objective ? `<p><strong>Interpreted as:</strong> ${escapeHtml(task.brief.objective)}</p>` : ""}
+    ${task.brief?.successCriteria?.length ? `<details class="task-brief"><summary>Success criteria and boundaries</summary><ul>${task.brief.successCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul><p><strong>Authority:</strong> prepare only</p><p><strong>Memory:</strong> reviewed EV guidance; derived memory providers are disabled</p>${task.contextManifestId ? `<p><strong>Context manifest:</strong> <code>${escapeHtml(task.contextManifestId)}</code></p>` : ""}</details>` : ""}
     <p>${escapeHtml(detail)}</p>
     <div class="task-actions">
-      ${artifact ? `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(artifact.artifactId)}" download="${escapeHtml(artifact.relativePath.split("/").at(-1))}">Download verified brief</a>` : ""}
+      ${artifact ? isR1
+        ? `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(artifact.artifactId)}?preview=1" target="_blank" rel="noopener">Open reviewed content package</a>`
+        : `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(artifact.artifactId)}" download="${escapeHtml(artifact.relativePath.split("/").at(-1))}">Download verified brief</a>` : ""}
       ${!terminal ? `<button type="button" class="task-cancel" data-command="cancel">Cancel</button>` : ""}
     </div>
   </section>`;

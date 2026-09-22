@@ -1,8 +1,8 @@
 # EV adaptive implementation and real-use test plan
 
-Date: 2026-09-21
+Date: 2026-09-22
 
-Status: execution plan; Phase 0 passed, Phase 1 durable-conversation slice under verification
+Status: Phases 0–4 and R1 implementation/technical acceptance passed. Owner usefulness and time-saved validation remain open; Phase 5 stays paused.
 
 Owner model: one primary product owner, one implementation lane, at most one experimental branch at a time
 
@@ -127,7 +127,7 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 
 ### Phase 0 — baseline and evaluation harness
 
-**Result:** passed after two evidence-led repairs. The exact safe attention utterance first exposed a negation-routing defect, then a split source of fleet truth. Both are repaired and covered by regression tests. `npm run assistant:phase0` now creates and validates the complete browser-canary bundle. Reload still loses the assistant reply, so durable conversation truth is the first Phase 1 blocker.
+**Result:** passed after two evidence-led repairs. The exact safe attention utterance first exposed a negation-routing defect, then a split source of fleet truth. Both were repaired and covered by regression tests. `npm run assistant:phase0` created and validated the browser-canary bundle. At that baseline, reload still lost the assistant reply; Phase 1 subsequently addressed durable conversation truth.
 
 **Question:** What can the current prototype demonstrably do, and can future changes be compared with the same evidence format?
 
@@ -328,6 +328,48 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 
 **Stop condition:** If a standing responsibility is not used repeatedly or does not save user effort, do not add more connectors. Revisit the workflow and attention threshold.
 
+### R1 — first assistant prototype and experience acceptance
+
+**Result (2026-09-22):** implementation and technical acceptance passed. Five final-version browser tasks completed with one reviewed artifact each, exact memory manifests, one-result reload reconstruction, and no external effects. A sixth task passed graceful daemon restart recovery. See [the R1 evaluation](R1_EVALUATION.md). Owner-rated usefulness and a manual-time baseline remain unclaimed, so this result creates the testable prototype but does not authorize Phase 5.
+
+**Placement:** R1 is inserted after the accepted Phase 0–4 foundation and before Phase 5. It preserves the existing phase sequence: no completed phase is reopened or discarded, and Phases 5–8 retain their current meaning. Phase 5 remains paused until R1 passes.
+
+**Question:** Can the user describe real work naturally and have EV interpret it, prepare a useful result with relevant personal guidance, review and improve that result, and return it durably with less user management?
+
+**Task family:** Prepare a local, unpublished build-in-public content package from a user-selected current project/launch brief and an explicit style preference: one post plus a short reel/storyboard outline. Use the user's real task material in the canary; fixtures may support repeatable regression tests but do not count as personal-use outcomes. No posting, messaging, publishing, or other external writes are in scope.
+
+**Implement only the missing experience path**
+
+- A bounded model-driven coordinator that resolves natural language into conversation, a supported task, or one consequential clarification. It returns a typed objective, deliverables, success criteria, assumptions, allowed context, and one existing fixed capability ID. Unknown capability requests fail closed; model output cannot grant authority.
+- A visible, durable accepted brief linked to the initiating message, with truthful queued, running, completed, failed, and cancelled states. R1 deliberately does not add in-flight steering: the user can cancel, correct explicit guidance, and submit a new task rather than creating another task-revision protocol.
+- Reuse the existing SQLite conversation/memory truth, fixed Pi capability, supervisor, artifact receipts, and cancellation/recovery. Honcho integration is deferred until provider retention can honor EV's stop-use/erase policy; EV's explicit correction, scope, task state, and provenance manifest remain authoritative.
+- A bounded artifact-review step against the recorded criteria, source evidence, and selected memory revisions. It must identify concrete defects, permit at most one revision, and block completion if the final artifact still fails. Keep existing deterministic artifact checks as the minimum gate.
+- Return one reviewed artifact in the conversation with its verification state and the exact task/context revisions used. Do not expose model selection, worker IDs, or routine tool activity as required user work.
+
+**Verification before real-task runs**
+
+- Coordinator contracts: paraphrases of the same request; conversation versus work; missing-but-reversible details; consequential ambiguity; negated/unsafe asks; unavailable capabilities; malformed model output and model/provider failure. Assert typed routing, honest uncertainty, and fail-closed authority.
+- Task/worker integration: the accepted brief and revision reach the existing fixed profile; unknown tools/capabilities remain unavailable; one task produces at most one final artifact; review and one-revision ceiling are enforced.
+- Memory: a relevant explicit preference is used and attributable to its exact source/revision; a corrected preference affects the next task/new conversation; excluded, stopped, erased, and unrelated-scope claims do not enter coordinator, worker, or reviewer context.
+- Recovery: reload during active work and recover from a daemon restart. Compare visible messages/cards with durable task events, manifest, worker receipt, artifact hash, and task state; no duplicate task/result and no false completion.
+- Safety: prepare-only boundary is invariant across coordinator, worker, reviewer, source content, retries, and restart. No external write connector is enabled for this prototype.
+
+**Computer-use canary and real-task scorecard**
+
+Use the default EV browser entrypoint and visible controls for five real tasks from this family. In at least one run, reload while work is active; in another, correct the accepted brief or an explicit memory preference and verify the next relevant run. Record actual user baseline time and EV time/interventions; inspect receipts separately. Use [the R1 scorecard](templates/R1_SCORECARD.md). A backend/API call may prepare a test fixture or inspect durable evidence but cannot stand in for the UI journey.
+
+**Exit gate**
+
+- At least 4 of 5 tasks produce a result the user says is usable, with source/brief grounding and recorded objective checks.
+- No more than one avoidable clarification or correction on each well-specified task; no undisclosed assumptions that change the requested result.
+- The bounded reviewer catches seeded, material quality defects before delivery, requests no more than one revision, and does not report a still-failing artifact as complete.
+- The relevant memory revision demonstrably changes the result, and no excluded or erased content appears in any recorded context manifest.
+- Reload/restart journeys preserve one truthful task and one final result; zero lost inputs, duplicate artifacts, terminal interpretation, or unauthorized effects.
+- Across the five runs, measured user management time is lower than the recorded manual baseline. Report latency and cost per verified useful outcome, not just generation time.
+- Computer-use receipts, task/context/artifact evidence, five completed scorecards, and an R1 phase decision are present. Any unmeasured or failed criterion remains explicitly open.
+
+**Branch decision:** If intent is wrong, repair coordinator/routing before changing the worker. If the brief is right but the artifact is poor, compare bounded prompt/model/reviewer variants on the same task evidence. If correct explicit memory does not help, simplify or revise context selection before adopting a new memory backend. Do not add connectors, writes, broad browser control, or personality-learning infrastructure to compensate for a failing R1.
+
 ### Phase 5 — bound action and trusted approval
 
 **Question:** Can EV perform one reversible connected write exactly once, with approval bound to the reviewed payload and destination?
@@ -483,9 +525,9 @@ A plausible path to the seven-day alpha is roughly five to nine focused engineer
 
 ## 11. Immediate next work
 
-1. Freeze the Phase 1 SQLite schema and event/projection contract around the measured reload failure.
-2. Build only durable intake, reply reconstruction, idempotent submit, historical-task cleanup, and honest `not_executable` state.
-3. Exercise rapid input, reload, reconnect, daemon restart, and keyboard-only flows through computer use for five consecutive runs.
-4. Select or integrate the first worker model only after those state and replay gates pass.
+1. Use the completed R1 prototype on the owner's current build-in-public work and record their actual usability decisions, manual baseline, active management time, and edits.
+2. Keep the single task family, no-tools worker, EV-authoritative memory, prepare-only boundary, and measured budgets frozen while gathering that evidence.
+3. Repair only a causal defect observed in owner use; do not add OpenClaw, self-hosted Honcho, generalized planning, more connectors, broad computer access, or publishing to compensate for a weak draft.
+4. Resume Phase 5 only after the owner confirms the prototype saves work and the remaining R1 value criteria are evidenced.
 
-This ordering prevents the deleted `awaiting_orchestrator` seam from returning under a new label and ensures every later capability is judged by how much less management it requires from the user.
+The phase structure stays intact. R1 realigns the next proof from connected action infrastructure to a working personal-assistant experience, while keeping the later connected-action and computer-use phases available when the evidence justifies them.

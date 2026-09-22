@@ -1,27 +1,24 @@
 # EV personal assistant — build and migration plan
 
-Date: 2026-09-21 · Status: active sequence; Phase 1 durable-conversation slice implemented and under verification
+Date: 2026-09-22 · Status: Phases 0–4 and R1 first-assistant technical acceptance implemented; owner usefulness validation is next
 
 Revised scope: [personal understanding and EV's evolving character](PERSONAL_MODEL.md) define the learning goal. [EV's own computer](COMPUTER_ENVIRONMENT.md) defines the long-term environment. V1 must prove that the combined system removes one continuing responsibility from the user's plate; it is not enough to ship chat, task, memory, connector, and security primitives separately. Mature adaptive personality and full computer/resource autonomy remain later capabilities.
 
 ## 1. Current state, verified in this checkout
 
-Repository HEAD inspected: `aa40c9d` (`feat: add executable capability lab`). Existing untracked work included an EV rationale/HTML blueprint and prototyping-workbench documents; this plan leaves them intact.
+Committed baseline inspected: `1874953` (`feat: add connected GitHub standing responsibility`). Phases 0–4 provide the durable conversation, supervised-worker, explicit-memory, and read-only standing-responsibility foundation. The R1 branch now passes its implementation and technical browser gate; [the evaluation](R1_EVALUATION.md) keeps the owner's subjective usefulness and time-saved claim separate and unasserted.
 
 | Existing code | Current behavior | Disposition |
 | --- | --- | --- |
-| `apps/web/assistant.*` | Default conversation surface with reload/restart persistence | Continue only durable intake/reconnect work; keep it free of terminal controls |
-| `apps/web/index.html`, `app.js`, `styles.css` | Terminal wall and pane/session controls at `/workstation`; old queue removed | Retain only as an explicit developer view during migration |
-| `apps/daemon/server.mjs` | Local HTTP service, tmux input/spawn, snapshots, explanation and lab APIs | Extract reusable HTTP/error patterns; new authenticated assistant API must not expose the old control routes |
-| `apps/daemon/lib/assistant-intake.mjs` | Deterministic intake, one exact reviewed worker route, and truthful `not_executable` responses | Replace with a coordinator only when more capabilities pass equivalent gates |
-| `apps/daemon/lib/assistant-ledger.mjs` | SQLite messages, intents, tasks, assistant events, and client-ID idempotency | Add reconnect/outbox semantics before worker integration |
-| `apps/daemon/lib/store.mjs` | Historical JSONL evidence for workstation/lab features | Retain as original audit evidence; do not use it as assistant task truth |
-| `apps/daemon/lib/evidence.mjs`, `attention.mjs` | Evidence normalization, redaction, heuristic attention | Reuse after tests/review; heuristic pane activity never becomes task completion truth |
-| `apps/daemon/lib/explainer.mjs`, `presentation.mjs` | Evidence-linked explanation and structured presentation | Optional “Explain this result” tool/detail view, outside the main product loop |
-| `apps/daemon/lib/experiment-runner.mjs`, `lab/*` | Executable capability experiments, fixtures, receipts | Reuse the evidence-driven experiment pattern for Pi, memory, sandbox, and connectors |
-| Installed Pi | `@earendil-works/pi-coding-agent` 0.84.4 | Pin and validate inside an isolated worker image |
+| `apps/web/assistant.*` | Conversation-first UI with durable messages, inline task cards, explicit memory controls, and one reviewed standing-responsibility flow | Extend the existing conversation for R1; do not make task infrastructure the main interface |
+| `apps/daemon/lib/assistant-intake.mjs` | Deterministic intake and one exact reviewed worker route | R1 replaces only this narrow routing seam with a bounded typed coordinator; preserve fail-closed capability selection |
+| `apps/daemon/lib/assistant-ledger.mjs`, `assistant-supervisor.mjs`, `assistant-worker-service.mjs` | Durable messages/tasks, fixed worker capabilities, leases, recovery, cancellation, and receipt-bound artifacts | Reuse for R1; repair only concrete defects found by the real-use gate |
+| `apps/daemon/lib/assistant-memory.mjs` | Explicit source-linked claim revisions, scoped recall, correction/stop-use/erase, and context manifests | Keep as EV authority for explicit preferences and memory policy; R1 must prove a relevant revision changes the deliverable |
+| `apps/daemon/lib/standing-responsibility.mjs`, `standing-runner.mjs`, GitHub connector | One read-only, prepare-only connected responsibility with durable observations and deduplicated work | Preserve as Phase 4 technical evidence; it does not substitute for natural conversational task interpretation |
+| `apps/daemon/lib/store.mjs`, `evidence.mjs`, `attention.mjs`, `explainer.mjs`, `presentation.mjs`, `experiment-runner.mjs`, `lab/*` | Legacy workstation evidence, redaction/attention utilities, explanations, and executable capability experiments | Reuse only through reviewed bounded interfaces; none is a substitute for assistant task truth |
+| Installed Pi | Worker adapter pinned to the currently verified runtime in the Phase 2 receipts | Reuse existing isolated fixed-profile execution for R1; do not broaden host or browser authority |
 
-The prototype documentation's historical test counts are not freshly executed results for this proposal. No application regression run is claimed; only planning artifacts and their interface concept are changed here.
+The evaluation log contains historical observed runs; its phase status must be read with the later Phase 1–4 entries. Acceptance of those technical slices does not establish that R1 or the complete personal-alpha usefulness gate has passed.
 
 ## 2. What to stop building
 
@@ -52,7 +49,7 @@ This slice proves durable intake, an executable attention policy, source synchro
 
 Effort ranges below are planning estimates for one experienced full-time engineer with AI assistance. They are not calendar commitments. Provider compatibility, sandbox hardening, account approvals, and the memory experiments can widen them. Research can run alongside work that does not depend on its answer.
 
-The stages below describe the architectural dependency order. [The adaptive implementation and real-use test plan](EXECUTION_PLAN.md) is the execution authority: it breaks these stages into smaller usable phases, requires computer-use and real-task evidence, and rewrites each next phase from the previous phase decision. If the two documents appear to conflict, do not implement the broader stage until the narrower execution-plan gate has passed.
+The stages below describe the architectural dependency order and remain intact. [The adaptive implementation and real-use test plan](EXECUTION_PLAN.md) is the execution authority: it breaks these stages into smaller usable phases, requires computer-use and real-task evidence, and rewrites each next phase from the previous phase decision. R1 is an experience-acceptance gate inserted after the Phase 0–4 foundation and before Phase 5; it does not replace, renumber, or remove those stages. If the two documents appear to conflict, do not implement the broader stage until the narrower execution-plan gate has passed.
 
 Stages 0–4 define the initial personal alpha with fixed scoped execution. A connector and standing responsibility move into the critical path rather than arriving after an internally complete chat/task stack. Stages 5–7 are later releases. The richer person-learning research can proceed independently of the full computer capability.
 
