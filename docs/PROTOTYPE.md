@@ -129,7 +129,7 @@ The server binds to `127.0.0.1`. There is no authentication, so do not expose it
 - Attention detection is heuristic; Codex app-server and Claude hook/ACP signals should become higher-confidence evidence.
 - Direct command broadcast is powerful. There is no role-based access, per-pane adoption, or confirmation tier yet.
 - The developer workstation has no assistant intake or task queue. Those concerns moved to the root assistant surface.
-- The root assistant records unavailable work as `not_executable`; no supervisor or worker exists yet.
+- The root assistant records unavailable work as `not_executable` and routes only the reviewed local launch-brief request to the supervised worker. Other capabilities remain unavailable by design.
 - Generic panes do not yet expose structured executor plans, tool calls, or authoritative test results; explanations label tmux-derived facts as heuristic.
 - Explanation answers currently complete over one HTTP request rather than streaming deltas to the browser.
 - Executable understanding is adapter-scoped. Arbitrary auth, OCR, PDF, browser, database, or production-load behavior remains unsupported until a purpose-built adapter is registered.

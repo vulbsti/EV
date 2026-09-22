@@ -15,11 +15,22 @@ function describeAttention(fleet) {
 }
 
 /**
- * Produce the smallest truthful Phase 1 turn. This is deliberately not an
- * agent loop: executable work remains not_executable until a real worker and
- * supervisor exist.
+ * Produce the smallest truthful assistant turn. This is deliberately not an
+ * agent loop: Phase 2 exposes only one exact reviewed worker capability.
  */
 export function planAssistantTurn({ clientMessageId, transcript, fleet }) {
+  const normalized = transcript.trim().toLowerCase().replace(/\s+/g, " ");
+  if (normalized === "create a one-page launch-status brief from the selected local fixture." ||
+      normalized === "create a one-page launch-status brief from the selected local fixture") {
+    return {
+      classification: "action",
+      route: "worker",
+      capability: "extended-launch-brief-v1",
+      response: "I saved the launch-status brief task. It can continue in the background while we keep talking.",
+      task: { status: "queued" }
+    };
+  }
+
   const route = routeUtterance({
     utteranceId: clientMessageId,
     transcript,

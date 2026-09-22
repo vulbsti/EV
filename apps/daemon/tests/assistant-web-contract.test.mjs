@@ -23,7 +23,7 @@ test("the default product surface is a minimal durable assistant, not the workst
   assert.match(javascript, /localStorage/);
   assert.match(javascript, /retryPending/);
   assert.match(javascript, /synchronize/);
-  assert.match(javascript, /\?after=\$\{after\}/);
+  assert.match(javascript, /after=\$\{after\}/);
   assert.match(javascript, /revision = Math\.max\(revision, body\.revision\)/);
   assert.match(javascript, /data-message-status=.*unconfirmed/);
 

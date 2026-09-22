@@ -1,6 +1,7 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permissions.mjs";
 
 export class EventStore {
   constructor(path) {
@@ -9,8 +10,9 @@ export class EventStore {
   }
 
   async initialize() {
-    await mkdir(dirname(this.path), { recursive: true });
+    ensurePrivateDirectorySync(dirname(this.path));
     await appendFile(this.path, "", { mode: 0o600 });
+    ensurePrivateFileSync(this.path);
   }
 
   async append(type, payload, correlationId = null) {
@@ -24,6 +26,7 @@ export class EventStore {
     };
     this.writeChain = this.writeChain.then(() => appendFile(this.path, `${JSON.stringify(event)}\n`, { mode: 0o600 }));
     await this.writeChain;
+    ensurePrivateFileSync(this.path);
     return event;
   }
 

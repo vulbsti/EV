@@ -201,6 +201,8 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 
 ### Phase 2 — one real supervised worker
 
+**Status (2026-09-21):** bounded Phase 2 accepted. SQLite now owns transactional leases, fencing, commands, revisions, and task events across instances. The product conversation routes one exact reviewed capability to Pi with an explicit skill/extension, isolated workspace, scoped file tools, network-disabled command allowlist, reduced environment, budgets, process-group cancellation, receipt-bound downloads, and objective artifact checks. Computer use produced four verified completions and one intentional cancellation; concurrent chat, reload, download, cancellation, and a real `started -> interrupted -> started -> completed` graceful-restart path passed without duplicate cards or artifacts. Mobile visual verification remains unproven because the browser backend ignored viewport overrides.
+
 **Question:** Can EV complete, verify, and return one bounded local task while chat remains usable?
 
 **Indicative effort:** 4–7 working days.
@@ -244,6 +246,8 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 
 ### Phase 3 — context, corrections, and personal fit
 
+**Status (2026-09-22):** initial explicit-guidance slice accepted; broader personal-model depth remains later work. SQLite stores sources, active versus candidate claims, immutable revisions, proposals, scoped recall, stop-use, erase epochs, temporary expiry, and exact context manifests. The `Understanding you` UI passed add, explain, correction, persistence, and stop-use journeys. On the same fixture, the no-guidance brief was 685 words and the explicitly guided run was 247 words against an under-250-word instruction; their manifests respectively contain zero claims and the exact one claim/source revision used. A fresh conversation opened with no copied transcript yet retrieved the same reviewed global guidance and produced one verified task. Automated scope, deletion, stale-revision, proposal, and manifest tests pass. Richer conflict and temporary-exception UX remain open.
+
 **Question:** Does explicit, provenance-linked personal context improve assistance without stale assumptions or cross-scope leakage?
 
 **Indicative effort:** 4–7 working days.
@@ -284,11 +288,13 @@ Effort ranges assume one experienced engineer with AI assistance. They are capac
 
 ### Phase 4 — one read-only connected standing responsibility
 
+**Status (2026-09-22):** bounded GitHub pull-request alpha accepted. The selected provider/test workspace is GitHub PR #2 through a strict read-only host connector. The product renders the mandate before activation, establishes a baseline without inventing work, polls with the browser closed, injects explicit memory through an exact context manifest, and projects recent verified outcomes back into the assistant UI. Three real PR-body changes produced three distinct attributed artifacts; repeated polling produced no duplicates. The third run survived a graceful daemon restart as `started -> interrupted -> started -> completed`. A source injection was identified as untrusted and not followed. Revocation persisted before a later real PR update, which produced no fourth task. The deterministic stale/no-data canary produced no task or invented current data. This accepts the narrow technical Phase 4 gate; repeated personal use must still confirm the measured setup actually saves attention.
+
 **Question:** Can EV notice a meaningful external change while the browser is closed and prepare a useful, current result without taking consequential action?
 
 **Indicative effort:** 5–8 working days after the selected connection is available.
 
-**Implementation precondition:** Select one real repeated workflow and one provider. The working default is a chosen Notion launch tracker, but the provider is not frozen until its test workspace, scopes, and access method are confirmed. Start with a mock adapter using the same contract; then move to a limited real account or test workspace.
+**Selected workflow:** Watch a reviewed GitHub pull request used as the launch-status source. Material title, body, state, draft-status, or head-revision changes may prepare a briefing and storyboard draft. The connection is host-side and read-only; no GitHub credential or write method is available to Pi.
 
 **Implement**
 

@@ -54,7 +54,7 @@ The standing responsibility observes only the selected source, applies a current
 
 ## Evidence and limits
 
-The repository originally exposed a tmux workstation, rule-based companion routing, a JSONL event store, and an explanation/capability lab. Phase 1 replaced that default surface with one SQLite-backed conversation and honest `not_executable` task records. The false `awaiting_orchestrator` projection and visible queue were deleted. Supervised execution, reconnect retry, personal understanding, and connectors are still absent.
+The repository originally exposed a tmux workstation, rule-based companion routing, a JSONL event store, and an explanation/capability lab. Phase 1 replaced that default surface with one SQLite-backed conversation and honest `not_executable` task records. Phase 2 adds one bounded, supervised Pi-worker path for the exact launch-brief task, including replay-safe task commands, cancellation, restart recovery, verified artifacts, and reload-safe UI state. Phase 3 adds explicit, provenance-linked personal guidance with revision, stop-use, erase, and exact context manifests. Phase 4 adds one inspectable, expiring, revocable read-only GitHub PR responsibility. Its three-change connected canary, restart recovery, stale/no-data fault, injection boundary, and post-revocation source change are recorded in the evaluation log. This is one narrow alpha connector, not a general plugin or autonomous browser system.
 
 Pi 0.84.4 was verified on this host on 2026-09-19. Its installed package is `@earendil-works/pi-coding-agent`; current upstream URLs redirect from `badlogic/pi-mono` to `earendil-works/pi`. No live Pi execution, sandbox escape tests, connector authentication, or memory benchmark was run for this planning task.
 

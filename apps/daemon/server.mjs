@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inventoryTmux } from "../../lab/lib/tmux.mjs";
@@ -10,27 +11,71 @@ import { loadDotEnv } from "./lib/env.mjs";
 import { EventStore } from "./lib/store.mjs";
 import { createAssistantLedger } from "./lib/assistant-ledger.mjs";
 import { planAssistantTurn } from "./lib/assistant-intake.mjs";
+import { AssistantSupervisor } from "./lib/assistant-supervisor.mjs";
+import { AssistantWorkerService } from "./lib/assistant-worker-service.mjs";
+import { AssistantMemoryStore } from "./lib/assistant-memory.mjs";
+import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
+import { StandingResponsibilityStore } from "./lib/standing-responsibility.mjs";
+import { StandingResponsibilityRunner } from "./lib/standing-runner.mjs";
+import { StandingResponsibilityScheduler } from "./lib/standing-scheduler.mjs";
 import { CodexAppServer } from "./lib/codex-app-server.mjs";
 import { createExplainer } from "./lib/explainer.mjs";
 import { createExperimentRunner } from "./lib/experiment-runner.mjs";
 import { inspectAttention, redactCommandPreview, stripTerminalControls, terminalDigest } from "./lib/attention.mjs";
+import { assertLoopbackHost, ensurePrivateDirectorySync, ensurePrivateFileSync } from "./lib/file-permissions.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const webRoot = join(projectRoot, "apps", "web");
 await loadDotEnv(join(projectRoot, ".env"));
+const configuredHost = assertLoopbackHost(process.env.EV_HOST ?? "127.0.0.1");
 const store = new EventStore(join(projectRoot, "data", "events.jsonl"));
 await store.initialize();
 const assistantLedger = createAssistantLedger({ path: join(projectRoot, "data", "assistant.sqlite") });
+const assistantWorkerRoot = join(projectRoot, "data", "assistant-worker");
+const artifactRoot = join(assistantWorkerRoot, "artifacts");
+const assistantSupervisor = await AssistantSupervisor.open({
+  statePath: join(assistantWorkerRoot, "supervisor-state.sqlite"),
+  artifactRoot
+});
+const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot });
+await assistantWorkers.start();
+const assistantMemory = AssistantMemoryStore.open({ path: join(projectRoot, "data", "assistant-memory.sqlite") });
+const assistantOwnerId = "default-person";
+const standingStore = StandingResponsibilityStore.open({ path: join(projectRoot, "data", "assistant-standing.sqlite") });
+const githubStandingConnector = new GitHubPullRequestConnector();
 
 const config = {
-  host: process.env.EV_HOST ?? "127.0.0.1",
+  host: configuredHost,
   port: Number(process.env.EV_PORT ?? 4317),
   openrouterKey: process.env.OPENROUTER_API_KEY,
   sttModel: process.env.OPENROUTER_STT_MODEL ?? "x-ai/grok-stt-1.0",
   ttsModel: process.env.OPENROUTER_TTS_MODEL ?? "x-ai/grok-voice-tts-1.0",
   ttsVoice: process.env.OPENROUTER_TTS_VOICE ?? "eve",
-  maxAudioBytes: 15 * 1024 * 1024
+  maxAudioBytes: 15 * 1024 * 1024,
+  standingPollMs: Math.max(1_000, Number(process.env.EV_STANDING_POLL_MS ?? 60_000) || 60_000)
 };
+const standingScheduler = new StandingResponsibilityScheduler({
+  intervalMs: config.standingPollMs,
+  listResponsibilities: () => standingStore.listResponsibilities({ status: "active" }),
+  createRunner: (responsibility) => {
+    if (responsibility.mandate.connector !== "github-pull-request-v1" || !responsibility.mandate.resourceRef.startsWith("github://")) {
+      throw Object.assign(new Error("No reviewed connector is registered for this responsibility"), { code: "CONNECTOR_NOT_ALLOWED" });
+    }
+    return new StandingResponsibilityRunner({
+      store: standingStore,
+      connector: githubStandingConnector,
+      workerService: assistantWorkers,
+      workspaceRoot: join(assistantWorkerRoot, "workspaces"),
+      responsibilityId: responsibility.responsibilityId,
+      buildContext: buildStandingPersonalContext
+    });
+  },
+  onFailure: async (failure) => {
+    if (failure.responsibilityId) await standingStore.recordWakeFailure({ responsibilityId: failure.responsibilityId, error: failure.error });
+  }
+});
+await standingScheduler.tickNow();
+standingScheduler.start();
 const paneActivity = new Map();
 let snapshotPromise = null;
 let snapshotExpiresAt = 0;
@@ -55,14 +100,98 @@ function json(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
-function publicConversation(afterSequence = 0) {
-  const allMessages = assistantLedger.listTurns("default").flatMap((turn) => [
+function publicTask(task) {
+  if (!task) return null;
+  return {
+    taskId: task.taskId,
+    capability: task.input?.capability ?? null,
+    title: task.input?.metadata?.title ?? "Background task",
+    status: task.status,
+    run: task.run ? { runId: task.run.runId, startedAt: task.run.startedAt } : null,
+    result: task.result,
+    artifacts: task.artifacts,
+    error: task.error,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    revision: task.revision,
+    contextManifestId: task.input?.metadata?.contextManifestId ?? null,
+    history: task.history
+  };
+}
+
+async function buildStandingPersonalContext({ responsibility, taskId }) {
+  const guidance = assistantMemory.recall({ ownerId: assistantOwnerId, scope: "global" });
+  const claimRevisionIds = guidance.map((claim) => claim.current.revisionId);
+  const sourceIds = [...new Set(guidance.flatMap((claim) => claim.sources.map((source) => source.sourceId)))];
+  const conversationId = responsibility.mandate.reportingDestination ?? "default";
+  const manifest = assistantMemory.buildContextManifest({
+    ownerId: assistantOwnerId,
+    taskId,
+    conversationId,
+    scope: "global",
+    claimRevisionIds,
+    sourceIds,
+    tokenBudget: 1200
+  });
+  return {
+    manifestId: manifest.manifestId,
+    text: guidance.length
+      ? `# Personal guidance\n\n${guidance.map((claim) => `- ${String(claim.current.value)}`).join("\n")}\n\nContext manifest: ${manifest.manifestId}`
+      : `Context manifest: ${manifest.manifestId} (no active personal guidance)`
+  };
+}
+
+async function publicResponsibility(responsibility) {
+  const observations = await standingStore.listObservations({ responsibilityId: responsibility.responsibilityId, limit: 1 });
+  const prepared = await standingStore.listPreparedTasks({ responsibilityId: responsibility.responsibilityId });
+  const latestPrepared = prepared.at(-1) ?? null;
+  const task = latestPrepared?.supervisorTaskId
+    ? await assistantSupervisor.getTask(latestPrepared.supervisorTaskId).catch(() => null)
+    : null;
+  const latestFailure = [...(responsibility.events ?? [])].reverse().find((event) => event.type === "wake_failed") ?? null;
+  const updates = await Promise.all(prepared.slice(-10).reverse().map(async (preparedTask) => ({
+    preparedTask,
+    observation: await standingStore.getObservation(preparedTask.observationId),
+    task: preparedTask.supervisorTaskId
+      ? publicTask(await assistantSupervisor.getTask(preparedTask.supervisorTaskId).catch(() => null))
+      : null
+  })));
+  return {
+    responsibilityId: responsibility.responsibilityId,
+    status: responsibility.status,
+    revision: responsibility.revision,
+    mandateVersion: responsibility.mandateVersion,
+    mandate: responsibility.mandate,
+    createdAt: responsibility.createdAt,
+    updatedAt: responsibility.updatedAt,
+    lastSourceRevision: responsibility.lastSourceRevision,
+    lastObservation: observations[0] ?? null,
+    latestFailure,
+    preparedTask: latestPrepared,
+    task: publicTask(task),
+    updates
+  };
+}
+
+function taskIdForClientMessage(clientMessageId) {
+  return `launch-${createHash("sha256").update(clientMessageId).digest("hex").slice(0, 24)}`;
+}
+
+async function taskForTurn(turn) {
+  if (turn.intent?.route !== "worker") return turn.task;
+  return assistantSupervisor.getTask(taskIdForClientMessage(turn.userMessage.clientMessageId)).catch(() => null);
+}
+
+async function publicConversation(conversationId = "default", afterSequence = 0) {
+  const turns = assistantLedger.listTurns(conversationId);
+  const linkedTasks = new Map(await Promise.all(turns.map(async (turn) => [turn.userMessage.messageId, await taskForTurn(turn)])));
+  const allMessages = turns.flatMap((turn) => [
     { ...turn.userMessage, status: "received" },
     {
       ...turn.assistantMessage,
-      status: turn.task?.status ?? "answered",
-      taskId: turn.task?.taskId ?? null,
-      taskStatus: turn.task?.status ?? null
+      status: linkedTasks.get(turn.userMessage.messageId)?.status ?? "answered",
+      taskId: linkedTasks.get(turn.userMessage.messageId)?.taskId ?? null,
+      taskStatus: linkedTasks.get(turn.userMessage.messageId)?.status ?? null
     }
   ]);
   return {
@@ -71,20 +200,61 @@ function publicConversation(afterSequence = 0) {
   };
 }
 
-function publicTurn(turn) {
+async function publicTurn(turn) {
+  const task = await taskForTurn(turn);
   return {
     replayed: turn.replayed,
     messages: [
       { ...turn.userMessage, status: "received" },
       {
         ...turn.assistantMessage,
-        status: turn.task?.status ?? "answered",
-        taskId: turn.task?.taskId ?? null,
-        taskStatus: turn.task?.status ?? null
+        status: task?.status ?? "answered",
+        taskId: task?.taskId ?? null,
+        taskStatus: task?.status ?? null
       }
     ],
-    task: turn.task
+    task: publicTask(task)
   };
+}
+
+async function ensureLaunchBriefTask(clientMessageId, conversationId = "default") {
+  const taskId = taskIdForClientMessage(clientMessageId);
+  const existing = await assistantSupervisor.getTask(taskId).catch(() => null);
+  if (existing) return existing;
+  const workspace = taskId;
+  const workspacePath = join(assistantWorkerRoot, "workspaces", workspace);
+  ensurePrivateDirectorySync(workspacePath);
+  ensurePrivateDirectorySync(join(workspacePath, "inputs"));
+  ensurePrivateDirectorySync(join(workspacePath, "output"));
+  const source = await readFile(join(projectRoot, "fixtures", "assistant", "launch-status-source.md"), "utf8");
+  const sourcePath = join(workspacePath, "inputs", "source.md");
+  await writeFile(sourcePath, source, { mode: 0o600 });
+  ensurePrivateFileSync(sourcePath);
+  const guidance = assistantMemory.recall({ ownerId: assistantOwnerId, scope: "global" });
+  const claimRevisionIds = guidance.map((claim) => claim.current.revisionId);
+  const sourceIds = [...new Set(guidance.flatMap((claim) => claim.sources.map((source) => source.sourceId)))];
+  const manifest = assistantMemory.buildContextManifest({
+    ownerId: assistantOwnerId,
+    taskId,
+    conversationId,
+    scope: "global",
+    claimRevisionIds,
+    sourceIds,
+    tokenBudget: 1200
+  });
+  const guidanceText = guidance.length
+    ? `\n# Personal guidance\n\n${guidance.map((claim) => `- ${String(claim.current.value)}`).join("\n")}\n`
+    : "";
+  const context = `# Task context\n\nCapability: extended-launch-brief-v1\nTask: ${taskId}\nAllowed root: this workspace only\nRequired output: output/launch-status-brief.md\nRequired headings: Current state, Evidence, Risks, Next actions\nContext manifest: ${manifest.manifestId}\n${guidanceText}`;
+  return assistantWorkers.submitTask({
+    taskId,
+    capability: "extended-launch-brief-v1",
+    prompt: "Read CONTEXT.md and inputs/source.md using workspace tools. Create the required one-page Markdown brief at output/launch-status-brief.md. Then use workspace_run with wc to verify its byte size, read the finished file, and report the checks.",
+    workspace,
+    context,
+    artifact: { sourcePath: "output/launch-status-brief.md", relativePath: "launch-status-brief.md" },
+    metadata: { clientMessageId, conversationId, title: "Create a launch-status brief", contextManifestId: manifest.manifestId }
+  });
 }
 
 async function readBody(request, limit) {
@@ -221,28 +391,205 @@ async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/assistant/conversation") {
     const after = Number(url.searchParams.get("after") ?? 0);
     if (!Number.isInteger(after) || after < 0) throw Object.assign(new Error("after must be a non-negative integer"), { statusCode: 400 });
-    return json(response, 200, { conversationId: "default", ...publicConversation(after) });
+    const conversationId = url.searchParams.get("conversationId") ?? "default";
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
+    return json(response, 200, { conversationId, ...await publicConversation(conversationId, after) });
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/connections/github/verify") {
+    const body = await readJson(request);
+    const resourceRef = githubStandingConnector.normalizeResourceRef(String(body.resourceRef ?? ""));
+    const observation = await githubStandingConnector.read({ resourceRef });
+    return json(response, 200, {
+      connection: { provider: "github", mode: "read_only", credentialLocation: "trusted-host", writesAllowed: false },
+      source: {
+        resourceRef,
+        sourceRevision: observation.sourceRevision,
+        title: observation.payload.pullRequest.title,
+        state: observation.payload.pullRequest.state,
+        updatedAt: observation.payload.pullRequest.updatedAt,
+        url: observation.payload.pullRequest.url
+      }
+    });
+  }
+  if (request.method === "GET" && url.pathname === "/api/assistant/responsibilities") {
+    const responsibilities = await standingStore.listResponsibilities();
+    return json(response, 200, { responsibilities: await Promise.all(responsibilities.map(publicResponsibility)) });
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/responsibilities") {
+    const body = await readJson(request);
+    const conversationId = String(body.conversationId ?? "default");
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
+    const resourceRef = githubStandingConnector.normalizeResourceRef(String(body.resourceRef ?? ""));
+    const expiry = body.expiresAt ? new Date(body.expiresAt) : new Date(Date.now() + 30 * 24 * 60 * 60_000);
+    if (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now()) throw Object.assign(new Error("expiresAt must be a future timestamp"), { statusCode: 400 });
+    const existing = (await standingStore.listResponsibilities({ status: "active" }))
+      .find((item) => item.mandate.resourceRef === resourceRef && item.mandate.reportingDestination === conversationId);
+    if (existing) return json(response, 200, { replayed: true, responsibility: await publicResponsibility(existing) });
+    const initial = await githubStandingConnector.read({ resourceRef });
+    let responsibility;
+    try {
+      responsibility = await standingStore.createResponsibility({
+        ownerId: assistantOwnerId,
+        mandate: {
+          connector: "github-pull-request-v1",
+          resourceRef,
+          trigger: { kind: "poll", intervalMs: config.standingPollMs },
+          materialFields: ["pullRequest.title", "pullRequest.body", "pullRequest.state", "pullRequest.isDraft", "pullRequest.headSha"],
+          freshnessMs: Math.max(config.standingPollMs * 3, 5 * 60_000),
+          initialObservation: "baseline_only",
+          attentionRule: "material_change_prepare_quietly",
+          preparedOutput: { instructions: "Prepare a concise launch-change briefing and next storyboard draft. Preserve the exact source revision and do not publish, comment, merge, push, label, or message anyone." },
+          approvalBoundary: "prepare_only",
+          budget: { maxRunsPerDay: 24, maxInterruptionsPerDay: 3 },
+          expiresAt: expiry.toISOString(),
+          reportingDestination: conversationId
+        }
+      });
+    } catch (error) {
+      if (error?.code !== "RESPONSIBILITY_SCOPE_EXISTS") throw error;
+      const replay = (await standingStore.listResponsibilities({ status: "active" }))
+        .find((item) => item.ownerId === assistantOwnerId && item.mandate.resourceRef === resourceRef && item.mandate.reportingDestination === conversationId);
+      if (!replay) throw error;
+      return json(response, 200, { replayed: true, responsibility: await publicResponsibility(replay) });
+    }
+    await standingStore.observe({ responsibilityId: responsibility.responsibilityId, observation: initial });
+    return json(response, 201, { replayed: false, responsibility: await publicResponsibility(await standingStore.getResponsibility(responsibility.responsibilityId)) });
+  }
+  if (request.method === "POST" && /^\/api\/assistant\/responsibilities\/[^/]+\/commands$/.test(url.pathname)) {
+    const responsibilityId = decodeURIComponent(url.pathname.slice("/api/assistant/responsibilities/".length, -"/commands".length));
+    const body = await readJson(request);
+    const commandId = String(body.commandId ?? "");
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(commandId)) throw Object.assign(new Error("A safe commandId is required"), { statusCode: 400 });
+    const current = await standingStore.getResponsibility(responsibilityId);
+    if (body.expectedRevision !== current.revision) throw Object.assign(new Error("Responsibility changed; reload before retrying"), { statusCode: 409, code: "RESPONSIBILITY_REVISION_CONFLICT" });
+    if (body.type === "revoke") {
+      const revoked = await standingStore.revokeResponsibility({ responsibilityId, reason: "revoked by user" });
+      const prepared = await standingStore.listPreparedTasks({ responsibilityId });
+      await Promise.all(prepared
+        .filter((item) => item.status === "revoked" && item.supervisorTaskId)
+        .map((item) => assistantWorkers.cancelTask({ taskId: item.supervisorTaskId, reason: "standing-authority-revoked" }).catch(() => null)));
+      return json(response, 200, { responsibility: await publicResponsibility(revoked) });
+    }
+    if (body.type === "check_now") {
+      const [result] = await standingScheduler.tickNow({ responsibilityId });
+      const refreshed = await standingStore.getResponsibility(responsibilityId);
+      return json(response, 200, { check: result, responsibility: await publicResponsibility(refreshed) });
+    }
+    throw Object.assign(new Error("type must be check_now or revoke"), { statusCode: 400 });
+  }
+  if (request.method === "GET" && url.pathname === "/api/assistant/tasks") {
+    const after = Number(url.searchParams.get("after") ?? 0);
+    if (!Number.isInteger(after) || after < 0) throw Object.assign(new Error("after must be a non-negative integer"), { statusCode: 400 });
+    const snapshot = await assistantWorkers.snapshot();
+    const conversationId = url.searchParams.get("conversationId") ?? "default";
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
+    return json(response, 200, {
+      revision: snapshot.revision,
+      tasks: snapshot.tasks.filter((task) => task.revision > after && (task.input?.metadata?.conversationId ?? "default") === conversationId).map(publicTask)
+    });
+  }
+  if (request.method === "GET" && url.pathname === "/api/assistant/memory") {
+    const scope = url.searchParams.get("scope") ?? "global";
+    if (!/^[A-Za-z0-9:._-]{1,128}$/.test(scope)) throw Object.assign(new Error("scope is invalid"), { statusCode: 400 });
+    return json(response, 200, { ownerId: assistantOwnerId, scope, claims: assistantMemory.recall({ ownerId: assistantOwnerId, scope }) });
+  }
+  if (request.method === "GET" && url.pathname.startsWith("/api/assistant/memory/manifests/")) {
+    const manifestId = decodeURIComponent(url.pathname.slice("/api/assistant/memory/manifests/".length));
+    const manifest = assistantMemory.getContextManifest(manifestId);
+    if (!manifest) throw Object.assign(new Error("Context manifest was not found"), { statusCode: 404 });
+    const { memoryRevision, eraseEpoch, claimRevisionIds } = manifest;
+    return json(response, 200, { ...manifest, memoryRevision, eraseEpoch, claimRevisionIds });
+  }
+  if (request.method === "GET" && /^\/api\/assistant\/memory\/[^/]+\/explain$/.test(url.pathname)) {
+    const claimId = decodeURIComponent(url.pathname.slice("/api/assistant/memory/".length, -"/explain".length));
+    const claim = assistantMemory.getClaim(claimId);
+    if (!claim || claim.ownerId !== assistantOwnerId) throw Object.assign(new Error("Memory was not found"), { statusCode: 404 });
+    return json(response, 200, { claim, explanation: { scope: claim.scope, currentRevision: claim.current, sources: claim.sources } });
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/memory") {
+    const body = await readJson(request);
+    const action = String(body.action ?? "");
+    if (action === "remember") {
+      const value = String(body.value ?? "").trim();
+      const scope = String(body.scope ?? "global");
+      if (!value || value.length > 2000) throw Object.assign(new Error("value must be 1-2000 characters"), { statusCode: 400 });
+      if (!/^[A-Za-z0-9:._-]{1,128}$/.test(scope)) throw Object.assign(new Error("scope is invalid"), { statusCode: 400 });
+      const source = assistantMemory.addSource({ ownerId: assistantOwnerId, scope, sourceType: "explicit-user", sourceRef: `manual:${randomUUID()}`, metadata: { channel: "understanding-you" } });
+      const claim = assistantMemory.createClaim({ ownerId: assistantOwnerId, scope, subject: "user", predicate: "collaboration_guidance", value, sourceIds: [source.sourceId], authorType: "user", inferred: false });
+      return json(response, 201, { claim });
+    }
+    const claimId = String(body.claimId ?? "");
+    const claim = assistantMemory.getClaim(claimId);
+    if (!claim || claim.ownerId !== assistantOwnerId) throw Object.assign(new Error("Memory was not found"), { statusCode: 404 });
+    if (action === "correct") {
+      const value = String(body.value ?? "").trim();
+      if (!value || value.length > 2000) throw Object.assign(new Error("value must be 1-2000 characters"), { statusCode: 400 });
+      const source = assistantMemory.addSource({ ownerId: assistantOwnerId, scope: claim.scope, sourceType: "explicit-correction", sourceRef: `manual:${randomUUID()}`, metadata: { channel: "understanding-you" } });
+      const corrected = assistantMemory.correct({ claimId, expectedRevision: body.expectedRevision, value, sourceIds: [source.sourceId], authorType: "user" });
+      return json(response, 200, { claim: corrected });
+    }
+    if (action === "stop_use") {
+      const tombstone = assistantMemory.stopUse({ ownerId: assistantOwnerId, targetType: "claim", targetId: claimId, scope: body.scope ?? null, expiresAt: body.expiresAt ?? null });
+      return json(response, 200, { tombstone });
+    }
+    if (action === "erase") {
+      const tombstone = assistantMemory.erase({ ownerId: assistantOwnerId, targetType: "claim", targetId: claimId, scope: body.scope ?? null });
+      return json(response, 200, { tombstone });
+    }
+    throw Object.assign(new Error("action must be remember, correct, stop_use, or erase"), { statusCode: 400 });
+  }
+  if (request.method === "POST" && /^\/api\/assistant\/tasks\/[^/]+\/commands$/.test(url.pathname)) {
+    const taskId = decodeURIComponent(url.pathname.slice("/api/assistant/tasks/".length, -"/commands".length));
+    const body = await readJson(request);
+    const commandId = String(body.commandId ?? "");
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(commandId)) throw Object.assign(new Error("A safe commandId is required"), { statusCode: 400 });
+    if (body.type !== "cancel") throw Object.assign(new Error("Only the cancel command is supported"), { statusCode: 400 });
+    const expectedRevision = body.expectedRevision;
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw Object.assign(new Error("expectedRevision must be a non-negative integer"), { statusCode: 400 });
+    const result = await assistantWorkers.cancelTask({ taskId, commandId, expectedRevision, reason: "user-requested" });
+    const snapshot = await assistantWorkers.snapshot();
+    return json(response, 200, { replayed: result.replayed, revision: snapshot.revision, task: publicTask(result.task) });
+  }
+  if (request.method === "GET" && url.pathname.startsWith("/api/assistant/artifacts/")) {
+    const artifactId = decodeURIComponent(url.pathname.slice("/api/assistant/artifacts/".length));
+    const artifact = await assistantSupervisor.readArtifact(artifactId);
+    response.writeHead(200, {
+      "Content-Type": artifact.filename.endsWith(".md") ? "text/markdown; charset=utf-8" : "application/octet-stream",
+      "Content-Length": artifact.contents.length,
+      "Content-Disposition": `attachment; filename="${artifact.filename.replace(/[^A-Za-z0-9._-]/g, "_")}"`,
+      "Cache-Control": "no-store",
+      "X-EV-Artifact-SHA256": artifact.receipt.sha256
+    });
+    return response.end(artifact.contents);
   }
   if (request.method === "POST" && url.pathname === "/api/assistant/messages") {
     const body = await readJson(request);
     const clientMessageId = String(body.clientMessageId ?? "");
+    const conversationId = String(body.conversationId ?? "default");
     const text = String(body.text ?? "").trim();
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(clientMessageId)) throw Object.assign(new Error("A safe clientMessageId is required"), { statusCode: 400 });
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
     if (!text) throw Object.assign(new Error("text is required"), { statusCode: 400 });
     if (text.length > 8000) throw Object.assign(new Error("text must not exceed 8000 characters"), { statusCode: 400 });
     const existing = assistantLedger.findByClientMessageId(clientMessageId);
-    if (existing) return json(response, 200, publicTurn({ ...existing, replayed: true }));
+    if (existing) {
+      if (existing.userMessage.conversationId !== conversationId) throw Object.assign(new Error("clientMessageId belongs to another conversation"), { statusCode: 409 });
+      if (existing.intent?.route === "worker") await ensureLaunchBriefTask(clientMessageId, conversationId);
+      return json(response, 200, await publicTurn({ ...existing, replayed: true }));
+    }
     const planned = planAssistantTurn({ clientMessageId, transcript: text, fleet: await controlSnapshot(72) });
+    if (planned.route === "worker") await ensureLaunchBriefTask(clientMessageId, conversationId);
     const turn = assistantLedger.recordTurn({
-      conversationId: "default",
+      conversationId,
       clientMessageId,
       userText: text,
       assistantText: planned.response,
-      intent: { kind: planned.classification, route: planned.route },
-      route: planned.route,
+      intent: { kind: planned.classification, route: planned.route, capability: planned.capability ?? null },
+      route: planned.route === "worker" ? "assistant" : planned.route,
+      skipTask: planned.route === "worker",
       taskTitle: text
     });
-    return json(response, 201, publicTurn(turn));
+    return json(response, 201, await publicTurn(turn));
   }
   if (request.method === "GET" && url.pathname === "/api/fleet") return json(response, 200, await getFleet());
   if (request.method === "GET" && url.pathname === "/api/control-snapshot") return json(response, 200, await controlSnapshot(url.searchParams.get("lines")));
@@ -346,7 +693,25 @@ const server = createServer(async (request, response) => {
     await serveStatic(response, url);
   } catch (error) {
     console.error(`[${new Date().toISOString()}] ${request.method} ${url.pathname}: ${error.message}`);
-    if (!response.headersSent) json(response, error.statusCode ?? 500, { error: error.message });
+    const codedStatus = {
+      TASK_NOT_FOUND: 404,
+      ARTIFACT_NOT_FOUND: 404,
+      TASK_REVISION_CONFLICT: 409,
+      COMMAND_ID_CONFLICT: 409,
+      CAPABILITY_NOT_ALLOWED: 400,
+      INVALID_ARTIFACT_ID: 400,
+      INVALID_COMMAND_ID: 400,
+      INVALID_RESOURCE: 400,
+      RESPONSIBILITY_NOT_FOUND: 404,
+      RESPONSIBILITY_REVISION_CONFLICT: 409,
+      CONNECTOR_AUTH_EXPIRED: 401,
+      CONNECTOR_FORBIDDEN: 403,
+      CONNECTOR_RESOURCE_UNAVAILABLE: 404,
+      CONNECTOR_RATE_LIMITED: 429,
+      CONNECTOR_TIMEOUT: 504,
+      CONNECTOR_READ_FAILED: 502
+    }[error.code];
+    if (!response.headersSent) json(response, error.statusCode ?? codedStatus ?? 500, { error: error.message, code: error.code ?? null });
     else response.end();
   }
 });
@@ -355,12 +720,21 @@ server.listen(config.port, config.host, async () => {
   await store.append("daemon.started", { host: config.host, port: config.port, voiceConfigured: Boolean(config.openrouterKey) });
   console.log(`EV prototype: http://${config.host}:${config.port}`);
   console.log(`Voice: ${config.openrouterKey ? `${config.sttModel} / ${config.ttsModel}` : "not configured"}`);
+  console.log(`Standing responsibility poll: ${config.standingPollMs} ms`);
 });
 
+let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => {
+  process.on(signal, async () => {
+    if (stopping) return;
+    stopping = true;
+    standingScheduler.stop();
+    await assistantWorkers.shutdown().catch((error) => console.error(`Worker shutdown failed: ${error.message}`));
     codex.close();
     assistantLedger.close();
+    assistantMemory.close();
+    standingStore.close();
+    assistantSupervisor.close();
     server.close(() => process.exit(0));
   });
 }

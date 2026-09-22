@@ -13,7 +13,7 @@ Repository HEAD inspected: `aa40c9d` (`feat: add executable capability lab`). Ex
 | `apps/web/assistant.*` | Default conversation surface with reload/restart persistence | Continue only durable intake/reconnect work; keep it free of terminal controls |
 | `apps/web/index.html`, `app.js`, `styles.css` | Terminal wall and pane/session controls at `/workstation`; old queue removed | Retain only as an explicit developer view during migration |
 | `apps/daemon/server.mjs` | Local HTTP service, tmux input/spawn, snapshots, explanation and lab APIs | Extract reusable HTTP/error patterns; new authenticated assistant API must not expose the old control routes |
-| `apps/daemon/lib/assistant-intake.mjs` | Deterministic Phase 1 intake and truthful `not_executable` responses | Replace with a coordinator only after durable truth gates pass |
+| `apps/daemon/lib/assistant-intake.mjs` | Deterministic intake, one exact reviewed worker route, and truthful `not_executable` responses | Replace with a coordinator only when more capabilities pass equivalent gates |
 | `apps/daemon/lib/assistant-ledger.mjs` | SQLite messages, intents, tasks, assistant events, and client-ID idempotency | Add reconnect/outbox semantics before worker integration |
 | `apps/daemon/lib/store.mjs` | Historical JSONL evidence for workstation/lab features | Retain as original audit evidence; do not use it as assistant task truth |
 | `apps/daemon/lib/evidence.mjs`, `attention.mjs` | Evidence normalization, redaction, heuristic attention | Reuse after tests/review; heuristic pane activity never becomes task completion truth |
