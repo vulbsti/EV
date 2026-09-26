@@ -269,6 +269,20 @@ export class AssistantSupervisor {
     return clone(this._task(taskId));
   }
 
+  async recordProgress({ taskId, runId, fencingToken, type = "progress", data = {} }) {
+    if (!["progress", "manager_plan", "worker_retry"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
+    const safeData = bounded(data, "task progress");
+    this._transaction(() => {
+      const row = this._requireRow(taskId);
+      this._assertToken(row, fencingToken);
+      if (row.status !== "running" || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current run can record progress");
+      const revision = this._nextRevision();
+      const at = this._addEvent(taskId, type, safeData);
+      this.database.prepare("UPDATE tasks SET updated_at = ?, revision = ? WHERE task_id = ?").run(at, revision, taskId);
+    });
+    return clone(this._task(taskId));
+  }
+
   async cancelTask({ taskId, reason }) {
     const safeReason = bounded(reason ?? null, "cancel reason");
     this._transaction(() => {

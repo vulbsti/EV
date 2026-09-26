@@ -2,6 +2,8 @@
 
 This is the human-readable index of actual EV use. Detailed future evidence belongs under `artifacts/assistant-runs/`; this file records the durable conclusion and the phase decision it informed.
 
+Latest evidence: [R1 first-assistant prototype evaluation](R1_EVALUATION.md). Five final-version browser tasks completed with reviewed artifacts; a sixth passed graceful restart recovery. R1 implementation and technical acceptance passed on 2026-09-22. The owner's subjective usefulness and manual-time baseline remain explicitly unclaimed, so Phase 5 stays paused.
+
 Statuses used here:
 
 - **Observed:** seen through the running UI, process, store, or provider.
