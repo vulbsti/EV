@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
-test("the default product surface is a minimal durable assistant, not the workstation queue", async () => {
+test("the default product surface delegates general tasks and keeps results inline", async () => {
   const [html, javascript, server] = await Promise.all([
     readFile(resolve(projectRoot, "apps/web/assistant.html"), "utf8"),
     readFile(resolve(projectRoot, "apps/web/assistant.js"), "utf8"),
@@ -30,14 +30,16 @@ test("the default product surface is a minimal durable assistant, not the workst
   assert.match(javascript, /Success criteria and boundaries/);
   assert.match(javascript, /Context manifest:/);
   assert.match(javascript, /Open reviewed content package/);
+  assert.match(javascript, /task-report/);
   assert.match(server, /url\.searchParams\.get\("preview"\) === "1"/);
   assert.match(server, /r1-content-package-v1/);
   assert.match(server, /isR1ContentRequest/);
+  assert.match(server, /openclaw-general-v1/);
   assert.match(server, /contextManifestId/);
   assert.match(server, /clientMessageId belongs to different message text/);
   assert.match(server, /Honcho-derived context is disabled until provider retention/);
   assert.doesNotMatch(server, /createHonchoDerivedMemoryAdapter/);
-  assert.match(html, /reviewed build-in-public post and short reel outline/);
+  assert.match(html, /give the work to an OpenClaw agent/);
 
   assert.doesNotMatch(html, /terminal-wall|broadcast-dock|spawn-dialog|orchestrator-input|task-list/);
   assert.doesNotMatch(javascript, /\/api\/companion|\/api\/tasks|\/api\/events/);

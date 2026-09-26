@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EV Orchestrator · Blueprint</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700;9..144,900;9..144,400,0,1;9..144,700,0,1&family=JetBrains+Mono:wght@200;400;500;700&display=swap" rel="stylesheet" />
+<style>
+:root{--paper:#f2ecdd;--paper-deep:#e8dfc9;--ink:#0f1b2b;--ink-soft:#1a2a3e;--blueprint:#2b4b7c;--blueprint-mid:#4870a3;--blueprint-pale:#a4bbd7;--red:#b33c1e;--red-soft:#d86848;--graphite:#595651;--graphite-soft:#8b8680;--grid:#d3c6a8;--grid-strong:#b9a97e;--ochre:#b78a3d;--display:"Fraunces","Times New Roman",serif;--body:"Fraunces",Georgia,serif;--mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace}
+*,*::before,*::after{box-sizing:border-box}html,body{margin:0;padding:0}html{background:var(--paper)}
+body{font-family:var(--body);font-variation-settings:"opsz" 14,"SOFT" 20;color:var(--ink);line-height:1.55;font-size:16px;-webkit-font-smoothing:antialiased;background:radial-gradient(1200px 600px at 70% -10%,rgba(120,140,170,.10),transparent 60%),radial-gradient(900px 500px at 0% 120%,rgba(179,60,30,.06),transparent 60%),var(--paper);overflow-x:hidden}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px),linear-gradient(var(--grid-strong) 1px,transparent 1px),linear-gradient(90deg,var(--grid-strong) 1px,transparent 1px);background-size:24px 24px,24px 24px,120px 120px,120px 120px;opacity:.32;mix-blend-mode:multiply;z-index:0}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:1;opacity:.08;mix-blend-mode:multiply;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='.8' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.06 0 0 0 0 0.1 0 0 0 0 0.17 0 0 0 .8 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>")}
+main{position:relative;z-index:2}.frame{max-width:1360px;margin:0 auto;padding:0 48px}
+h1,h2,h3,h4{font-family:var(--display);font-variation-settings:"opsz" 72,"SOFT" 0,"WONK" 1;letter-spacing:-.02em;line-height:1.02;color:var(--ink);margin:0}
+h1{font-weight:700;font-size:clamp(48px,7.2vw,104px)}h2{font-weight:500;font-size:clamp(36px,4.2vw,64px);font-variation-settings:"opsz" 60,"SOFT" 10;letter-spacing:-.025em}
+h3{font-weight:600;font-size:28px}h4{font-weight:700;font-size:15px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.18em;color:var(--blueprint)}
+p{margin:0 0 .9em 0;max-width:68ch}a{color:var(--blueprint)}code,.mono{font-family:var(--mono);font-size:.88em}.small{font-size:12.5px;color:var(--graphite);font-family:var(--mono);letter-spacing:.02em}
+.toc-strip{position:sticky;top:0;z-index:5;background:rgba(242,236,221,.88);backdrop-filter:blur(6px);border-bottom:1px solid var(--ink);padding:10px 0;font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.18em}
+.toc-strip .frame{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px 28px;align-items:baseline}
+.toc-strip a{color:var(--graphite);text-decoration:none;border-bottom:1px solid transparent}.toc-strip a:hover{color:var(--red);border-bottom-color:var(--red)}.toc-strip .b{color:var(--ink);font-weight:700}
+.cover{min-height:100vh;padding:96px 0 72px;display:grid;gap:40px}
+.cover-meta{display:flex;justify-content:space-between;gap:24px;font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--graphite)}
+.cover-meta>div{display:flex;gap:18px;flex-wrap:wrap}.cover-meta span b{color:var(--blueprint);font-weight:700}
+.cover-title{display:grid;grid-template-columns:auto 1fr;align-items:end;gap:36px;margin-top:auto}
+.cover-sheet{font-family:var(--mono);font-size:13px;writing-mode:vertical-rl;transform:rotate(180deg);letter-spacing:.3em;text-transform:uppercase;color:var(--red);align-self:stretch;border-left:1px solid var(--red);padding-left:14px}
+.cover h1 span.accent{color:var(--blueprint);font-style:italic}.cover h1 span.break{display:block}
+.cover-subtitle{font-family:var(--display);font-style:italic;font-size:22px;color:var(--graphite);max-width:78ch;border-top:1px solid var(--ink);padding-top:18px;margin-top:28px;display:flex;gap:22px}
+.cover-subtitle .num{font-family:var(--mono);font-style:normal;font-size:13px;letter-spacing:.18em;color:var(--red);padding-top:6px;min-width:60px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--ink);border-right:0;margin-top:56px;background:rgba(255,252,243,.4)}
+.stat{border-right:1px solid var(--ink);padding:22px;display:flex;flex-direction:column;gap:8px}
+.stat .n{font-family:var(--display);font-size:54px;font-weight:500;letter-spacing:-.03em;line-height:1}
+.stat .l{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--graphite)}
+.stat .ctx{font-size:13.5px;color:var(--ink-soft);max-width:28ch}.stat.accent .n{color:var(--red)}.stat.blueprint .n{color:var(--blueprint)}
+section{padding:80px 0 20px;position:relative}
+.section-head{display:grid;grid-template-columns:140px 1fr 220px;align-items:end;gap:40px;padding-bottom:24px;border-bottom:1px solid var(--ink);margin-bottom:60px}
+.section-head .idx{font-family:var(--mono);font-size:13px;letter-spacing:.2em;color:var(--red);text-transform:uppercase}
+.section-head .idx b{color:var(--ink);font-weight:700;display:block;font-size:48px;font-family:var(--display);letter-spacing:-.02em;margin-top:4px}
+.section-head .meta{font-family:var(--mono);font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--graphite);text-align:right}
+.two-col{display:grid;grid-template-columns:1fr 60px 1fr;gap:0;margin-bottom:48px}
+.ledger{border:1px solid var(--ink);padding:28px;background:rgba(255,252,243,.5);position:relative}
+.ledger header{display:flex;justify-content:space-between;padding-bottom:18px;margin-bottom:18px;border-bottom:1px dashed var(--graphite);align-items:baseline}
+.ledger header h3{font-size:22px}.ledger header .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--graphite)}
+.ledger ul{list-style:none;margin:0;padding:0;font-size:14px;line-height:1.65}
+.ledger ul li{display:grid;grid-template-columns:52px 1fr;gap:10px;padding:6px 0;border-bottom:1px dotted var(--paper-deep)}
+.ledger ul li:last-child{border-bottom:0}.ledger ul li .k{font-family:var(--mono);font-size:11px;color:var(--red);letter-spacing:.14em}
+.divider{display:flex;justify-content:center;align-items:center;font-size:26px;color:var(--red);font-style:italic;position:relative}
+.divider::before,.divider::after{content:"";position:absolute;left:50%;transform:translateX(-50%);width:1px;height:calc(50% - 24px);background:var(--ink)}.divider::before{top:0}.divider::after{bottom:0}
+.insight{padding:48px 0 40px}.insight blockquote{font-style:italic;font-weight:500;font-size:clamp(22px,2.4vw,36px);line-height:1.22;margin:0;max-width:880px}
+.insight blockquote em{color:var(--red)}.insight blockquote span.nb{color:var(--blueprint);font-style:normal}
+.insight-caption{display:flex;gap:30px;margin-top:32px;max-width:880px}.insight-caption .ref{font-family:var(--mono);font-size:12px;letter-spacing:.18em;color:var(--red);min-width:120px;padding-top:6px;border-top:1px solid var(--red)}
+.insight-caption p{font-size:15.5px;color:var(--ink-soft)}
+.dwg{border:1px solid var(--ink);background:rgba(255,252,243,.55);padding:32px 36px 40px;position:relative;margin-bottom:56px}
+.dwg-head{display:grid;grid-template-columns:1fr auto;gap:24px;padding-bottom:14px;margin-bottom:24px;border-bottom:1px dashed var(--graphite);align-items:end}
+.dwg-head h3{font-size:22px}.dwg-head .dwg-meta{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.2em;color:var(--graphite);text-align:right;line-height:1.8}
+.dwg-head .dwg-meta b{color:var(--red)}.dwg-body{overflow-x:auto}.dwg svg{display:block;max-width:100%;height:auto}
+.dwg .legend{margin-top:22px;padding-top:18px;border-top:1px dashed var(--graphite);display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px 32px;font-size:13px}
+.legend>div{display:flex;gap:12px;align-items:flex-start}.legend .key{flex:0 0 40px;margin-top:6px}.legend .key svg{width:100%;height:10px;overflow:visible}
+.legend .desc{flex:1;color:var(--ink-soft);font-size:13px}.legend .desc b{display:block;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;color:var(--ink);letter-spacing:.14em;margin-bottom:2px}
+.layer-stack{display:grid;gap:0}.layer{border:1px solid var(--ink);border-bottom:0;padding:22px 26px;display:grid;grid-template-columns:150px 1fr 220px;gap:28px;align-items:center;background:rgba(255,252,243,.45)}
+.layer:last-child{border-bottom:1px solid var(--ink)}.layer .idx{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--graphite)}
+.layer .idx b{display:block;font-size:34px;font-family:var(--display);color:var(--ink);margin-top:2px}
+.layer.highlight{background:linear-gradient(180deg,rgba(179,60,30,.08),rgba(179,60,30,.02));border-color:var(--red)}
+.layer.highlight .idx b,.layer.highlight h3{color:var(--red)}
+.layer .chips{display:flex;flex-wrap:wrap;gap:6px}.layer .chips span{font-family:var(--mono);font-size:11px;background:var(--paper-deep);padding:4px 9px;border:1px solid var(--graphite-soft);border-radius:2px}
+.layer .chips span.new{background:var(--red);color:var(--paper);border-color:var(--red)}.layer .caption{font-size:13px;color:var(--ink-soft)}
+.dec-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:0;border:1px solid var(--ink);background:rgba(255,252,243,.5)}
+.dec{padding:28px 30px 24px;border-right:1px solid var(--ink);border-bottom:1px solid var(--ink);display:grid;grid-template-rows:auto auto 1fr auto;gap:14px}
+.dec:nth-child(2n){border-right:0}.dec:nth-last-child(-n+2){border-bottom:0}
+@media(max-width:900px){.dec-grid{grid-template-columns:1fr}.dec{border-right:0}}
+.dec-num{font-family:var(--mono);font-size:11.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--red);display:flex;justify-content:space-between}
+.dec-num .axis{color:var(--graphite)}.dec h4.title{font-family:var(--display);font-weight:600;font-size:22px;color:var(--ink);text-transform:none}
+.dec p{font-size:14px;color:var(--ink-soft);margin:0}.dec .tradeoff{display:grid;grid-template-columns:1fr 1fr;gap:0;border-top:1px dashed var(--graphite);padding-top:12px;font-size:12.5px}
+.dec .tradeoff .label{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--graphite);margin-bottom:4px}
+.dec .tradeoff .gain{color:var(--blueprint);padding-right:10px;border-right:1px dotted var(--graphite-soft)}.dec .tradeoff .give{color:var(--red);padding-left:10px}
+.tl{border:1px solid var(--ink);padding:36px 40px 40px;background:rgba(255,252,243,.5)}
+.tl-track{display:grid;grid-template-columns:repeat(5,1fr);position:relative;margin-top:14px}
+.tl-track::before{content:"";position:absolute;left:0;right:0;top:30px;height:1px;background:var(--ink)}
+.phase{padding:0 16px 0 0}.phase .dot{width:22px;height:22px;border-radius:50%;background:var(--paper);border:2px solid var(--ink);margin:20px 0 18px;z-index:2;position:relative}
+.phase.cur .dot{background:var(--red);border-color:var(--red)}.phase .num{font-family:var(--mono);font-size:11px;letter-spacing:.2em;color:var(--red)}
+.phase h4.pt{font-family:var(--display);font-size:19px;font-weight:600;text-transform:none;color:var(--ink);margin-bottom:8px}
+.phase p{font-size:13px;color:var(--ink-soft);margin-bottom:10px}.phase .gate{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--blueprint);border-top:1px dashed var(--graphite-soft);padding-top:8px}
+.phase .gate b{color:var(--red)}
+.edges{display:grid;grid-template-columns:repeat(2,1fr);gap:28px}@media(max-width:980px){.edges{grid-template-columns:1fr}}
+.edge{border:1px solid var(--ink);background:rgba(255,252,243,.5);padding:22px 24px 20px}
+.edge header{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px dashed var(--graphite);padding-bottom:12px;margin-bottom:16px}
+.edge header h4{font-family:var(--display);font-size:19px;color:var(--ink);font-weight:600;text-transform:none}
+.edge header .sev{font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;padding:3px 8px;border:1px solid var(--graphite);color:var(--graphite)}
+.edge .sev.red{border-color:var(--red);color:var(--red)}.edge .sev.blue{border-color:var(--blueprint);color:var(--blueprint)}
+.edge .flow{font-family:var(--mono);font-size:12px;line-height:1.75}.edge .flow p{margin:0;padding:4px 0 4px 20px;border-left:1px solid var(--paper-deep);position:relative}
+.edge .flow p::before{content:"";position:absolute;left:-4px;top:12px;width:8px;height:1px;background:var(--graphite)}
+.edge .flow p.trigger{color:var(--red);border-left-color:var(--red)}.edge .flow p.action{color:var(--blueprint);border-left-color:var(--blueprint-mid)}.edge .flow p.result{color:var(--ink);border-left-color:var(--ink);font-weight:600}
+.edge footer{margin-top:14px;padding-top:12px;border-top:1px dashed var(--graphite);font-size:12.5px;color:var(--ink-soft);font-style:italic}
+.matrix{border:1px solid var(--ink);margin-bottom:56px;background:rgba(255,252,243,.5);overflow-x:auto}
+.matrix table{width:100%;border-collapse:collapse;font-size:13.5px}
+.matrix th,.matrix td{padding:12px 16px;text-align:left;border-bottom:1px dashed var(--graphite-soft);vertical-align:top}
+.matrix thead th{background:var(--paper-deep);border-bottom:1px solid var(--ink);font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;font-weight:700}
+.matrix tbody tr:last-child td{border-bottom:0}.matrix tbody td:first-child{font-family:var(--mono);font-size:11.5px;color:var(--blueprint);width:20%}
+.fp-block{border:1px solid var(--ink);padding:24px 28px 22px;background:rgba(255,252,243,.5)}
+.fp-block h4{margin-bottom:14px;border-bottom:1px dashed var(--graphite);padding-bottom:10px;color:var(--red)}
+.fp-table{width:100%;border-collapse:collapse;font-size:13.5px;font-family:var(--mono)}
+.fp-table td{padding:6px 6px 6px 0;vertical-align:top}.fp-table td.file{color:var(--blueprint)}.fp-table td.loc{text-align:right;font-weight:700;white-space:nowrap}.fp-table td.tag{text-align:right;font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--red)}
+.tree{font-family:var(--mono);font-size:12.5px;line-height:1.7;white-space:pre;overflow-x:auto}
+.tree .dir{color:var(--blueprint);font-weight:600}.tree .new{color:var(--red);font-weight:600}.tree .new::before{content:"★ ";color:var(--red)}
+.tree .verb{color:var(--graphite)}.tree .verb::before{content:"○ ";color:var(--graphite)}.tree .note{color:var(--graphite);font-style:italic;font-family:var(--body);font-size:12px}
+.risk-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--ink);background:rgba(255,252,243,.5)}
+@media(max-width:1000px){.risk-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:680px){.risk-grid{grid-template-columns:1fr}}
+.risk{padding:22px 24px 20px;border-right:1px solid var(--ink);border-bottom:1px solid var(--ink);display:grid;grid-template-rows:auto auto 1fr auto;gap:10px}
+.risk .r-head{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--red)}
+.risk .r-head .sev.h{color:var(--red)}.risk .r-head .sev.m{color:var(--ochre)}.risk .r-head .sev.l{color:var(--blueprint)}
+.risk h4.rt{text-transform:none;font-family:var(--display);font-size:18px;font-weight:600;color:var(--ink)}
+.risk p{font-size:13px;color:var(--ink-soft);margin:0}.risk .mit{border-top:1px dashed var(--graphite);padding-top:10px;font-size:12.5px;color:var(--blueprint)}
+.risk .mit .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--graphite);display:block;margin-bottom:3px}
+.cb{margin:28px 0;padding:20px 24px;background:rgba(75,112,163,.06);border-left:2px solid var(--blueprint);font-size:14.5px;max-width:80ch}
+.cb .cb-head{font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--blueprint);margin-bottom:6px}
+.cb.alert{background:rgba(179,60,30,.05);border-left-color:var(--red)}.cb.alert .cb-head{color:var(--red)}
+.sketch path,.sketch line,.sketch polyline,.sketch rect,.sketch circle,.sketch polygon{stroke-dasharray:var(--len,1200);stroke-dashoffset:var(--len,1200);transition:stroke-dashoffset 1.4s cubic-bezier(.7,.1,.2,1)}
+.sketch.in-view path,.sketch.in-view line,.sketch.in-view polyline,.sketch.in-view rect,.sketch.in-view circle,.sketch.in-view polygon{stroke-dashoffset:0}
+.sketch text{opacity:0;transition:opacity .8s ease .6s}.sketch.in-view text{opacity:1}
+svg text{font-family:var(--mono);fill:var(--ink)}svg .lbl{font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+svg .lbl-sm{font-size:9.5px;letter-spacing:.1em;fill:var(--graphite);text-transform:uppercase}
+svg .title{font-family:var(--display);font-size:16px;font-weight:600;letter-spacing:-.01em;text-transform:none}
+svg .num{font-size:10.5px;fill:var(--red);font-weight:700;letter-spacing:.15em}
+svg .hint{font-family:var(--body);font-style:italic;font-size:11.5px;fill:var(--graphite)}
+svg .code{font-size:10.5px;fill:var(--blueprint)}.ink{stroke:var(--ink)}.blue{stroke:var(--blueprint)}.red{stroke:var(--red)}.dash{stroke-dasharray:4 3}.fade{opacity:.38}.fill-paper{fill:var(--paper)}
+</style>
+</head>
+<body>
+<nav class="toc-strip"><div class="frame">
+<span class="b">EV · Blueprint / 01</span>
+<a href="#problem">§1 Problem</a><a href="#insight">§2 Insight</a><a href="#architecture">§3 Architecture</a><a href="#flow">§4 Data flow</a><a href="#compat">§5 Compatibility</a><a href="#anatomy">§6 Anatomy</a><a href="#edges">§7 Edges</a><a href="#risks">§8 Risks</a><a href="#decisions">§9 Decisions</a><a href="#timeline">§10 Rollout</a><a href="#footprint">§11 Footprint</a>
+</div></nav>
+<main><div class="frame">
+
+<section class="cover">
+<div class="cover-meta"><div><span><b>DWG</b> · EV-ORCH-01</span><span><b>REV</b> · C · DRAFT</span><span><b>SCALE</b> · 1 COMMIT = 1 SEAM</span><span><b>UNIT</b> · EVIDENCE</span></div><div><span>SHEET 01 / 01</span></div></div>
+<div class="cover-title"><div class="cover-sheet">EV · MISSION CONTROL · HARNESS-AGNOSTIC</div>
+<div><div class="small" style="margin-bottom:14px">DEEP RESEARCH · THREE PROTOTYPE CUTS · DESKTOP-VOICE TARGET</div>
+<h1>Every pane <span class="accent">observed,</span><span class="break">every task proven.</span></h1>
+<div class="cover-subtitle"><span class="num">00 / brief</span><span>EV is a local-first mission control for terminal agents: a tmux wall that became a read-only explanation window that became an adapter-backed capability lab — converging on a ChatGPT-desktop-like ambient orchestrator that is harness- and model-agnostic, with a hover-to-explain visual system instead of block diagrams.</span></div>
+</div></div>
+<div class="stats">
+<div class="stat"><div class="l">Live fleet proven</div><div class="n">16</div><div class="ctx">panes rendered at once, 3 sessions, 5.28 ms median discovery, 100% ID stability.</div></div>
+<div class="stat blueprint"><div class="l">Display budget</div><div class="n">650·6·5</div><div class="ctx">answer chars, mechanism steps, scenarios — enforced deterministically, never by prompt.</div></div>
+<div class="stat"><div class="l">Acceptance bar</div><div class="n">10/10</div><div class="ctx">gates per adapter-backed capability, incl. deliberate contract-failure + regression proposal.</div></div>
+<div class="stat accent"><div class="l">Lineage</div><div class="n">3+1</div><div class="ctx">linear commits 0c85bd7 → 36b5a3d → aa40c9d plus the OMP generic-probe worktree spike.</div></div>
+</div>
+</section>
+
+<section id="problem"><div class="section-head"><div class="idx">§ 01<b>01</b></div><div><h2>One machine, sixteen agents, zero task truth</h2></div><div class="meta">DWG EV-ORCH-01 <span>↔</span> CH 3 CUTS</div></div>
+<div class="two-col">
+<div class="ledger"><header><h3>Before state</h3><span class="tag">OBSERVED 2026-08-11</span></header><ul>
+<li><span class="k">FLEET</span><span>3 tmux sessions, 16 panes (13 claude · 2 node · 1 bash), arbitrary repos + worktrees.</span></li>
+<li><span class="k">TRUTH</span><span>Scrollback only. No task object, no approvals queue, no receipts, no provenance.</span></li>
+<li><span class="k">VOICE</span><span>No boundary: any voice agent with shell access is an unaudited root shell.</span></li>
+<li><span class="k">LEARN</span><span>"Why did it do that?" means reading the whole diff or re-asking the doing thread.</span></li>
+<li><span class="k">SCALE</span><span>Attention is human polling: which pane is stuck, waiting, or needs approval?</span></li>
+</ul></div><div class="divider">×</div>
+<div class="ledger"><header><h3>After each cut</h3><span class="tag">STILL OPEN</span></header><ul>
+<li><span class="k">WALL</span><span>0c85bd7 shows all tails + heuristic attention + literal control, but orchestrator only queues.</span></li>
+<li><span class="k">EXPLAIN</span><span>36b5a3d narrates any pane read-only, but scenarios are predicted models, not runs.</span></li>
+<li><span class="k">PROVE</span><span>aa40c9d executes two narrow adapters with receipts, but arbitrary domains stay missing-adapter.</span></li>
+<li><span class="k">GENERIC</span><span>Worktree spike runs any manifest probe in snapshots, but unmerged and OMP-edged.</span></li>
+<li><span class="k">TARGET</span><span>Ambient desktop orchestrator over all harnesses/models with hover-to-explain map — designed, not shipped.</span></li>
+</ul></div></div>
+<p style="max-width:84ch;margin:0 auto;text-align:center;font-style:italic;color:var(--ink-soft);font-size:18px">Each cut converts one clause of the rule — companion observes, orchestrator decides, policy authorizes, adapters execute, ledger proves — from prose into running code.</p>
+</section>
+
+<section id="insight" class="insight"><div class="section-head"><div class="idx">§ 02<b>02</b></div><div><h2>The gap between bytes and obligations</h2></div><div class="meta">REF RATIONALE <span>↔</span> §5</div></div>
+<blockquote>Terminals show <em>bytes;</em> tasks carry <span class="nb">obligations</span> — the product lives in the gap between those two views.</blockquote>
+<div class="insight-caption"><div class="ref">FIG 2.1 · REFRAME</div><p>The wall proves bytes can be shown. The explainer proves obligations can be narrated without touching bytes. The lab proves narration can be checked against real runs. The hover map turns that gap into the interface itself.</p></div>
+</section>
+
+<section id="architecture"><div class="section-head"><div class="idx">§ 03<b>03</b></div><div><h2>Adapter-first control plane, five layers</h2></div><div class="meta">FIG 3.1 <span>↔</span> STACK A–E</div></div>
+<div class="layer-stack">
+<div class="layer"><div class="idx">A<b>01</b></div><div><h3 style="font-size:20px;margin-bottom:8px">Voice transports (replaceable mouth/ears)</h3><div class="chips"><span>OpenRouter STT→TTS chain</span><span>Grok S2S realtime</span><span>browser mic probe</span><span class="new">Realtime = benchmark</span></div></div><div class="caption">Chained default for transcripts + policy gates; duplex experiment for latency. Never the brain.</div></div>
+<div class="layer"><div class="idx">B<b>02</b></div><div><h3 style="font-size:20px;margin-bottom:8px">Surfaces (wall · explain · lab · map)</h3><div class="chips"><span>terminal wall 1.2s</span><span>WHY? popup</span><span>capability lab</span><span class="new">hover-to-explain</span></div></div><div class="caption">Fleet map default, wall drill-down, task graph causality, attention inbox triage. Progressive disclosure only.</div></div>
+<div class="layer highlight"><div class="idx">C<b>03</b></div><div><h3 style="font-size:20px;margin-bottom:8px">Authority boundary (the only EV-specific layer)</h3><div class="chips"><span>read-only companion</span><span>delegation envelope</span><span>policy tiers</span></div></div><div class="caption">Gateway denial, frozen context, utterance-ID idempotency, non-voice confirmation for high risk.</div></div>
+<div class="layer"><div class="idx">D<b>04</b></div><div><h3 style="font-size:20px;margin-bottom:8px">Adapters (harness mechanics)</h3><div class="chips"><span>tmux observer/managed</span><span>codex app-server</span><span>claude ACP/hooks</span><span>presentation</span><span>loopback-http</span><span class="new">manifest+snapshot+runner</span></div></div><div class="caption">Universal fallback today, structured protocols tomorrow. Missing adapter beats simulated run.</div></div>
+<div class="layer"><div class="idx">E<b>05</b></div><div><h3 style="font-size:20px;margin-bottom:8px">Truth store (ledger + receipts)</h3><div class="chips"><span>JSONL → SQLite WAL</span><span>evidence revisions</span><span>task receipts</span><span>10/10 aggregate</span></div></div><div class="caption">Append-only events project to fleet/tasks/timeline. Every claim walks back to its snapshot.</div></div>
+</div>
+<div class="cb"><div class="cb-head">Architectural rule</div><p style="margin:0">The companion converses and observes; the orchestrator reasons and decides; policy authorizes; adapters execute; and the event ledger proves what happened.</p></div>
+</section>
+
+<section id="flow"><div class="section-head"><div class="idx">§ 04<b>04</b></div><div><h2>Speak → freeze → decide → prove → learn</h2></div><div class="meta">FIG 4.1 <span>↔</span> SWIM-LANE</div></div>
+<div class="dwg sketch" data-draw><div class="dwg-head"><h3>Fig. 4.1 — Utterance to receipt to runnable explanation</h3><div class="dwg-meta">PROJECTION · Flow ↓ Time →<br /><b>Scale:</b> one spoken action, end to end</div></div>
+<div class="dwg-body"><svg viewBox="0 0 1400 620" width="1400" style="--len:4500">
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink)"/></marker><marker id="arr-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--red)"/></marker><marker id="arr-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--blueprint)"/></marker><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--blueprint-pale)" stroke-width="1"/></pattern></defs>
+<line x1="240" y1="20" x2="240" y2="600" class="ink fade dash" stroke-width="1"/><line x1="500" y1="20" x2="500" y2="600" class="ink fade dash" stroke-width="1"/><line x1="760" y1="20" x2="760" y2="600" class="ink fade dash" stroke-width="1"/><line x1="1020" y1="20" x2="1020" y2="600" class="ink fade dash" stroke-width="1"/>
+<text x="30" y="35" class="lbl-sm">Voice · PTT</text><text x="270" y="35" class="lbl-sm">Companion (read-only)</text><text x="530" y="35" class="lbl-sm">Orchestrator + policy</text><text x="790" y="35" class="lbl-sm">Adapters</text><text x="1050" y="35" class="lbl-sm">Explain · Lab</text>
+<g><rect x="30" y="60" width="180" height="70" class="ink fill-paper" stroke-width="1.2"/><text x="44" y="82" class="num">01</text><text x="44" y="104" class="title">utter</text><text x="44" y="120" class="code">frozen ctx + id</text></g>
+<path d="M210,95 L270,95" class="ink" stroke-width="1.2" fill="none" marker-end="url(#arr)"/>
+<g><rect x="270" y="60" width="200" height="70" class="ink fill-paper" stroke-width="1.2"/><text x="284" y="82" class="num">02</text><text x="284" y="104" class="title">classify</text><text x="284" y="120" class="code">gateway deny mut.</text></g>
+<path d="M470,95 L530,95" class="ink" stroke-width="1.2" fill="none" marker-end="url(#arr)"/>
+<g><rect x="530" y="60" width="200" height="70" class="ink fill-paper" stroke-width="1.2"/><text x="544" y="82" class="num">03</text><text x="544" y="104" class="title">envelope</text><text x="544" y="120" class="code">exact-once task</text></g>
+<path d="M730,95 L790,95" class="ink" stroke-width="1.2" fill="none" marker-end="url(#arr)"/>
+<rect x="790" y="60" width="200" height="200" fill="url(#hatch)" stroke="var(--blueprint)" stroke-width="1.4"/><rect x="790" y="60" width="200" height="30" fill="var(--blueprint)" stroke="var(--blueprint)"/><text x="804" y="80" class="lbl" style="fill:var(--paper);letter-spacing:.18em">ADAPTER ZONE</text>
+<text x="804" y="112" class="num">04</text><text x="804" y="134" class="title">execute</text><text x="804" y="150" class="code">tmux/codex/claude</text><text x="804" y="168" class="hint">argv-safe · bounded</text><text x="804" y="196" class="num">05</text><text x="804" y="218" class="title">receipt</text><text x="804" y="234" class="code">diff/tests/cost</text>
+<path d="M990,150 L1050,150" class="ink" stroke-width="1.2" fill="none" marker-end="url(#arr)"/>
+<g><rect x="1050" y="60" width="200" height="70" class="ink fill-paper" stroke-width="1.2"/><text x="1064" y="82" class="num">06</text><text x="1064" y="104" class="title">WHY?</text><text x="1064" y="120" class="code">fresh evidence</text></g>
+<g><rect x="1050" y="150" width="200" height="70" class="ink fill-paper" stroke-width="1.2"/><text x="1064" y="172" class="num">07</text><text x="1064" y="194" class="title">lab run</text><text x="1064" y="210" class="code">normal/load/fail</text></g>
+<g><rect x="270" y="300" width="200" height="70" class="ink fill-paper" stroke-width="1.2"/><text x="284" y="322" class="num">08</text><text x="284" y="344" class="title">speak result</text><text x="284" y="360" class="code">short + verified</text></g>
+<path d="M1150,220 C 1150,330 500,330 480,335" class="red dash" stroke-width="1.4" fill="none" marker-end="url(#arr-r)"/>
+<text x="640" y="300" class="lbl-sm" style="fill:var(--red)">① spoken progress lands as text, not audio-only</text>
+<g><rect x="530" y="420" width="200" height="70" class="ink fill-paper" stroke-width="1.2"/><text x="544" y="442" class="num">09</text><text x="544" y="464" class="title">regress</text><text x="544" y="480" class="code">failed → proposal</text></g>
+<path d="M1150,185 C 1150,420 800,440 730,455" class="red dash" stroke-width="1.2" fill="none" marker-end="url(#arr-r)"/>
+<text x="820" y="400" class="lbl-sm" style="fill:var(--red)">② deliberate failure proves the loop</text>
+<path d="M370,370 L370,420 L530,455" class="blue dash" stroke-width="1.2" fill="none" marker-end="url(#arr-b)"/>
+<text x="380" y="440" class="lbl-sm">side channel · transcript + approval cards</text>
+</svg></div>
+<div class="legend">
+<div><span class="key"><svg viewBox="0 0 40 10"><line x1="0" y1="5" x2="40" y2="5" stroke="var(--ink)" stroke-width="1.4"/></svg></span><span class="desc"><b>direct flow</b>utterance → envelope → execution → receipt.</span></div>
+<div><span class="key"><svg viewBox="0 0 40 10"><line x1="0" y1="5" x2="40" y2="5" stroke="var(--red)" stroke-width="1.4" stroke-dasharray="4 3"/></svg></span><span class="desc"><b>learning loop</b>deliberate failure → regression proposal; speech → text artifact.</span></div>
+<div><span class="key"><svg viewBox="0 0 40 10"><line x1="0" y1="5" x2="40" y2="5" stroke="var(--blueprint)" stroke-width="1.4" stroke-dasharray="3 2"/></svg></span><span class="desc"><b>side channel</b>transcripts, approval cards, hover evidence — never execution.</span></div>
+<div><span class="key"><svg viewBox="0 0 40 10"><rect x="0" y="0" width="40" height="10" fill="url(#hatch)" stroke="var(--blueprint)"/></svg></span><span class="desc"><b>adapter zone</b>only registered, authority-declared code may mutate or observe deeply.</span></div>
+</div></div>
+</section>
+
+<section id="compat"><div class="section-head"><div class="idx">§ 05<b>05</b></div><div><h2>What each harness and voice path gives up</h2></div><div class="meta">MATRIX <span>↔</span> 2 TABLES</div></div>
+<div class="matrix"><table><thead><tr><th>Concern</th><th>tmux (universal)</th><th>Codex app-server</th><th>Claude ACP/hooks</th></tr></thead><tbody>
+<tr><td>sees</td><td>every pane, bytes + process facts</td><td>threads, turns, plans, diffs, approvals</td><td>hook events, permission prompts, task edges</td></tr>
+<tr><td>confidence</td><td>process / heuristic (low–med)</td><td>structured (high)</td><td>hook (high/med), fallback heuristic</td></tr>
+<tr><td>can't</td><td>know working vs blocked vs done</td><td>see non-Codex panes</td><td>observe outside Claude sessions</td></tr>
+<tr><td>EV move</td><td>always-on baseline; label honestly</td><td>stdio/socket adapter first rich layer</td><td>ACP first, hooks second, scraping last</td></tr>
+</tbody></table></div>
+<div class="matrix"><table><thead><tr><th>Concern</th><th>Chained OpenRouter (default)</th><th>Grok S2S (experiment)</th><th>Realtime API (benchmark)</th></tr></thead><tbody>
+<tr><td>latency</td><td>STT 0.4–0.7s + LLM + TTS 0.4–1s</td><td>sub-second first audio, barge-in/VAD</td><td>low, but audio-token burn ($32/$64 per 1M)</td></tr>
+<tr><td>keeps</td><td>explicit transcripts → envelopes + audit; per-stage gates</td><td>natural turns; transcript reconstructed</td><td>events + function-call hook only</td></tr>
+<tr><td>costs</td><td>whisper-class ~$0.006/min; TTS per-char</td><td>$0.08/min audio + text input</td><td>minutes evaporate at audio-token rates</td></tr>
+<tr><td>verdict</td><td>ship default; replaceable per stage</td><td>run latency experiment</td><td>do not adopt as brain</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="anatomy"><div class="section-head"><div class="idx">§ 06<b>06</b></div><div><h2>Three cuts, one lineage, one spike</h2></div><div class="meta">TREE <span>↔</span> 0c85bd7..aa40c9d</div></div>
+<div class="fp-block"><h4>File tree · repo root (★ = new per cut)</h4><div class="tree"><span class="dir">apps/daemon/lib/</span>
+├── <span class="verb">attention.mjs</span>      <span class="note">0c85bd7 · 5 regexes, digest, redact</span>
+├── <span class="verb">companion.mjs</span>      <span class="note">0c85bd7 · 4-kind classifier + envelope</span>
+├── <span class="new">evidence.mjs</span>        <span class="note">36b5a3d · bounded capture + publicEvidence</span>
+├── <span class="new">codex-app-server.mjs</span>  <span class="note">36b5a3d · stdio JSON-RPC, resume</span>
+├── <span class="new">explainer.mjs</span>       <span class="note">36b: 2-turn · aa40: 1-turn mechanics</span>
+├── <span class="new">presentation.mjs</span>    <span class="note">aa40 · 650/6/5 + fallback + link check</span>
+├── <span class="new">experiment-adapters.mjs</span>  <span class="note">aa40 · in-memory + loopback-get-only</span>
+├── <span class="new">experiment-runner.mjs</span>    <span class="note">aa40 · receipts + 10/10 + regress</span>
+<span class="dir">apps/web/</span>
+├── <span class="verb">app.js + index.html</span>  <span class="note">wall · 1.2s poll · WHY? launcher</span>
+├── <span class="new">explain.html/js/css</span>  <span class="note">36: explain · aa40: + lab mode</span>
+<span class="dir">lab/ (11 experiments)</span>  <span class="note">tmux · policy · delegation · resilience · discovery · stt · tts · roundtrip · xai · audio probe · cost</span>
+<span class="dir">tools/omp-capability-lab/</span>  <span class="note">worktree spike · manifest v2 · snapshot · runner · feed · rpc · calibration</span>
+</div></div>
+</section>
+
+<section id="edges"><div class="section-head"><div class="idx">§ 07<b>07</b></div><div><h2>Where the honest system says unknown</h2></div><div class="meta">4 FLOWS <span>↔</span> KEEP VISIBLE</div></div>
+<div class="edges">
+<div class="edge"><header><h4>Fullscreen prompt missed</h4><span class="sev blue">HEURISTIC</span></header><div class="flow"><p class="trigger">▸ agent waits in alt-screen TUI</p><p class="action">▸ regex scans 24 lines, no match</p><p class="result">▸ pane reads steady; attention absent</p></div><footer>Fix: Codex/ACP structured approval + hook signal outranks terminal text.</footer></div>
+<div class="edge"><header><h4>"This pane" moved mid-speech</h4><span class="sev red">SAFETY</span></header><div class="flow"><p class="trigger">▸ user says "stop that agent"</p><p class="action">▸ selection changes during STT</p><p class="result">▸ frozen snapshot routes to old target + confirm card</p></div><footer>Never resolve deixis against live UI; repeat target, require click for high risk.</footer></div>
+<div class="edge"><header><h4>Inferred shown as observed</h4><span class="sev red">EPISTEMIC</span></header><div class="flow"><p class="trigger">▸ model labels guess "observed"</p><p class="action">▸ normalizer defaults bad status → unknown</p><p class="result">▸ card shows unknown, not a fake proof</p></div><footer>36 uses observed/inferred/unknown; aa40 adds derived/predicted (inferred kept compat).</footer></div>
+<div class="edge"><header><h4>Loopback route internals</h4><span class="sev blue">PREDICTED</span></header><div class="flow"><p class="trigger">▸ GET /api/health returns 200</p><p class="action">▸ boundary observed, spans uninstrumented</p><p class="result">▸ route stage stays predicted</p></div><footer>Adapter honesty: observed boundary, predicted interior — until spans exist.</footer></div>
+</div>
+</section>
+
+<section id="risks"><div class="section-head"><div class="idx">§ 08<b>08</b></div><div><h2>Six ways this becomes a dashboard that lies</h2></div><div class="meta">SEV H/M/L <span>↔</span> MITIGATIONS</div></div>
+<div class="risk-grid">
+<div class="risk"><div class="r-head"><span>R1 · scraping</span><span class="sev h">HIGH</span></div><h4 class="rt">Terminal text misread as state</h4><p>False progress, missed approvals, stalled agents shown working.</p><div class="mit"><span class="lbl">Mitigation</span>Protocols first; confidence badge on every card; truth inspector to raw facts.</div></div>
+<div class="risk"><div class="r-head"><span>R2 · voice</span><span class="sev h">HIGH</span></div><h4 class="rt">Misheard destructive verb</h4><p>"Don't delete" → delete; wrong pane, wrong branch, wrong minute.</p><div class="mit"><span class="lbl">Mitigation</span>Frozen context + risk gate + non-voice confirmation; corpus-tested WER/intent.</div></div>
+<div class="risk"><div class="r-head"><span>R3 · collision</span><span class="sev h">HIGH</span></div><h4 class="rt">Two agents, one tree</h4><p>Mixed diffs, lost attribution, unverifiable receipts.</p><div class="mit"><span class="lbl">Mitigation</span>Worktree per run, file reservations, conflict warnings, independent verifier.</div></div>
+<div class="risk"><div class="r-head"><span>R4 · secrets</span><span class="sev m">MED</span></div><h4 class="rt">Logs leak into ledger/model/UI</h4><p>Tokens in terminal tails, patches, notifications, prompts.</p><div class="mit"><span class="lbl">Mitigation</span>Bounded capture, regex redaction, retention caps; never raw fleet by default.</div></div>
+<div class="risk"><div class="r-head"><span>R5 · drift</span><span class="sev m">MED</span></div><h4 class="rt">Orchestrator context rots</h4><p>Decisions on stale fleet; completion declared on vibes.</p><div class="mit"><span class="lbl">Mitigation</span>DB is truth; fresh evidence per turn; verification evidence required.</div></div>
+<div class="risk"><div class="r-head"><span>R6 · autonomy</span><span class="sev l">LOW·EARNED</span></div><h4 class="rt">Ambient overreach</h4><p>Silent actions, interrupt spam, trust crater.</p><div class="mit"><span class="lbl">Mitigation</span>PTT default, interrupt budget 2–4/day, activity log one tap away; Level 4 earned.</div></div>
+</div>
+</section>
+
+<section id="decisions"><div class="section-head"><div class="idx">§ 09<b>09</b></div><div><h2>Eight decisions that cascade</h2></div><div class="meta">CORE ARTIFACT <span>↔</span> GAIN / TRADE</div></div>
+<div class="dec-grid">
+<div class="dec"><div class="dec-num"><span>6.1</span><span class="axis">axis · universal vs owned</span></div><h4 class="title">tmux-direct baseline, managers as adapters</h4><p>Stable IDs + concurrent capture-pane + 600 ms cache see all 16 panes including unmanaged ones.</p><div class="tradeoff"><div class="gain"><div class="label">Gained</div>Whole fleet day one; no namespace lock-in.</div><div class="give"><div class="label">Traded</div>Polling heuristics; VT fidelity deferred.</div></div></div>
+<div class="dec"><div class="dec-num"><span>6.2</span><span class="axis">axis · prompt vs gateway</span></div><h4 class="title">Authority boundary in code</h4><p>Companion allows 5 read tools; 6 mutating names delegate. Envelopes carry utterance-ID idempotency.</p><div class="tradeoff"><div class="gain"><div class="label">Gained</div>Zero mutation leaks even on model misbehavior.</div><div class="give"><div class="label">Traded</div>Queue-only v1; execution arrives later.</div></div></div>
+<div class="dec"><div class="dec-num"><span>6.3</span><span class="axis">axis · demo vs measurement</span></div><h4 class="title">Lab before product</h4><p>11 experiments with JSONL evidence; 7 build gates; no transport chosen on docs alone.</p><div class="tradeoff"><div class="label">Gained</div>Real P50/P95, WER 8.33% sample, cost facts.</div><div class="give"><div class="label">Traded</div>Slower visible UI; open transport choice.</div></div></div>
+<div class="dec"><div class="dec-num"><span>6.4</span><span class="axis">axis · same thread vs second</span></div><h4 class="title">Isolated explainer thread + window</h4><p>Fresh evidence per ask, read-only Codex thread, public-only browser projection, JSONL sessions.</p><div class="tradeoff"><div class="gain"><div class="label">Gained</div>Questions never contaminate execution.</div><div class="give"><div class="label">Traded</div>2 turns at 36; no streaming; global profile.</div></div></div>
+<div class="dec"><div class="dec-num"><span>6.5</span><span class="axis">axis · instruct vs compile</span></div><h4 class="title">Deterministic 650·6·5 budgets</h4><p>Deep investigation, then local parse/link/bound; invalid links dropped, fallback explicit.</p><div class="tradeoff"><div class="label">Gained</div>UI unbreakable by verbosity; selectable depth.</div><div class="give"><div class="label">Traded</div>A normalizer to own; schema drift handled.</div></div></div>
+<div class="dec"><div class="dec-num"><span>6.6</span><span class="axis">axis · run-all vs honest-no</span></div><h4 class="title">Narrow adapters + missing-adapter</h4><p>Two capabilities, exact authority equality, 3-run suites, failed assertions → proposals.</p><div class="tradeoff"><div class="gain"><div class="label">Gained</div>Every run real; 10/10 means receipts.</div><div class="give"><div class="label">Traded</div>Most domains unscored until adapters land.</div></div></div>
+<div class="dec"><div class="dec-num"><span>6.7</span><span class="axis">axis · hard-coded vs manifest</span></div><h4 class="title">Generic probe core (worktree)</h4><p>Schema-v2 manifests, disposable snapshots, prlimit runner, feed/RPC bridge, confirmed calibration.</p><div class="tradeoff"><div class="gain"><div class="label">Gained</div>Harness-neutral probes; user-driven verdicts.</div><div class="give"><div class="label">Traded</div>Two labs carried; merge pending.</div></div></div>
+<div class="dec"><div class="dec-num"><span>6.8</span><span class="axis">axis · blocks vs map</span></div><h4 class="title">Hover-to-explain as primary UI</h4><p>Fleet map + wall + task graph over one dataset; hover expands to rationale, evidence, runnable edges.</p><div class="tradeoff"><div class="gain"><div class="label">Gained</div>Cognitive load collapses to one sentence + drill-down.</div><div class="give"><div class="label">Traded</div>Every hover must carry evidence status or it lies.</div></div></div>
+</div>
+</section>
+
+<section id="timeline"><div class="section-head"><div class="idx">§ 10<b>10</b></div><div><h2>From gates to ambient, in order</h2></div><div class="meta">5 PHASES <span>↔</span> HARD GATES</div></div>
+<div class="tl"><div class="small">Phases 01–05 · Each gated by a hard criterion</div><div class="tl-track">
+<div class="phase cur"><div class="num">phase 01</div><div class="dot"></div><h4 class="pt">Evidence gates</h4><p>Corpus WER/intent, P50/P95 audio, barge-in, cost from observed usage.</p><div class="gate"><b>Gate:</b> 7 EXPERIMENT_PLAN gates met</div></div>
+<div class="phase"><div class="num">phase 02</div><div class="dot"></div><h4 class="pt">Walking skeleton</h4><p>16-pane fleet + read-only pane + one structured Codex run + voice "what is running?"</p><div class="gate"><b>Gate:</b> restart-safe, unmanaged untouched</div></div>
+<div class="phase"><div class="num">phase 03</div><div class="dot"></div><h4 class="pt">Safe control</h4><p>Adoption, managed spawn, literal input, policy tiers, worktrees, audit trail.</p><div class="gate"><b>Gate:</b> launch → steer → stop one runtime</div></div>
+<div class="phase"><div class="num">phase 04</div><div class="dot"></div><h4 class="pt">Durable orchestrator</h4><p>Tasks/deps/scheduler/budgets, independent verifier, receipts, restart recovery.</p><div class="gate"><b>Gate:</b> parallel runs → verified summary</div></div>
+<div class="phase"><div class="num">phase 05</div><div class="dot"></div><h4 class="pt">Ambient desktop</h4><p>Hotkey companion, PTT voice, hover map, push results, earned autonomy.</p><div class="gate"><b>Gate:</b> hands-free ordinary work, visible approvals</div></div>
+</div></div>
+</section>
+
+<section id="footprint"><div class="section-head"><div class="idx">§ 11<b>11</b></div><div><h2>What changed, what stays open</h2></div><div class="meta">LOC <span>↔</span> FOLLOW-UPS</div></div>
+<div style="display:grid;grid-template-columns:1.3fr 1fr;gap:28px">
+<div class="fp-block"><h4>Line-level accounting</h4><table class="fp-table">
+<tr><td class="file">0c85bd7 · workstation + lab</td><td class="loc">+3,089</td><td class="tag">45 files</td></tr>
+<tr><td class="file">36b5a3d · explainer window</td><td class="loc">+1,810</td><td class="tag">19 files</td></tr>
+<tr><td class="file">aa40c9d · capability lab</td><td class="loc">+1,663</td><td class="tag">23 files</td></tr>
+<tr><td class="file">worktree spike · generic core</td><td class="loc">unstaged</td><td class="tag">tools/ + skills</td></tr>
+<tr><td class="file">this rationale + blueprint</td><td class="loc">new</td><td class="tag">docs/</td></tr>
+</table><div style="display:flex;justify-content:space-between;padding-top:14px;margin-top:10px;border-top:1px solid var(--ink);font-family:var(--display);font-size:28px;font-weight:600"><span>Total</span><span>~7.5k + spike</span></div></div>
+<div class="fp-block"><h4>Explicitly deferred</h4><table class="fp-table">
+<tr><td class="file">transport choice</td><td class="loc">open</td><td class="tag">corpus</td></tr>
+<tr><td class="file">xterm + control-mode</td><td class="loc">open</td><td class="tag">fidelity</td></tr>
+<tr><td class="file">claude/AoE adapters</td><td class="loc">open</td><td class="tag">spike</td></tr>
+<tr><td class="file">SQLite + supervision</td><td class="loc">open</td><td class="tag">durable</td></tr>
+<tr><td class="file">lab merge (daemon × OMP)</td><td class="loc">open</td><td class="tag">converge</td></tr>
+</table></div>
+</div>
+<div class="cb"><div class="cb-head">Companion reading order</div><p style="margin:0">Newcomer: cover → §2 → §6.8 → §4 → <span class="mono">docs/EV_RATIONALE.md</span>. Implementer: §3 → §5 → §6 → §7 → <span class="mono">EXPLANATION_WINDOW.md</span> + <span class="mono">CAPABILITY_LAB_ACCEPTANCE.md</span>. Voice: §4 + lab providers. Sources for every external claim live in the rationale; branch facts verified against <span class="mono">git show/diff</span> over <span class="mono">0c85bd7..aa40c9d</span>.</p></div>
+</section>
+
+</div></main>
+<script>
+const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in-view');io.unobserve(e.target)}})},{threshold:.22});
+document.querySelectorAll('.sketch').forEach(n=>io.observe(n));
+document.querySelectorAll('.sketch').forEach(s=>{s.querySelectorAll('path,line,polyline,polygon,rect,circle').forEach(el=>{try{const L=el.getTotalLength?el.getTotalLength():400;el.style.setProperty('--len',Math.max(160,Math.ceil(L)))}catch(_){}})});
+</script>
+</body>
+</html>

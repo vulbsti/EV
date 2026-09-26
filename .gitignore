@@ -4,9 +4,11 @@ data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 data/assistant-worker/
+data/ev-openclaw-workspace/
 data/assistant-coordinator/
 data/assistant-standing-local/
 data/assistant-standing-github/
+data/manager-check/
 .env
 *.pcm
 *.wav

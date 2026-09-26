@@ -72,6 +72,21 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
 }
 
+function renderAnswer(value) {
+  const source = String(value ?? "");
+  const tokens = /\[([^\]]{1,160})\]\((https?:\/\/[^\s)"'<>]+)\)|\*\*([^*\n]+)\*\*|`([^`\n]+)`/g;
+  let html = "";
+  let cursor = 0;
+  for (const match of source.matchAll(tokens)) {
+    html += escapeHtml(source.slice(cursor, match.index));
+    if (match[1]) html += `<a href="${escapeHtml(match[2])}" target="_blank" rel="noopener noreferrer">${escapeHtml(match[1])}</a>`;
+    else if (match[3]) html += `<strong>${escapeHtml(match[3])}</strong>`;
+    else html += `<code>${escapeHtml(match[4])}</code>`;
+    cursor = match.index + match[0].length;
+  }
+  return html + escapeHtml(source.slice(cursor));
+}
+
 function mergeTasks(incoming) {
   for (const task of incoming) tasks.set(task.taskId, task);
 }
@@ -86,18 +101,33 @@ function renderTask(task) {
   const terminal = ["completed", "failed", "cancelled"].includes(task.status);
   const artifact = task.artifacts?.[0];
   const isR1 = task.capability === "r1-content-package-v1";
+  const isOpenClaw = task.capability === "openclaw-general-v1";
+  const report = isOpenClaw && task.status === "completed" ? task.result?.report : null;
+  const children = [...tasks.values()].filter((child) => child.parentTaskId === task.taskId);
+  const displayStatus = report?.outcome === "partial" ? "partial result" : report?.outcome === "blocked" ? "blocked" : taskLabel(task.status);
   const detail = task.status === "failed" ? task.error?.message ?? "The worker could not complete this task." :
     task.status === "cancelled" ? "Stopped. No late worker result can replace this state." :
-    task.status === "completed" ? task.result?.summary ?? (isR1 ? "Finished with a draft, review receipt, and materially different final." : "Finished and verified.") :
-    task.status === "queued" ? "Saved and waiting for the reviewed worker." : "The reviewed worker is using its isolated task workspace.";
-  return `<section class="task-card ${escapeHtml(task.status)}" data-task-id="${escapeHtml(task.taskId)}" aria-label="Background task">
-    <div class="task-card-head"><span class="task-status ${escapeHtml(task.status)}">${escapeHtml(taskLabel(task.status))}</span><span class="task-time">${escapeHtml(task.updatedAt ? new Date(task.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "")}</span></div>
+    task.status === "completed" ? task.result?.summary ?? (isOpenClaw ? report?.outcome === "blocked" ? "The agent could not achieve the requested outcome. The reason is below." : report?.outcome === "partial" ? "Useful work is ready, with unfinished parts or material concerns listed below." : "The requested work is ready." : isR1 ? "Finished with a draft, review receipt, and materially different final." : "Finished and verified.") :
+    task.status === "queued" ? "Saved and waiting for its agent." : task.progress?.message ?? (isOpenClaw ? "OpenClaw is working in this task’s workspace." : "The reviewed worker is using its task workspace.");
+  const reportMarkup = report ? `<div class="task-report">
+    <p><strong>Goal:</strong> ${escapeHtml(report.goal)}</p>
+    ${report.limitations?.length ? `<p><strong>${report.outcome === "completed" ? "Caveats" : "Unfinished or uncertain"}:</strong> ${escapeHtml(report.limitations.join(" "))}</p>` : ""}
+    <p class="task-answer">${renderAnswer(report.answer)}</p>
+    ${report.evidence?.length ? `<details open><summary>Sources (${report.evidence.length})</summary><ul>${report.evidence.map((source) => `<li>${source.url.startsWith("file:") ? `<span>${escapeHtml(source.title || "Local source")}</span> <code>${escapeHtml(decodeURIComponent(new URL(source.url).pathname))}</code>` : `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title || source.url)}</a>`}${source.supports ? ` — ${escapeHtml(source.supports)}` : ""}${source.observedAt ? ` · ${escapeHtml(source.observedAt)}` : ""}</li>`).join("")}</ul></details>` : ""}
+    ${report.checks?.length ? `<details><summary>Agent checks</summary><ul>${report.checks.map((check) => `<li>${escapeHtml(check)}</li>`).join("")}</ul></details>` : ""}
+    ${task.artifacts?.length ? `<ul class="task-deliverables">${task.artifacts.map((file) => `<li><a href="/api/assistant/artifacts/${encodeURIComponent(file.artifactId)}" download>${escapeHtml(file.title || file.relativePath.split("/").at(-1))}</a></li>`).join("")}</ul>` : ""}
+    <small>${report.verification?.qualityGate?.unavailable ? "Separate review unavailable." : report.verification?.qualityGate?.skipped ? "Agent outcome and file checks recorded." : "EV checked the result against the goal and selected evidence."} ${report.verification?.deliverables?.filter((item) => item.verified).length ?? 0} files checked.${report.verification?.repairCount ? " The agent made a correction." : ""}</small>
+  </div>` : "";
+  return `<section class="task-card ${escapeHtml(report?.outcome ?? task.status)}" data-task-id="${escapeHtml(task.taskId)}" aria-label="Background task">
+    <div class="task-card-head"><span class="task-status ${escapeHtml(report?.outcome ?? task.status)}">${escapeHtml(displayStatus)}</span><span class="task-time">${escapeHtml(task.updatedAt ? new Date(task.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "")}</span></div>
     <h3>${escapeHtml(task.title ?? "Background task")}</h3>
     ${task.brief?.objective ? `<p><strong>Interpreted as:</strong> ${escapeHtml(task.brief.objective)}</p>` : ""}
     ${task.brief?.successCriteria?.length ? `<details class="task-brief"><summary>Success criteria and boundaries</summary><ul>${task.brief.successCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul><p><strong>Authority:</strong> prepare only</p><p><strong>Memory:</strong> reviewed EV guidance; derived memory providers are disabled</p>${task.contextManifestId ? `<p><strong>Context manifest:</strong> <code>${escapeHtml(task.contextManifestId)}</code></p>` : ""}</details>` : ""}
     <p>${escapeHtml(detail)}</p>
+    ${children.length ? `<details class="task-children"><summary>Workers · ${children.filter((child) => ["completed", "failed", "cancelled"].includes(child.status)).length}/${children.length} finished</summary><ul>${children.map((child) => `<li><strong>${escapeHtml(child.title)}</strong>${child.retryOf ? " (retry)" : ""} · ${escapeHtml(child.result?.report?.outcome ?? taskLabel(child.status))}${child.error ? ` · ${escapeHtml(child.error.message)}` : ""}</li>`).join("")}</ul></details>` : ""}
+    ${reportMarkup}
     <div class="task-actions">
-      ${artifact ? isR1
+      ${artifact && !isOpenClaw ? isR1
         ? `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(artifact.artifactId)}?preview=1" target="_blank" rel="noopener">Open reviewed content package</a>`
         : `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(artifact.artifactId)}" download="${escapeHtml(artifact.relativePath.split("/").at(-1))}">Download verified brief</a>` : ""}
       ${!terminal ? `<button type="button" class="task-cancel" data-command="cancel">Cancel</button>` : ""}
