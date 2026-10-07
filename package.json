@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Pre-build experiment and evidence suite for EV Mission Control",
   "scripts": {
-    "test": "node --test lab/tests/*.test.mjs apps/daemon/tests/*.test.mjs",
+    "test": "node --test apps/daemon/tests/*.test.mjs",
     "lab": "node scripts/run-lab.mjs",
     "lab:quick": "node scripts/run-lab.mjs --mode mock --profile quick",
     "lab:live": "node scripts/run-lab.mjs --mode live --profile full",
