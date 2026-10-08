@@ -2,21 +2,47 @@
 
 ## Execution flow
 
-A user message creates one durable parent task. GPT-6-Luna turns the request and EV's explicit guidance into a goal and observable success criteria. Ordinary requests use one executor. When assignments are independent, the manager starts two or three OpenClaw child tasks, each with a separate workspace and provider session. It waits for the results, then runs a parent executor to combine them and check the combined outcome. Dependent edits stay with one executor; this is deliberately not a general task DAG framework.
+A user message creates one durable parent task. Before any agent starts, EV's mediator (GPT-6-Luna) writes a **brief** from the request, the recent conversation and EV's explicit guidance: what the user literally asked, what they most likely want, which of their goals it serves, observable success criteria, the quality bar this person expects, the assumptions EV made, what is still unknown, and how many review rounds the work deserves. The brief is stored in the task history and written to the goal's shared `BRIEF.md`. If planning is unavailable, EV continues with a minimal brief built from the request.
 
-The supervisor is the owner of task state, leases, cancellation and restart recovery. The manager persists its plan in the existing task event history and reuses it on restart. Deterministic child IDs let it retain completed children instead of duplicating work. A child that failed is retried once only if the plan marks its assignment safe to repeat. Failed children and retries are visible under their parent in the same conversation. The parent can preserve successful work and disclose an incomplete contribution.
+Ordinary requests use one executor. When assignments are independent, the manager starts two or three OpenClaw child tasks. It waits for the results, then runs the lead agent to combine them. Dependent edits stay with one executor; this is deliberately not a general task DAG framework.
 
-At most three supervised executor processes run at once, across all requests. Parents waiting for children do not occupy an execution slot. OpenClaw's nested `sessions_spawn` is disabled because those sessions would bypass EV's durable child state and cancellation. File, shell, browser and other ordinary execution tools remain OpenClaw's responsibility. No provider catalog or additional model integration was introduced.
+### Shared workspace
+
+Every agent on one goal works under one directory:
+
+```text
+data/assistant-worker/workspaces/<goal>/
+  shared/          written only by EV
+    BRIEF.md       the mediator's brief
+    CONTEXT.md     guidance, recent conversation, the request
+    TEAM.md        every agent on the goal: assignment, status, directory, result
+    REVIEW.md      every review round and its verdict
+  tasks/<taskId>/  one agent's own working directory
+```
+
+Agents are told to read the shared files first, may read a teammate's directory, and write only in their own. EV serializes writes to `shared/` per goal and replaces files atomically, so an agent never reads a half-written brief. `TEAM.md` is regenerated from supervisor state whenever an agent is added or finishes. Tasks created before this layout keep their old one-directory-per-task workspace.
+
+### Admission control
+
+At most `EV_MAX_WORKERS` (default three) supervised agent processes run at once, across all requests. Parents waiting for children do not hold a slot. Waiting runs are admitted in priority order: work already under way first (child agents and revision rounds), then new requests from the user, then background standing-responsibility preparation.
+
+Each run is metered live. Adapters sum usage over every model call as the agent works (cache reads are tracked but not counted toward the token budget) and stop the agent as soon as it crosses its budget. General agents have a per-task token budget across all rounds (`EV_AGENT_TOKEN_BUDGET`, default 3,000,000); a run stopped at its budget keeps what it produced and goes to review. Fixed Pi profiles keep their per-run budgets and fail closed when they are crossed. OpenClaw's nested `sessions_spawn` remains disabled.
+
+The manager persists its plan in the task event history and reuses it on restart. Deterministic child IDs let it retain completed children instead of duplicating work. A child that failed is retried once only if the plan marks its assignment safe to repeat. Fixed Pi profiles, which only touch their own workspace, get one fresh attempt after a process failure, timeout or empty result.
 
 ## Completion and review policy
 
-Workers return a structured report: goal, outcome, answer, sources, deliverables, checks and limitations. The outcome is completed, partial or blocked. An execution crash or a report that remains unusable after one format correction is a task failure; an honest blocker or useful incomplete result remains visible.
+Workers return a structured report: goal, outcome, answer, sources, deliverables, checks and limitations. An unreadable report gets one request to restate it in the required format; that is a format repair, not a quality judgement.
 
-EV checks declared files. Files inside the task workspace are checked for file type, size and content hash, copied into the supervisor artifact store, and served through receipt-bound downloads. A declared changed file outside that workspace receives an existence check rather than a downloadable copy. These checks establish file presence and integrity, not the quality of the file.
+EV then **reviews** the result against the brief. The task moves to `verifying` while this happens. The reviewer judges intent (did it deliver what the person most likely wanted), each success criterion (met, partial or missing), the quality bar this person expects, and truth against the evidence EV gathers itself: bounded local file excerpts, exact quotes or JSON values, directory and Git state, completed command receipts from the agent's own log, and a few public web sources. Host findings such as a declared file that does not exist, or an exact quote that drops a link from its source, are given to the reviewer as observations rather than applied as fixed rules.
 
-For a useful root result, a separate Luna call checks the requested outcome and material errors against selected evidence. EV reads bounded local file excerpts, exact quotes or JSON values, directory state, completed command receipts, and a few public web sources. A review pass is limited evidence, not authoritative truth. Children are checked for usable reports and files; they are reviewed together in the parent outcome.
+If the reviewer asks for changes, its "missing" and "feedback" lists go back to **the same agent session**, which keeps its context and files, and the task moves back to `running` for the next round. This repeats until the reviewer accepts, the brief's review rounds run out (one to five, default three), or the task's budget is spent. Every round is recorded in the task history and in `REVIEW.md`. Only an accepted result is delivered as completed. Otherwise the best result is delivered as a clearly labelled partial result listing exactly what is still missing and why EV stopped. A declared file that does not exist is never delivered, whatever the review says.
 
-Only a material gap triggers one correction: a wrong requested identity/task, a missing central outcome presented as completed, or a central claim contradicted by an observed source. Minor wording and peripheral process details with no practical impact are ignored. User-relevant source and corroboration limits are caveats. If a material gap remains after that correction, EV returns the useful report as a clearly labelled partial result with unresolved issues. A review service failure also becomes a visible caveat, rather than discarding completed work. Blocked reports are preserved without forcing a citation to information the worker could not obtain.
+Fixed Pi profiles (the launch brief, standing-responsibility drafts and the R1 content package) no longer check headings or tool receipts. EV reviews the produced file against the task's brief and sends it back with the reviewer's feedback the same way; a file that is never accepted is not delivered and the task fails with `QUALITY_NOT_REACHED`.
+
+Child agents are not reviewed one by one; their work is reviewed together as the lead agent's combined result. Blocked reports are delivered as reported. If the review service is unavailable, the result is shown with a visible "not reviewed" caveat rather than discarded.
+
+Worker stderr can carry credentials, so it never enters task state, the UI or a prompt. A redacted tail is written to a private `diagnostics-<run>.log` beside the task's session, and the failed task's error points to it.
 
 ## Context and authority
 
@@ -24,7 +50,7 @@ EV selects up to eight active, explicit global guidance claims from its revision
 
 OpenClaw uses `opencode-go/gpt-6-luna` at `https://opencode.ai/zen/go/v1`, with `OPENCODE_API` from the repo-local .env. Keys pass through the child environment, not task configuration. Every task receives a separate provider session header and workspace.
 
-A task workspace is a directory, not an OS sandbox. The worker acts with the daemon user's host permissions and the authority in the user's request. Source review is bounded, web fetching covers a small allowlist, and token/cost accounting is not a hard task budget. The current fan-out is one level of independent assignments; dynamic delegation, dependency graphs, external-action reconciliation and a personal assistant conversation policy remain beyond this proof of concept.
+A task workspace is a directory, not an OS sandbox. The worker acts with the daemon user's host permissions and the authority in the user's request. Source review is bounded and web fetching covers a small allowlist. Token budgets are enforced live but their defaults are not yet calibrated against real runs; OpenCode Go reports zero cost, so only tokens bind for OpenClaw. The current fan-out is one level of independent assignments; dynamic delegation, dependency graphs, external-action reconciliation and a personal assistant conversation policy remain beyond this proof of concept.
 
 ## Run and verify
 
@@ -36,7 +62,7 @@ npm run assistant:manager-check -- --interrupt-child
 
 Open http://127.0.0.1:4317. The last command submits three real requests through EV: fix an unfamiliar Python fixture, implement two CSV reporters in parallel and combine their outputs, and research the public @tibo timeline. It interrupts only its own retry-safe acceptance child. It records requests, task histories, results and an independent local test rerun under ignored data/manager-check/.
 
-The deterministic manager tests cover parallel overlap and capacity, one child failure/retry, minor and unavailable review, material partial delivery, parent cancellation including workers waiting for capacity, restart with a completed child, and a falsely claimed missing file. These are manager contract checks; live results and manual use establish the broader product evidence.
+The deterministic manager tests cover parallel overlap and capacity, one child failure/retry, minor and unavailable review, feedback reaching the same agent until acceptance, partial delivery when review rounds run out, the shared goal layout, admission order, parent cancellation including workers waiting for capacity, restart with a completed child, and a falsely claimed missing file. These are manager contract checks; live results and manual use establish the broader product evidence.
 
 ## Priority
 

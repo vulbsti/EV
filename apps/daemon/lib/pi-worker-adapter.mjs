@@ -3,8 +3,15 @@ import { existsSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { ensurePrivateDirectorySync, securePrivateTreeSync } from "./file-permissions.mjs";
+import { TailBuffer, addCallUsage, emptyUsage, exceededBudget, writeDiagnosticsLog } from "./worker-usage.mjs";
 
 const execFileAsync = promisify(execFile);
+const MAX_RETAINED_EVENTS = 400;
+
+/** Summed run usage, shaped so existing `usage.totalTokens` / `usage.cost.total` readers keep working. */
+export function publicUsage(usage) {
+  return { ...usage, totalTokens: usage.budgetTokens, cost: { total: usage.costUsd } };
+}
 
 function assistantText(event) {
   if (event?.type !== "message_end" || event.message?.role !== "assistant") return null;
@@ -53,7 +60,7 @@ export class PiWorkerAdapter {
     this.env = env;
   }
 
-  async start({ runId, sessionId = runId, prompt }) {
+  async start({ runId, sessionId = runId, prompt, budget = null, onUsage = null }) {
     ensurePrivateDirectorySync(this.sessionDir);
     securePrivateTreeSync(this.sessionDir);
     const command = extname(this.executable) === ".mjs" ? process.execPath : this.executable;
@@ -90,30 +97,69 @@ export class PiWorkerAdapter {
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32"
     });
-    const run = { runId, sessionId, argv: [...argv.slice(0, -1), "[prompt omitted]"], child, cancelled: false, timedOut: false };
-    let stdout = "";
-    child.stdout.on("data", (chunk) => { if (stdout.length < 4_000_000) stdout += chunk; });
-    child.stderr.on("data", () => {});
-    const timer = setTimeout(() => {
-      run.timedOut = true;
+    const run = { runId, sessionId, argv: [...argv.slice(0, -1), "[prompt omitted]"], child, cancelled: false, timedOut: false, budgetExceeded: null };
+    // Parse the JSONL stream as it arrives instead of buffering all of stdout:
+    // long runs never lose their final message to a size cap, and usage is
+    // known while the run is still going, so the budget can stop it early.
+    const usage = emptyUsage();
+    const events = [];
+    let finalText = null;
+    let pending = "";
+    const stderr = new TailBuffer();
+    const stop = () => {
       terminateProcess(run);
       const escalation = setTimeout(() => terminateProcess(run, "SIGKILL"), 2_000);
       escalation.unref?.();
+    };
+    const handleLine = (line) => {
+      if (!line.trim()) return;
+      let event;
+      try { event = JSON.parse(line); } catch { return; }
+      events.push(event);
+      if (events.length > MAX_RETAINED_EVENTS) events.splice(0, events.length - MAX_RETAINED_EVENTS);
+      if (event.type === "tool_execution_start") usage.toolCalls += 1;
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        addCallUsage(usage, event.message.usage);
+        finalText = assistantText(event) ?? finalText;
+        onUsage?.(structuredClone(usage));
+      }
+      const exceeded = run.budgetExceeded ? null : exceededBudget(usage, budget);
+      if (exceeded) {
+        run.budgetExceeded = exceeded;
+        stop();
+      }
+    };
+    child.stdout.on("data", (chunk) => {
+      pending += chunk;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop();
+      for (const line of lines) handleLine(line);
+    });
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    const timer = setTimeout(() => {
+      run.timedOut = true;
+      stop();
     }, this.timeoutMs);
     timer.unref?.();
     run.completion = new Promise((resolve) => {
       let settled = false;
-      const finish = (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } };
+      const finish = async (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const diagnosticsLog = value.status === "completed" ? null : await writeDiagnosticsLog(this.sessionDir, runId, stderr);
+        resolve({ ...value, usage: publicUsage(usage), ...(diagnosticsLog ? { diagnosticsLog } : {}) });
+      };
       child.on("error", () => finish({ status: run.cancelled ? "cancelled" : "failed", code: "PI_PROCESS_START", message: "Pi worker could not start", events: [] }));
       child.on("close", (code, signal) => {
-        const events = stdout.split(/\r?\n/).filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
+        handleLine(pending);
+        pending = "";
         if (run.cancelled) return finish({ status: "cancelled", code: "PI_CANCELLED", message: "Pi worker was cancelled", events });
+        if (run.budgetExceeded) return finish({ status: "budget_exceeded", code: "WORKER_BUDGET_EXCEEDED", message: `The worker reached its ${run.budgetExceeded} budget and was stopped`, text: finalText, events });
         if (run.timedOut) return finish({ status: "timed_out", code: "PI_TIMEOUT", message: "Pi worker exceeded its time budget", events });
         if (code !== 0) return finish({ status: "failed", code: "PI_PROCESS_EXIT", message: `Pi worker failed with exit code ${code ?? signal ?? "unknown"}`, events });
-        const text = events.map(assistantText).filter(Boolean).at(-1);
-        if (!text) return finish({ status: "failed", code: "PI_EMPTY_RESULT", message: "Pi worker returned no final assistant text", events });
-        const finalEvent = [...events].reverse().find((event) => assistantText(event));
-        finish({ status: "completed", text, usage: finalEvent?.message?.usage ?? null, events });
+        if (!finalText) return finish({ status: "failed", code: "PI_EMPTY_RESULT", message: "Pi worker returned no final assistant text", events });
+        finish({ status: "completed", text: finalText, events });
       });
     });
     return run;

@@ -114,7 +114,7 @@ function publicTask(task) {
     run: task.run ? { runId: task.run.runId, startedAt: task.run.startedAt } : null,
     result: task.result,
     artifacts: task.artifacts,
-    error: task.error,
+    error: task.error ? { code: task.error.code, message: task.error.message } : null,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     revision: task.revision,
@@ -128,6 +128,7 @@ function publicTask(task) {
     retryOf: task.input?.metadata?.retryOf ?? null,
     progress: task.history.findLast((event) => event.type === "progress") ?? null,
     plan: task.history.findLast((event) => event.type === "manager_plan")?.plan ?? null,
+    reviews: task.history.filter((event) => event.type === "review").map(({ round, verdict, summary, missing }) => ({ round, verdict, summary, missing })),
     history: task.history
   };
 }
@@ -366,6 +367,24 @@ function verificationForRequest(request) {
   return { needsSources: Boolean(needsSources), expectedAccount: account };
 }
 
+/**
+ * The last few exchanges, so the mediator can resolve a short or vague request
+ * ("do the same for the other one", "make it shorter") from what came before.
+ */
+async function recentConversation(conversationId, clientMessageId, limit = 6) {
+  const turns = assistantLedger.listTurns(conversationId).filter((turn) => turn.userMessage.clientMessageId !== clientMessageId).slice(-limit);
+  const lines = [];
+  for (const turn of turns) {
+    lines.push(`User: ${String(turn.userMessage.content ?? "").slice(0, 800)}`);
+    const task = await taskForTurn(turn);
+    const report = task?.result?.report;
+    if (report) lines.push(`EV (${report.outcome}): ${String(report.answer ?? "").slice(0, 600)}`);
+    else if (task) lines.push(`EV: task ${task.status}${task.error?.message ? ` (${task.error.message})` : ""}`);
+    else if (turn.assistantMessage?.content) lines.push(`EV: ${String(turn.assistantMessage.content).slice(0, 400)}`);
+  }
+  return lines.join("\n");
+}
+
 async function ensureGeneralTask({ clientMessageId, conversationId = "default", request }) {
   const taskId = taskIdForClientMessage(clientMessageId, "openclaw-general-v1");
   const existing = await assistantSupervisor.getTask(taskId).catch(() => null);
@@ -377,6 +396,7 @@ async function ensureGeneralTask({ clientMessageId, conversationId = "default", 
     ownerId: assistantOwnerId, taskId, conversationId, scope: "global", claimRevisionIds, sourceIds, tokenBudget: 0
   });
   const verification = verificationForRequest(request);
+  const recent = await recentConversation(conversationId, clientMessageId);
   const context = [
     "# EV delegated goal",
     `Task ID: ${taskId}`,
@@ -389,6 +409,8 @@ async function ensureGeneralTask({ clientMessageId, conversationId = "default", 
     "Take external actions only when the user's request authorizes them. Report every action you actually took.",
     "# Reviewed guidance about the user",
     guidance.length ? guidance.map((claim) => `- ${String(claim.current.value).slice(0, 600)}`).join("\n") : "No active explicit guidance.",
+    "# Recent conversation",
+    recent || "This is the first request in this conversation.",
     "# User request",
     request
   ].join("\n\n");
@@ -397,7 +419,7 @@ async function ensureGeneralTask({ clientMessageId, conversationId = "default", 
     taskId,
     capability: "openclaw-general-v1",
     prompt,
-    workspace: taskId,
+    layout: "shared",
     context,
     metadata: { clientMessageId, conversationId, sourceRequest: request, title: request.slice(0, 140), contextManifestId: manifest.manifestId, verification, memoryMode: "explicit-ev-memory", managerMode: true }
   });

@@ -5,6 +5,9 @@ import { open, realpath } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
 import { ensurePrivateDirectorySync, secureDatabaseFilesSync, securePrivateTreeSync } from "./file-permissions.mjs";
 
+// A run is live while the agent works and while EV reviews its result.
+const ACTIVE_RUN_STATES = Object.freeze(["running", "verifying"]);
+
 function clone(value) {
   return structuredClone(value);
 }
@@ -240,13 +243,13 @@ export class AssistantSupervisor {
     const current = this._requireRow(taskId);
     this._assertToken(current, fencingToken);
     if (current.status === "completed" && current.run_id === runId) return clone(this._taskFromRow(current));
-    if (current.status !== "running" || current.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current running task can complete");
+    if (!ACTIVE_RUN_STATES.includes(current.status) || current.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current running task can complete");
     for (const receipt of safeArtifacts) await verifyReceipt(this.artifactRoot, receipt);
     this._transaction(() => {
       const row = this._requireRow(taskId);
       this._assertToken(row, fencingToken);
       if (row.status === "completed" && row.run_id === runId) return;
-      if (row.status !== "running" || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current running task can complete");
+      if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current running task can complete");
       const revision = this._nextRevision();
       const eventAt = this._addEvent(taskId, "completed", { runId });
       this.database.prepare("UPDATE tasks SET status = 'completed', result_json = ?, artifacts_json = ?, updated_at = ?, revision = ? WHERE task_id = ?")
@@ -260,7 +263,7 @@ export class AssistantSupervisor {
     this._transaction(() => {
       const row = this._requireRow(taskId);
       this._assertToken(row, fencingToken);
-      if (row.status !== "running" || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current running task can fail");
+      if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current running task can fail");
       const revision = this._nextRevision();
       const eventAt = this._addEvent(taskId, "failed", { runId, code: safeError.code });
       this.database.prepare("UPDATE tasks SET status = 'failed', error_json = ?, updated_at = ?, revision = ? WHERE task_id = ?")
@@ -270,15 +273,42 @@ export class AssistantSupervisor {
   }
 
   async recordProgress({ taskId, runId, fencingToken, type = "progress", data = {} }) {
-    if (!["progress", "manager_plan", "worker_retry"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
+    if (!["progress", "manager_plan", "worker_retry", "review", "usage"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
     const safeData = bounded(data, "task progress");
     this._transaction(() => {
       const row = this._requireRow(taskId);
       this._assertToken(row, fencingToken);
-      if (row.status !== "running" || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current run can record progress");
+      if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current run can record progress");
       const revision = this._nextRevision();
       const at = this._addEvent(taskId, type, safeData);
       this.database.prepare("UPDATE tasks SET updated_at = ?, revision = ? WHERE task_id = ?").run(at, revision, taskId);
+    });
+    return clone(this._task(taskId));
+  }
+
+  /**
+   * running -> verifying: the agent says it is done and EV is reviewing the
+   * result against the brief. verifying -> running: the review asked for
+   * another round and the same run goes back to work.
+   */
+  async beginVerification({ taskId, runId, fencingToken, round = 1 }) {
+    return this._moveRun({ taskId, runId, fencingToken, from: "running", to: "verifying", event: "verifying", data: { round } });
+  }
+
+  async resumeAfterReview({ taskId, runId, fencingToken, round = 1 }) {
+    return this._moveRun({ taskId, runId, fencingToken, from: "verifying", to: "running", event: "revision_requested", data: { round } });
+  }
+
+  _moveRun({ taskId, runId, fencingToken, from, to, event, data }) {
+    this._transaction(() => {
+      const row = this._requireRow(taskId);
+      this._assertToken(row, fencingToken);
+      if (row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current run can change state");
+      if (row.status === to) return;
+      if (row.status !== from) throw codedError("INVALID_TASK_TRANSITION", `Cannot move task from ${row.status} to ${to}`);
+      const revision = this._nextRevision();
+      const at = this._addEvent(taskId, event, bounded(data, "state change"));
+      this.database.prepare("UPDATE tasks SET status = ?, updated_at = ?, revision = ? WHERE task_id = ?").run(to, at, revision, taskId);
     });
     return clone(this._task(taskId));
   }
@@ -342,7 +372,7 @@ export class AssistantSupervisor {
 
   async recover() {
     const recoveredTaskIds = this._transaction(() => {
-      const rows = this.database.prepare("SELECT * FROM tasks WHERE status IN ('leased', 'running') ORDER BY created_at ASC, task_id ASC").all();
+      const rows = this.database.prepare("SELECT * FROM tasks WHERE status IN ('leased', 'running', 'verifying') ORDER BY created_at ASC, task_id ASC").all();
       const ids = [];
       for (const row of rows) {
         const revision = this._nextRevision();
@@ -361,10 +391,10 @@ export class AssistantSupervisor {
     this._transaction(() => {
       const row = this._requireRow(taskId);
       this._assertToken(row, fencingToken);
-      if (row.status === "running" && runId && row.run_id !== runId) {
+      if (ACTIVE_RUN_STATES.includes(row.status) && runId && row.run_id !== runId) {
         throw codedError("INVALID_TASK_TRANSITION", "Only the current run can be requeued");
       }
-      if (!["leased", "running"].includes(row.status)) throw codedError("INVALID_TASK_TRANSITION", `Cannot requeue task in ${row.status}`);
+      if (!["leased", ...ACTIVE_RUN_STATES].includes(row.status)) throw codedError("INVALID_TASK_TRANSITION", `Cannot requeue task in ${row.status}`);
       const revision = this._nextRevision();
       const eventAt = this._addEvent(taskId, "interrupted", { previousRunId: row.run_id ?? null, reason: safeReason });
       this.database.prepare("UPDATE tasks SET status = 'queued', lease_id = NULL, fencing_token = NULL, worker_id = NULL, run_id = NULL, started_at = NULL, updated_at = ?, revision = ? WHERE task_id = ?")

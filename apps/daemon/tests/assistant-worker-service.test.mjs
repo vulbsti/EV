@@ -58,6 +58,7 @@ test("submits a fixed scoped task, owns its run, and completes only after artifa
       workspaceRoot: f.workspaceRoot,
       profiles: createFixedCapabilityProfiles({ projectRoot: process.cwd() }),
       adapterFactory: fakeAdapterFactory({ calls }),
+      reviewer: async () => ({ verdict: "accept", summary: "Meets the brief" }),
     });
     const submitted = await service.submitTask({
       taskId: "task-1",
@@ -72,7 +73,7 @@ test("submits a fixed scoped task, owns its run, and completes only after artifa
     assert.equal(completed.artifacts.length, 1);
     assert.equal(calls.filter((call) => call.type === "start").length, 1);
     assert.equal(service.activeRuns.size, 0);
-    assert.deepEqual(completed.history.map((event) => event.type), ["created", "leased", "started", "completed"]);
+    assert.deepEqual(completed.history.map((event) => event.type), ["created", "leased", "started", "verifying", "review", "completed"]);
   } finally { await f.close(); }
 });
 
@@ -250,28 +251,55 @@ test("accepts an R1 content package only after a material draft-review-revision 
   } finally { await f.close(); }
 });
 
-for (const [name, options] of [["missing review", { omitReview: true }], ["unchanged final", { unchanged: true }]]) {
-  test(`rejects an R1 content package with ${name}`, async () => {
-    const f = await fixture();
-    try {
-      const service = new AssistantWorkerService({
-        supervisor: f.supervisor,
-        workerRoot: f.workerRoot,
-        workspaceRoot: f.workspaceRoot,
-        adapterFactory: r1AdapterFactory(options)
-      });
-      await service.submitTask({
-        taskId: `r1-${name.replaceAll(" ", "-")}`,
-        capability: "r1-content-package-v1",
-        prompt: "prepare and review",
-        workspace: `r1-${name.replaceAll(" ", "-")}`,
-        context: "# Bounded task context",
-        artifact: { sourcePath: "output/content-package.md", relativePath: "content-package.md" }
-      });
-      const failed = await service.waitForTask(`r1-${name.replaceAll(" ", "-")}`);
-      assert.equal(failed.status, "failed");
-      assert.equal(failed.error.code, name === "missing review" ? "R1_OUTPUT_INVALID" : "R1_ARTIFACT_INVALID");
-      assert.deepEqual(failed.artifacts, []);
-    } finally { await f.close(); }
-  });
-}
+test("rejects an R1 content package whose structured output is unreadable", async () => {
+  const f = await fixture();
+  try {
+    const service = new AssistantWorkerService({
+      supervisor: f.supervisor,
+      workerRoot: f.workerRoot,
+      workspaceRoot: f.workspaceRoot,
+      adapterFactory: r1AdapterFactory({ omitReview: true })
+    });
+    await service.submitTask({
+      taskId: "r1-missing-review",
+      capability: "r1-content-package-v1",
+      prompt: "prepare and review",
+      workspace: "r1-missing-review",
+      context: "# Bounded task context",
+      artifact: { sourcePath: "output/content-package.md", relativePath: "content-package.md" }
+    });
+    const failed = await service.waitForTask("r1-missing-review");
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.error.code, "R1_OUTPUT_INVALID");
+    assert.deepEqual(failed.artifacts, []);
+  } finally { await f.close(); }
+});
+
+test("a deliverable EV's review never accepts is not delivered, and the feedback reaches the revision", async () => {
+  const f = await fixture();
+  const prompts = [];
+  try {
+    const service = new AssistantWorkerService({
+      supervisor: f.supervisor,
+      workerRoot: f.workerRoot,
+      workspaceRoot: f.workspaceRoot,
+      profiles: createFixedCapabilityProfiles({ projectRoot: process.cwd() }),
+      reviewer: async () => ({ verdict: "revise", missing: ["The risks section is generic"], feedback: ["Name the two launch blockers from the source"], summary: "Too generic" }),
+      adapterFactory: async ({ workspacePath }) => ({
+        async start({ prompt }) {
+          prompts.push(prompt);
+          await writeFile(join(workspacePath, "output.md"), `draft ${prompts.length}\n`, { mode: 0o600 });
+          return { completion: Promise.resolve({ status: "completed", text: "done", events: [] }) };
+        },
+        async cancel() {}
+      })
+    });
+    await service.submitTask({ taskId: "never-good", capability: "scoped-workspace-v1", prompt: "write the brief", context: "# Context", artifact: { sourcePath: "output.md" } });
+    const failed = await service.waitForTask("never-good");
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.error.code, "QUALITY_NOT_REACHED");
+    assert.deepEqual(failed.artifacts, []);
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1], /Name the two launch blockers/);
+  } finally { await f.close(); }
+});

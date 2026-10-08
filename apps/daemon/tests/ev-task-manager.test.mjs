@@ -78,16 +78,83 @@ test("minor concerns and an unavailable reviewer do not discard a useful result"
   }
 });
 
-test("a persistent material gap gets one correction and remains visible as a partial result", async () => {
-  const f = await fixture(); let starts = 0;
+test("EV sends review feedback back to the same agent until the result is accepted", async () => {
+  const f = await fixture(); const prompts = []; let reviews = 0;
   const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
-    reviewer: async () => ({ pass: false, issues: ["A requested part is missing."], caveats: [], summary: "Incomplete" }),
+    reviewer: async ({ round }) => { reviews++; return round < 2
+      ? { verdict: "revise", missing: ["The comparison table"], feedback: ["Add a table comparing the three options"], summary: "Missing the table" }
+      : { verdict: "accept", summary: "Meets the brief" }; },
+    adapterFactory: async () => ({ async start({ prompt }) { prompts.push(prompt); return { completion: Promise.resolve({ status: "completed", text: report(`answer ${prompts.length}`) }) }; }, async cancel() {} })
+  });
+  try {
+    await submit(service); const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "completed");
+    assert.equal(prompts.length, 2); assert.equal(reviews, 2);
+    assert.match(prompts[1], /Add a table comparing the three options/);
+    assert.match(final.result.report.answer, /answer 2/);
+    assert.deepEqual(final.result.report.verification.reviews.map((review) => review.verdict), ["revise", "accept"]);
+    assert.ok(final.history.some((event) => event.type === "revision_requested"));
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("a result review never accepts is delivered only as partial, with what is still missing", async () => {
+  const f = await fixture(); let starts = 0;
+  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan({ reviewRounds: 3 }, "Do work"),
+    reviewer: async () => ({ verdict: "revise", missing: ["A requested part is missing."], feedback: [], summary: "Incomplete" }),
     adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
   });
   try {
     await submit(service); const final = await service.waitForTask("parent");
-    assert.equal(starts, 2); assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "partial");
+    assert.equal(starts, 3); assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "partial");
+    assert.equal(final.result.report.verification.stopReason, "rounds");
     assert.match(final.result.report.answer, /Useful result/); assert.match(final.result.report.limitations.join(" "), /requested part/);
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("agents on one goal share a brief and team board, each working in its own directory", async () => {
+  const f = await fixture(); const seen = [];
+  const service = new AssistantWorkerService({ ...f.options, planner: async () => plan, reviewer: pass,
+    adapterFactory: async ({ task, workspacePath }) => ({ async start({ prompt }) {
+      seen.push({ taskId: task.taskId, workspacePath, prompt });
+      return { completion: Promise.resolve({ status: "completed", text: report(task.taskId) }) };
+    }, async cancel() {} })
+  });
+  try {
+    await service.submitTask({ taskId: "goal", capability: "openclaw-general-v1", layout: "shared", context: "# User request\n\nProduce a report", prompt: "unused", metadata: { managerMode: true, sourceRequest: "Produce a report", conversationId: "test" } });
+    const final = await service.waitForTask("goal");
+    assert.equal(final.status, "completed");
+    const shared = join(f.root, "workspaces", "goal", "shared");
+    assert.match(await readFile(join(shared, "BRIEF.md"), "utf8"), /Both assignments are covered/);
+    const team = await readFile(join(shared, "TEAM.md"), "utf8");
+    assert.match(team, /goal-child-1/); assert.match(team, /goal-child-2/);
+    for (const item of seen) {
+      assert.equal(item.workspacePath, join(f.root, "workspaces", "goal", "tasks", item.taskId));
+      assert.match(item.prompt, new RegExp(`${shared}/BRIEF.md`));
+    }
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("work already under way is admitted before new requests, and background work goes last", async () => {
+  const f = await fixture(); const order = [];
+  let releaseFirst;
+  const service = new AssistantWorkerService({ ...f.options, maxConcurrentWorkers: 1, reviewer: pass, profiles: {
+    ...(await import("../lib/assistant-worker-service.mjs")).createFixedCapabilityProfiles(),
+    "plain-v1": { capability: "plain-v1", tools: [], extensionPaths: [], skillPaths: [], requireContext: false, requireArtifact: false, budget: null }
+  }, adapterFactory: async ({ task }) => ({ async start() {
+    order.push(task.taskId);
+    if (task.taskId === "first") return { completion: new Promise((resolve) => { releaseFirst = () => resolve({ status: "completed", text: "ok" }); }) };
+    return { completion: Promise.resolve({ status: "completed", text: "ok" }) };
+  }, async cancel() {} }) });
+  try {
+    await service.submitTask({ taskId: "first", capability: "plain-v1", prompt: "p" });
+    await until(async () => order.length === 1);
+    await service.submitTask({ taskId: "background", capability: "plain-v1", prompt: "p", metadata: { kind: "standing-prepared-output" } });
+    await service.submitTask({ taskId: "interactive", capability: "plain-v1", prompt: "p" });
+    await service.submitTask({ taskId: "child", capability: "plain-v1", prompt: "p", metadata: { parentTaskId: "elsewhere" } });
+    await until(async () => service.workerQueue.length === 3);
+    releaseFirst();
+    await Promise.all(["background", "interactive", "child"].map((id) => service.waitForTask(id)));
+    assert.deepEqual(order, ["first", "child", "interactive", "background"]);
   } finally { await service.shutdown(); await f.close(); }
 });
 

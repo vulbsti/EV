@@ -3,8 +3,11 @@ import { createHash } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ensurePrivateDirectorySync } from "./file-permissions.mjs";
+import { publicUsage } from "./pi-worker-adapter.mjs";
+import { TailBuffer, addCallUsage, emptyUsage, exceededBudget, writeDiagnosticsLog } from "./worker-usage.mjs";
 
 const PROVIDER = "opencode-go";
+const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 const MODEL = "gpt-6-luna";
 
 function stableSessionHeader(taskId) {
@@ -73,6 +76,30 @@ async function completedSessionResult(sessionPath, afterBytes = 0) {
   return null;
 }
 
+/**
+ * Reads session lines appended since the last call and adds their per-call
+ * usage. OpenClaw writes the session file as it works, so this gives live
+ * spend without waiting for the process to exit.
+ */
+async function accumulateSessionUsage(sessionPath, state) {
+  const bytes = await readFile(sessionPath);
+  if (bytes.length <= state.offset) return;
+  const chunk = bytes.subarray(state.offset);
+  const lastNewline = chunk.lastIndexOf(10);
+  if (lastNewline < 0) return;
+  state.offset += lastNewline + 1;
+  for (const line of chunk.subarray(0, lastNewline).toString("utf8").split("\n")) {
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    const message = event?.message;
+    if (event?.type !== "message" || message?.role !== "assistant") continue;
+    addCallUsage(state.usage, message.usage);
+    state.usage.toolCalls += (message.content ?? []).filter((part) => part.type === "toolCall").length;
+    const text = message.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
+    if (text) state.lastText = text;
+  }
+}
+
 function terminate(run, signal = "SIGTERM") {
   if (!run.child || run.child.exitCode !== null) return;
   try {
@@ -99,7 +126,7 @@ export class OpenClawWorkerAdapter {
     this.executable = executable;
   }
 
-  async start({ runId, prompt, reuseCompleted = true }) {
+  async start({ runId, prompt, reuseCompleted = true, budget = null, onUsage = null }) {
     if (!process.env.OPENCODE_API) {
       return { runId, completion: Promise.resolve({ status: "failed", code: "OPENCODE_KEY_MISSING", message: "OPENCODE_API is not configured" }) };
     }
@@ -121,10 +148,18 @@ export class OpenClawWorkerAdapter {
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32"
     });
-    const run = { runId, child, cancelled: false, timedOut: false };
+    const run = { runId, child, cancelled: false, timedOut: false, budgetExceeded: null };
+    // The final answer is normally read from the session file; stdout is only a
+    // fallback envelope. If it overflows, say so instead of failing to parse it.
     let stdout = "";
-    child.stdout.on("data", (chunk) => { if (stdout.length < 4_000_000) stdout += chunk; });
-    child.stderr.on("data", () => {});
+    let stdoutOverflow = false;
+    child.stdout.on("data", (chunk) => {
+      if (stdout.length + chunk.length <= MAX_STDOUT_BYTES) stdout += chunk;
+      else stdoutOverflow = true;
+    });
+    const stderr = new TailBuffer();
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    const live = { offset: initialSessionBytes, usage: emptyUsage(), lastText: null };
     const timer = setTimeout(() => {
       run.timedOut = true;
       terminate(run);
@@ -133,12 +168,29 @@ export class OpenClawWorkerAdapter {
     timer.unref?.();
     run.completion = new Promise((resolve) => {
       let settled = false;
-      const finish = (value) => { if (!settled) { settled = true; clearTimeout(timer); clearInterval(sessionPoll); resolve(value); } };
+      const finish = async (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(sessionPoll);
+        await accumulateSessionUsage(sessionPath, live).catch(() => {});
+        const diagnosticsLog = value.status === "completed" ? null : await writeDiagnosticsLog(this.sessionDir, runId, stderr);
+        resolve({ ...value, usage: publicUsage(live.usage), ...(diagnosticsLog ? { diagnosticsLog } : {}) });
+      };
       let readingSession = false;
       const checkSession = async () => {
         if (settled || readingSession) return;
         readingSession = true;
         try {
+          await accumulateSessionUsage(sessionPath, live);
+          onUsage?.(structuredClone(live.usage));
+          const exceeded = exceededBudget(live.usage, budget);
+          if (exceeded) {
+            run.budgetExceeded = exceeded;
+            terminate(run);
+            setTimeout(() => terminate(run, "SIGKILL"), 2_000).unref?.();
+            return finish({ status: "budget_exceeded", code: "WORKER_BUDGET_EXCEEDED", message: `The agent reached its ${exceeded} budget and was stopped`, text: live.lastText });
+          }
           const parsed = await completedSessionResult(sessionPath, initialSessionBytes);
           if (parsed) {
             finish(parsed);
@@ -157,6 +209,7 @@ export class OpenClawWorkerAdapter {
         const sessionResult = await completedSessionResult(sessionPath, initialSessionBytes).catch(() => null);
         if (sessionResult) return finish(sessionResult);
         if (code !== 0) return finish({ status: "failed", code: "OPENCLAW_PROCESS_EXIT", message: `OpenClaw exited with code ${code}` });
+        if (stdoutOverflow) return finish({ status: "failed", code: "OPENCLAW_OUTPUT_TOO_LARGE", message: "OpenClaw's output was too large to read and no session answer was found" });
         finish(parseOpenClawOutput(stdout));
       });
     });

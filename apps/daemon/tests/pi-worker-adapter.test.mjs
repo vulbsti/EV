@@ -120,3 +120,37 @@ test("normalizes nonzero exit and redacts raw stderr and credential-like values"
     assert.match(result.message, /Pi worker failed|exit/i);
   } finally { await f.close(); }
 });
+
+test("stops a run as soon as its summed usage crosses the budget", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ev-pi-budget-"));
+  try {
+    const fake = join(root, "fake-pi.mjs");
+    await writeFile(fake, `
+const usage = { input: 400, output: 200, cacheRead: 5000, cost: { total: 0.001 } };
+for (let call = 1; call <= 50; call++) {
+  process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", usage, content: [{ type: "text", text: "step " + call }] } }) + "\\n");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+`, "utf8");
+    const adapter = new PiWorkerAdapter({ executable: fake, sessionDir: join(root, "sessions"), cwd: root, timeoutMs: 5_000 });
+    const run = await adapter.start({ runId: "run-budget", prompt: "loop", budget: { maxTotalTokens: 1_500, maxCostUsd: 0, maxToolCalls: -1 } });
+    const result = await run.completion;
+    assert.equal(result.status, "budget_exceeded");
+    assert.equal(result.code, "WORKER_BUDGET_EXCEEDED");
+    // Three calls of 600 counted tokens each cross 1,500; cache reads are not counted.
+    assert.equal(result.usage.calls, 3);
+    assert.equal(result.usage.totalTokens, 1_800);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("keeps a redacted stderr tail in a private diagnostics file, never in the result", async () => {
+  const f = await fixture("nonzero");
+  try {
+    const run = await f.adapter.start({ runId: "run-diag", sessionId: "session-diag", prompt: "fail" });
+    const result = await run.completion;
+    assert.equal(result.status, "failed");
+    const log = await readFile(result.diagnosticsLog, "utf8");
+    assert.match(log, /password=\[REDACTED\]/);
+    assert.doesNotMatch(log, /test-secret-value/);
+  } finally { await f.close(); }
+});
