@@ -44,10 +44,24 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .task-card { margin-top: 14px; width: min(540px, 100%); padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
 .task-card.completed { border-color: #9bbbaa; background: #f3f8f5; }
 .task-card.failed, .task-card.cancelled { background: #f7f3ed; }
+.task-card.partial, .task-card.blocked { border-color: #d1b98b; background: #fff9ed; }
+.task-status.completed { background: var(--green-soft); color: var(--green); }
+.task-children { margin-top: 12px; font-size: 12px; }
+.task-children summary { cursor: pointer; font-weight: 700; }
+.task-children ul { padding-left: 20px; line-height: 1.55; overflow-wrap: anywhere; }
+.task-children li { margin-top: 5px; }
 .task-card-head, .task-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .task-card .task-status { margin-top: 0; }
 .task-card .task-time { color: var(--muted); font-size: 11px; }
 .task-card p { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+.task-report { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 4px; }
+.task-report .task-answer { color: var(--ink); white-space: pre-wrap; line-height: 1.55; }
+.task-report details { margin-top: 10px; font-size: 12px; }
+.task-report summary { cursor: pointer; font-weight: 700; }
+.task-report ul { padding-left: 20px; line-height: 1.5; }
+.task-report li { margin-top: 5px; overflow-wrap: anywhere; }
+.task-report a { color: var(--green); }
+.task-report small { display: block; margin-top: 12px; color: var(--muted); line-height: 1.4; }
 .task-actions { justify-content: flex-start; margin-top: 12px; }
 .task-artifact, .task-cancel { border: 0; border-radius: 9px; padding: 8px 11px; background: var(--green-soft); color: var(--green); cursor: pointer; font-size: 12px; font-weight: 700; text-decoration: none; }
 .task-cancel { background: transparent; color: var(--muted); border: 1px solid var(--line); }
