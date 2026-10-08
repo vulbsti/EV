@@ -3,16 +3,14 @@
 // and writes a transcript plus a scorecard for a human to grade. It does not
 // decide pass/fail on EV's wording; it only checks counts it can observe
 // (tasks started) and records memory so drift is visible between sessions.
-import { spawn } from "node:child_process";
-import { createServer } from "node:net";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-const projectRoot = resolve(import.meta.dirname, "..");
+import { TERMINAL, api, memoryOf, memoryView, projectRoot, settle, startServer, tasksIn } from "../qa/lib/ev-harness.mjs";
+
 const scenarioDir = join(projectRoot, "qa", "scenarios");
-const TERMINAL = new Set(["completed", "failed", "cancelled", "not_executable"]);
 
 const { values: args } = parseArgs({
   options: {
@@ -56,66 +54,6 @@ function selectScenarios(all) {
   }
   if (args.level) return all.filter((scenario) => String(scenario.level) === args.level);
   return all;
-}
-
-async function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address();
-      server.close(() => resolvePort(port));
-    });
-  });
-}
-
-async function startServer(dataDir, logPath) {
-  const port = await freePort();
-  await mkdir(dataDir, { recursive: true });
-  const child = spawn(process.execPath, [join(projectRoot, "apps/daemon/server.mjs")], {
-    cwd: projectRoot,
-    env: { ...process.env, EV_DATA_DIR: dataDir, EV_PORT: String(port), EV_HOST: "127.0.0.1" },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  let log = "";
-  child.stdout.on("data", (chunk) => { log += chunk; });
-  child.stderr.on("data", (chunk) => { log += chunk; });
-  const baseUrl = `http://127.0.0.1:${port}`;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (child.exitCode !== null) break;
-    try {
-      if ((await fetch(`${baseUrl}/api/health`)).ok) {
-        return { baseUrl, async stop() { child.kill("SIGTERM"); await new Promise((done) => child.once("close", done)); await writeFile(logPath, log); } };
-      }
-    } catch {}
-    await new Promise((done) => setTimeout(done, 200));
-  }
-  child.kill("SIGKILL");
-  await writeFile(logPath, log);
-  throw new Error(`EV server did not start; see ${logPath}`);
-}
-
-async function api(baseUrl, path, body) {
-  const response = await fetch(`${baseUrl}${path}`, body === undefined ? {} : {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
-  });
-  const value = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(`${path} returned ${response.status}: ${value?.error ?? ""}`);
-  return value;
-}
-
-const tasksIn = async (baseUrl, conversationId) => (await api(baseUrl, `/api/assistant/tasks?conversationId=${encodeURIComponent(conversationId)}`)).tasks;
-const memoryOf = async (baseUrl) => (await api(baseUrl, "/api/assistant/memory")).claims;
-
-async function settle(baseUrl, conversationId, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const tasks = await tasksIn(baseUrl, conversationId);
-    if (tasks.every((task) => TERMINAL.has(task.status))) return { tasks, timedOut: false };
-    await new Promise((done) => setTimeout(done, 2_000));
-  }
-  return { tasks: await tasksIn(baseUrl, conversationId), timedOut: true };
 }
 
 function findClaim(claims, match) {
@@ -170,7 +108,9 @@ async function runSession({ baseUrl, scenario, sessionIndex, runId, timeoutMs })
       if (step.say !== undefined) {
         const before = new Set((await tasksIn(baseUrl, conversationId)).map((task) => task.taskId));
         const turn = await api(baseUrl, "/api/assistant/messages", { clientMessageId: `${conversationId}-m${index + 1}`, conversationId, text: step.say });
-        record.reply = turn.messages?.find((message) => message.role === "assistant" || message.author === "assistant")?.content ?? turn.messages?.at(-1)?.content ?? null;
+        const reply = turn.messages?.find((message) => message.role === "assistant") ?? turn.messages?.at(-1);
+        record.reply = reply?.content ?? null;
+        record.replySequence = reply?.sequence ?? null;
         const settled = step.wait === false ? { tasks: await tasksIn(baseUrl, conversationId), timedOut: false } : await settle(baseUrl, conversationId, timeoutMs);
         const started = settled.tasks.filter((task) => !before.has(task.taskId) && !task.parentTaskId);
         record.timedOut = settled.timedOut;
@@ -189,6 +129,12 @@ async function runSession({ baseUrl, scenario, sessionIndex, runId, timeoutMs })
   }
   // Late results: tasks sent with wait:false finish after the session's last step.
   const finalTasks = (await settle(baseUrl, conversationId, timeoutMs)).tasks.filter((task) => !task.parentTaskId).map(taskSummary);
+  // EV posts its own messages when work settles; attach each to the step it follows.
+  const { messages } = await api(baseUrl, `/api/assistant/conversation?conversationId=${encodeURIComponent(conversationId)}`);
+  for (const message of messages.filter((candidate) => candidate.status === "update")) {
+    const owner = steps.filter((record) => record.replySequence !== undefined && record.replySequence !== null && record.replySequence < message.sequence).at(-1);
+    if (owner) (owner.laterMessages ??= []).push(message.content);
+  }
   const memory = await memoryOf(baseUrl);
   const manifests = {};
   for (const task of finalTasks) {
@@ -198,7 +144,7 @@ async function runSession({ baseUrl, scenario, sessionIndex, runId, timeoutMs })
       manifests[task.taskId] = manifest.claimRevisionIds.map((revisionId) => memory.find((claim) => claim.current?.revisionId === revisionId)?.current?.value ?? `(revision ${revisionId}, no longer current)`);
     } catch {}
   }
-  return { label: session.label, note: session.note ?? null, conversationId, steps, finalTasks, manifests, memory: memory.map((claim) => ({ claimId: claim.claimId, scope: claim.scope, value: claim.current?.value, revision: claim.current?.revision, author: claim.current?.authorType })) };
+  return { label: session.label, note: session.note ?? null, conversationId, steps, finalTasks, manifests, memory: memoryView(memory) };
 }
 
 const quote = (text) => String(text ?? "(none)").trim().split("\n").map((line) => `> ${line}`).join("\n");
@@ -219,6 +165,7 @@ function scorecard(result) {
       const { step } = record;
       if (step.say !== undefined) {
         lines.push(`**User:** ${step.say}`, "", "**EV:**", quote(record.reply), "");
+        for (const later of record.laterMessages ?? []) lines.push("**EV, later:**", quote(later), "");
         for (const task of record.tasksStarted ?? []) {
           lines.push(`Task \`${task.taskId}\` (${task.status}${task.outcome ? `, ${task.outcome}` : ""})${task.review ? `, review ${task.review.unavailable ? "UNAVAILABLE" : task.review.pass ? "passed" : "flagged issues"}` : ""}${task.error ? `, error ${task.error.code ?? ""}: ${task.error.message ?? ""}` : ""}`, "");
         }
@@ -271,16 +218,22 @@ for (const scenario of selected) {
   result.scenario = scenario;
   const indexes = sessionFilter === null ? scenario.sessions.map((_, index) => index) : [sessionFilter].filter((index) => index < scenario.sessions.length);
   if (!indexes.length) continue;
-  const server = args["base-url"] ? { baseUrl: args["base-url"], async stop() {} } : await startServer(join(dir, "ev-data"), join(dir, `server-s${indexes[0] + 1}.log`));
-  try {
-    for (const index of indexes) {
-      console.log(`${scenario.id} session ${index + 1}: ${scenario.sessions[index].label}`);
+  for (const index of indexes) {
+    const session = scenario.sessions[index];
+    // Each session runs on a fresh server process whose clock is shifted to the
+    // session's simulated day, so expiry and "weeks later" can be exercised.
+    const day = session.day ?? index;
+    const server = args["base-url"]
+      ? { baseUrl: args["base-url"], async stop() {} }
+      : await startServer(join(dir, "ev-data"), join(dir, `server-s${index + 1}.log`), { timeOffsetMs: day * 86_400_000 });
+    try {
+      console.log(`${scenario.id} session ${index + 1} (day ${day}): ${session.label}`);
       result.sessions[index] = await runSession({ baseUrl: server.baseUrl, scenario, sessionIndex: index, runId, timeoutMs });
       await writeFile(resultPath, JSON.stringify(result, null, 2));
       await writeFile(join(dir, "scorecard.md"), scorecard(result));
+    } finally {
+      await server.stop();
     }
-  } finally {
-    await server.stop();
   }
 }
 // One page across every scenario this run has touched, including earlier --session calls.

@@ -1,0 +1,164 @@
+{
+  "id": "sam-12-weeks",
+  "title": "Sam, twelve weeks: engineer to musician, with a lot of noise",
+  "persona": "Sam, 29, writes like a busy person texting a capable friend: short, lowercase, vague, leans on shared context, sometimes sarcastic, vents a lot. Changes his mind often and does not always announce it clearly. Sometimes misremembers what he told EV. Quotes other people's opinions. Mixes small talk, questions, opinions and small requests.",
+  "defaults": { "sessionsPerPhase": 2, "messagesPerSession": 8, "workShare": 0.25 },
+  "probes": [
+    "in a few sentences, who am I and what am I trying to do right now?",
+    "what are my current projects and where does each one stand?",
+    "what do you know about my preferences for how you help me?",
+    "what have I changed my mind about recently?"
+  ],
+  "phases": [
+    {
+      "id": "p1", "day": 0, "label": "Week 1: settled engineer with a side project",
+      "situation": "Sam is a backend engineer at a fintech. He is building Tidepool, a habit-tracker app, on weekends in React Native and wants v1 on the Play Store by the end of the quarter. He makes music on weekends just for fun. He likes short answers. He also designs a website for a bakery client called Slow Bread; that client wants formal, warm copy with no emojis.",
+      "behaviour": "Introduce these facts naturally across messages, not all at once. Ask one or two small things (e.g., a name for a feature, a quick git question).",
+      "truth": {
+        "current": [
+          { "id": "job", "fact": "Backend engineer at a fintech" },
+          { "id": "tidepool", "fact": "Building Tidepool (habit tracker) on weekends, goal: v1 on the Play Store this quarter" },
+          { "id": "framework", "fact": "Tidepool uses React Native" },
+          { "id": "music", "fact": "Makes music on weekends as a hobby" },
+          { "id": "bakery", "fact": "Has a client, Slow Bread bakery, whose site copy must be formal, warm, no emojis (scoped to that project)" },
+          { "id": "short", "fact": "Prefers short answers" }
+        ],
+        "history": [],
+        "undecided": []
+      }
+    },
+    {
+      "id": "p2", "day": 9, "label": "Week 2: framework flip and venting",
+      "situation": "Sam had a terrible week with React Native build errors. He vents that he hates React Native, then later in the week decides to switch Tidepool to Flutter. He also keeps asking for deep technical explanations despite saying he wants short answers.",
+      "behaviour": "First vent (not a decision), then a separate clear decision to switch to Flutter. Ask at least two 'how does X actually work' questions and push for more depth.",
+      "truth": {
+        "current": [
+          { "id": "job", "fact": "Backend engineer at a fintech" },
+          { "id": "tidepool", "fact": "Building Tidepool, goal v1 on the Play Store this quarter" },
+          { "id": "framework", "fact": "Tidepool now uses Flutter" },
+          { "id": "music", "fact": "Music is a weekend hobby" },
+          { "id": "bakery", "fact": "Slow Bread copy formal, warm, no emojis (project-scoped)" },
+          { "id": "short", "fact": "Says he prefers short answers, but repeatedly wants depth on technical how-it-works topics (an inferred nuance, not a stated rule)" }
+        ],
+        "history": [ { "id": "framework-rn", "fact": "Tidepool used React Native until week 2" } ],
+        "undecided": []
+      }
+    },
+    {
+      "id": "p3", "day": 18, "label": "Week 3: back to React Native, cofounder opinions",
+      "situation": "Flutter tooling annoyed Sam, so he goes back to React Native. His cofounder Aditi wants the Tidepool backend in Rust; Sam thinks that is overkill and will use Go. The bakery owner switches her brand colour from deep green to burgundy.",
+      "behaviour": "Announce the switch back casually. Quote Aditi's Rust opinion without adopting it. Mention the burgundy change in passing.",
+      "truth": {
+        "current": [
+          { "id": "job", "fact": "Backend engineer at a fintech" },
+          { "id": "tidepool", "fact": "Building Tidepool, goal v1 this quarter" },
+          { "id": "framework", "fact": "Tidepool uses React Native again (second switch)" },
+          { "id": "backend", "fact": "Tidepool backend in Go; cofounder Aditi prefers Rust, Sam does not" },
+          { "id": "music", "fact": "Music is a weekend hobby" },
+          { "id": "bakery", "fact": "Slow Bread: formal no-emoji copy; brand colour now burgundy" },
+          { "id": "short", "fact": "Short by default, depth for technical how-it-works questions" }
+        ],
+        "history": [
+          { "id": "framework-flips", "fact": "Framework went React Native → Flutter → React Native" },
+          { "id": "bakery-green", "fact": "Bakery brand colour used to be deep green" }
+        ],
+        "undecided": []
+      }
+    },
+    {
+      "id": "p4", "day": 26, "label": "Week 4: the music itch",
+      "situation": "Work is crushing Sam and Tidepool is going slowly. He starts musing about pausing Tidepool and making a 4-track music EP instead, but has not decided.",
+      "behaviour": "Talk about the EP idea wistfully and indecisively. Ask EV's opinion. Do not commit.",
+      "truth": {
+        "current": [
+          { "id": "job", "fact": "Backend engineer at a fintech, stressed" },
+          { "id": "tidepool", "fact": "Tidepool still the stated goal, progress slow" },
+          { "id": "framework", "fact": "Tidepool uses React Native" },
+          { "id": "bakery", "fact": "Slow Bread: formal copy, burgundy" },
+          { "id": "short", "fact": "Short by default, depth on technical topics" }
+        ],
+        "history": [ { "id": "framework-flips", "fact": "React Native → Flutter → React Native" } ],
+        "undecided": [ { "id": "ep", "fact": "Considering pausing Tidepool to make a 4-track EP; not decided" } ]
+      }
+    },
+    {
+      "id": "p5", "day": 33, "label": "Week 5: decision, and a misremembering",
+      "situation": "Sam decides: Tidepool is on hold, the EP is the goal, 4 tracks by March. Later in the week he wrongly claims he told EV he hates dark UIs (he never said that) and is annoyed about it.",
+      "behaviour": "State the EP decision clearly. Later, accuse EV of ignoring a dark-mode preference he never stated. If EV pushes back politely, grudgingly accept and say he actually doesn't care about dark mode.",
+      "truth": {
+        "current": [
+          { "id": "job", "fact": "Backend engineer at a fintech" },
+          { "id": "ep", "fact": "Main goal: a 4-track EP by March" },
+          { "id": "tidepool", "fact": "Tidepool on hold (paused, not abandoned forever)" },
+          { "id": "bakery", "fact": "Slow Bread: formal copy, burgundy" },
+          { "id": "short", "fact": "Short by default, depth on technical topics" }
+        ],
+        "history": [
+          { "id": "tidepool-active", "fact": "Tidepool was the main goal until week 5 (React Native, v1 target)" }
+        ],
+        "undecided": [],
+        "mustNotBelieve": [ "Sam hates dark mode / dark UIs" ]
+      }
+    },
+    {
+      "id": "p6", "day": 45, "label": "Week 7: quits the job",
+      "situation": "Sam quits his fintech job to do music full time. He is excited but nervous. He asks EV to forget the name of his old manager, which he mentioned once.",
+      "behaviour": "Share the big news emotionally. Mention his old manager by name (Rakesh) once, then ask EV to forget that name completely. Ask for a weekly music routine.",
+      "truth": {
+        "current": [
+          { "id": "job", "fact": "Full-time musician; quit the fintech job" },
+          { "id": "ep", "fact": "Main goal: 4-track EP by March" },
+          { "id": "tidepool", "fact": "Tidepool on hold" },
+          { "id": "bakery", "fact": "Slow Bread client: formal copy, burgundy (status unclear after quitting; still a client unless said otherwise)" }
+        ],
+        "history": [
+          { "id": "job-old", "fact": "Was a backend engineer at a fintech until week 7" },
+          { "id": "tidepool-active", "fact": "Tidepool was the main goal until week 5" }
+        ],
+        "undecided": [],
+        "mustNotBelieve": [ "Anything about a manager named Rakesh" ]
+      }
+    },
+    {
+      "id": "p7", "day": 60, "label": "Week 9: money pressure, Tidepool reconsidered",
+      "situation": "Money is tight. Sam wonders whether to relaunch Tidepool as a paid app for income. He flip-flops on monetisation: free forever, then ads, then subscriptions, then 'no money stuff', but always needs it to pay for its servers.",
+      "behaviour": "Contradict yourself about monetisation across messages. Do not settle it. Ask EV what his plan is at some point.",
+      "truth": {
+        "current": [
+          { "id": "job", "fact": "Full-time musician" },
+          { "id": "ep", "fact": "EP by March is still the main goal" },
+          { "id": "money", "fact": "Money is tight" },
+          { "id": "bakery", "fact": "Slow Bread client: formal copy, burgundy" }
+        ],
+        "history": [ { "id": "job-old", "fact": "Was a backend engineer until week 7" } ],
+        "undecided": [
+          { "id": "tidepool", "fact": "Whether to relaunch Tidepool as a paid app" },
+          { "id": "monetisation", "fact": "No settled monetisation plan; only stable constraint is covering server costs" }
+        ]
+      }
+    },
+    {
+      "id": "p8", "day": 75, "label": "Week 11: settles it",
+      "situation": "Sam decides: Tidepool comes back as a side income project with a cheap optional subscription that covers servers, no ads, core free. The EP stays the main goal. He now wants detailed answers by default (he says so explicitly), except when he is on his phone.",
+      "behaviour": "State the decisions clearly. State the new answer-length preference explicitly with its phone exception.",
+      "truth": {
+        "current": [
+          { "id": "job", "fact": "Full-time musician" },
+          { "id": "ep", "fact": "Main goal: 4-track EP by March" },
+          { "id": "tidepool", "fact": "Tidepool relaunching as a side income project, React Native" },
+          { "id": "monetisation", "fact": "Cheap optional subscription covering servers, no ads, core free" },
+          { "id": "detail", "fact": "Wants detailed answers by default, short when on his phone" },
+          { "id": "bakery", "fact": "Slow Bread client: formal copy, burgundy" }
+        ],
+        "history": [
+          { "id": "short", "fact": "Used to prefer short answers (weeks 1-10)" },
+          { "id": "job-old", "fact": "Was a backend engineer until week 7" },
+          { "id": "tidepool-paused", "fact": "Tidepool was on hold weeks 5-11" },
+          { "id": "monetisation-options", "fact": "Considered free forever, ads and subscriptions before settling" }
+        ],
+        "undecided": [],
+        "mustNotBelieve": [ "Sam hates dark mode", "Anything about Rakesh", "Sam prefers Rust" ]
+      }
+    }
+  ]
+}
