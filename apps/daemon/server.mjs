@@ -30,10 +30,12 @@ const projectRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const webRoot = join(projectRoot, "apps", "web");
 await loadDotEnv(join(projectRoot, ".env"));
 const configuredHost = assertLoopbackHost(process.env.EV_HOST ?? "127.0.0.1");
-const store = new EventStore(join(projectRoot, "data", "events.jsonl"));
+// EV_DATA_DIR lets a QA run start from a blank person without touching real state.
+const dataRoot = resolve(process.env.EV_DATA_DIR ?? join(projectRoot, "data"));
+const store = new EventStore(join(dataRoot, "events.jsonl"));
 await store.initialize();
-const assistantLedger = createAssistantLedger({ path: join(projectRoot, "data", "assistant.sqlite") });
-const assistantWorkerRoot = join(projectRoot, "data", "assistant-worker");
+const assistantLedger = createAssistantLedger({ path: join(dataRoot, "assistant.sqlite") });
+const assistantWorkerRoot = join(dataRoot, "assistant-worker");
 const artifactRoot = join(assistantWorkerRoot, "artifacts");
 const assistantSupervisor = await AssistantSupervisor.open({
   statePath: join(assistantWorkerRoot, "supervisor-state.sqlite"),
@@ -41,10 +43,10 @@ const assistantSupervisor = await AssistantSupervisor.open({
 });
 const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot });
 await assistantWorkers.start();
-const assistantMemory = AssistantMemoryStore.open({ path: join(projectRoot, "data", "assistant-memory.sqlite") });
+const assistantMemory = AssistantMemoryStore.open({ path: join(dataRoot, "assistant-memory.sqlite") });
 const assistantOwnerId = "default-person";
-const assistantCoordinator = new AssistantCoordinator({ root: join(projectRoot, "data", "assistant-coordinator") });
-const standingStore = StandingResponsibilityStore.open({ path: join(projectRoot, "data", "assistant-standing.sqlite") });
+const assistantCoordinator = new AssistantCoordinator({ root: join(dataRoot, "assistant-coordinator") });
+const standingStore = StandingResponsibilityStore.open({ path: join(dataRoot, "assistant-standing.sqlite") });
 const githubStandingConnector = new GitHubPullRequestConnector();
 const assistantTurnInFlight = new Map();
 

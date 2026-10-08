@@ -1,0 +1,118 @@
+{
+  "level": 2,
+  "name": "Memory carries over",
+  "summary": "Facts and preferences said in one conversation shape later conversations; corrections replace old values; forgetting actually forgets.",
+  "scenarios": [
+    {
+      "id": "L2-01",
+      "title": "A fact said in passing is used later in a new conversation",
+      "guards": "Memory that only works when typed into the memory panel",
+      "components": ["controller", "learning", "memory", "context-builder"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "btw I'm building a habit tracker app called Tidepool, mostly on weekends", "tasks": 0, "expect": ["Acknowledges; may note it will remember."], "memory": "Tidepool exists as a user project (side project, weekends)." }
+          ]
+        },
+        {
+          "label": "Day 3, new conversation",
+          "steps": [
+            { "say": "draft a short tweet about what I worked on this weekend", "tasks": "any", "expect": ["The tweet is about Tidepool or asks what was done on Tidepool this weekend."], "fail": ["A generic tweet with no awareness of Tidepool."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L2-02",
+      "title": "Explicit correction replaces the old value everywhere",
+      "guards": "Old and new values both surviving and being used at random",
+      "components": ["learning", "memory"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "I live in Pune by the way", "tasks": 0, "memory": "User lives in Pune." }
+          ]
+        },
+        {
+          "label": "Day 2",
+          "steps": [
+            { "say": "correction, I moved to Bangalore last month, not Pune anymore", "tasks": 0, "expect": ["Confirms the update."], "memory": "Location revised to Bangalore; Pune kept only as history (superseded), not as current." }
+          ]
+        },
+        {
+          "label": "Day 5, new conversation",
+          "steps": [
+            { "say": "suggest a good weekend cafe to work from", "tasks": "any", "expect": ["Suggestions are in Bangalore."], "fail": ["Any Pune suggestion.", "Asks where the user lives."] },
+            { "say": "where did I used to live?", "tasks": 0, "expect": ["Pune, correctly framed as the past."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L2-03",
+      "title": "Forget means forget",
+      "guards": "Erased facts re-inferred from old transcripts",
+      "components": ["memory", "learning", "context-builder"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "I'm interviewing at Stripe next week, keep that in mind", "tasks": 0, "memory": "Interviewing at Stripe." }
+          ]
+        },
+        {
+          "label": "Day 2",
+          "steps": [
+            { "say": "actually forget the Stripe thing completely, I don't want that stored anywhere", "tasks": 0, "expect": ["Confirms it is forgotten."], "memory": "No active claim mentions Stripe; an erase tombstone exists." }
+          ]
+        },
+        {
+          "label": "Day 4, new conversation",
+          "steps": [
+            { "say": "what do you know about my job situation?", "tasks": 0, "expect": ["No mention of Stripe or an interview."], "fail": ["Mentions Stripe, an interview, or 'something you asked me to forget'."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L2-04",
+      "title": "Panel edits and chat agree",
+      "guards": "Two sources of truth (memory panel vs what EV says)",
+      "components": ["memory", "controller"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "do": "memory.remember", "value": "Prefers answers that start with the conclusion, then details." },
+            { "say": "explain what a database index is", "tasks": "any", "expect": ["Opens with the one-line conclusion before details."] },
+            { "do": "memory.correct", "match": "conclusion", "value": "Prefers a quick example first, then the explanation." },
+            { "say": "now explain what a cache is", "tasks": "any", "expect": ["Opens with an example."], "fail": ["Still conclusion-first, ignoring the panel correction."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L2-05",
+      "title": "What do you know about me?",
+      "guards": "Opaque memory the user cannot inspect through conversation",
+      "components": ["controller", "memory"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "I'm a backend engineer at a fintech, I like Go, and I hate long meetings", "tasks": 0 },
+            { "say": "I'm also trying to get better at drawing", "tasks": 0 }
+          ]
+        },
+        {
+          "label": "Day 2, new conversation",
+          "steps": [
+            { "say": "what do you know about me so far?", "tasks": 0, "expect": ["Lists the stated facts accurately.", "Marks anything inferred as inferred, not as fact.", "Offers a way to correct."], "fail": ["Invented facts (age, gender, employer name).", "Says it knows nothing."] }
+          ]
+        }
+      ]
+    }
+  ]
+}

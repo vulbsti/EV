@@ -19,7 +19,8 @@
     "assistant:phase4-github": "node scripts/run-phase4-github-canary.mjs",
     "assistant:phase4-faults": "node scripts/run-phase4-fault-canary.mjs",
     "assistant:manager-check": "node scripts/run-manager-acceptance.mjs",
-    "prototype": "node apps/daemon/server.mjs"
+    "prototype": "node apps/daemon/server.mjs",
+    "qa": "node scripts/run-qa-scenarios.mjs"
   },
   "engines": {
     "node": ">=22"

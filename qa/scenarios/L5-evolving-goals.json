@@ -1,0 +1,137 @@
+{
+  "level": 5,
+  "name": "Goals and identity evolve",
+  "summary": "The user drops goals, revives them, pivots, grows in skill, and changes who he is. EV keeps a timeline, not a pile: current goals are current, past goals are history, and it can tell the story of the change.",
+  "scenarios": [
+    {
+      "id": "L5-01",
+      "title": "Abandon, then revive a goal",
+      "guards": "Treating a dropped goal as deleted, or as still active",
+      "components": ["learning", "memory", "controller"],
+      "sessions": [
+        {
+          "label": "Week 1",
+          "steps": [
+            { "say": "my main goal this quarter is shipping Tidepool v1 to the Play Store", "tasks": 0, "memory": "Active goal: ship Tidepool v1 this quarter." }
+          ]
+        },
+        {
+          "label": "Week 3",
+          "steps": [
+            { "say": "I'm dropping Tidepool, nobody needs another habit app", "tasks": 0, "expect": ["Accepts it; may ask once if this is permanent or a pause."], "memory": "Tidepool goal marked abandoned/paused with the reason and date, not erased." },
+            { "say": "what should I focus on this weekend?", "tasks": 0, "expect": ["Does not suggest Tidepool work."], "fail": ["Suggests Tidepool tasks."] }
+          ]
+        },
+        {
+          "label": "Week 7, new conversation",
+          "steps": [
+            { "say": "ok I'm back on Tidepool. where was I?", "tasks": 0, "expect": ["Recalls the v1 Play Store goal and what had been done or decided before it was dropped.", "Notes the reason it was dropped and may ask what changed."], "fail": ["No memory of Tidepool.", "Acts as though it was never dropped."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L5-02",
+      "title": "Gradual skill growth changes how EV explains",
+      "guards": "Locking into a first impression of the user's level",
+      "components": ["learning", "memory"],
+      "sessions": [
+        {
+          "label": "Month 1",
+          "steps": [
+            { "say": "I'm totally new to drawing, what's the first thing I should practise?", "tasks": "any", "expect": ["Beginner-level guidance."], "memory": "Drawing: beginner." }
+          ]
+        },
+        {
+          "label": "Month 2",
+          "steps": [
+            { "say": "I've been doing gesture drawing daily for 6 weeks, my figures finally have flow", "tasks": 0, "memory": "Drawing level updated (progressing), with evidence." }
+          ]
+        },
+        {
+          "label": "Month 4",
+          "steps": [
+            { "say": "I'm doing paid commissions now. how do I handle foreshortening on a reaching arm?", "tasks": "any", "expect": ["Intermediate/advanced answer; no 'start with basic shapes' beginner framing."], "fail": ["Beginner tone from Month 1."] },
+            { "say": "how has my drawing journey gone according to you?", "tasks": 0, "expect": ["Beginner → daily gesture practice → commissions, in order, with approximate times."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L5-03",
+      "title": "Identity pivot",
+      "guards": "Old identity still driving priorities after a life change",
+      "components": ["learning", "memory", "controller"],
+      "sessions": [
+        {
+          "label": "Month 1",
+          "steps": [
+            { "say": "I'm a backend engineer at a fintech. Career goal: become a staff engineer in 2 years.", "tasks": 0 },
+            { "say": "also I make music on weekends, just for fun", "tasks": 0 }
+          ]
+        },
+        {
+          "label": "Month 5",
+          "steps": [
+            { "say": "big news. I quit my job. I'm going full time on music.", "tasks": 0, "expect": ["Responds like a person to big news.", "May ask about loose ends (e.g., side projects, the staff-engineer goal)."], "memory": "Occupation: full-time musician (current). Fintech job and staff-engineer goal moved to history. Music promoted from hobby to main goal." }
+          ]
+        },
+        {
+          "label": "Month 5, new conversation",
+          "steps": [
+            { "say": "help me plan my week", "tasks": "any", "expect": ["Music-centred plan (practice, releases, gigs)."], "fail": ["Includes engineering promotion prep or work standups."] },
+            { "say": "do you think I made the right call?", "tasks": 0, "expect": ["Thoughtful, grounded in what it knows (e.g., how long music has been a thread), not flattery, not discouragement."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L5-04",
+      "title": "A 'never' that turns into 'actually yes'",
+      "guards": "Hard rules that can never be revised, or revised by a single ambiguous remark",
+      "components": ["learning", "memory"],
+      "sessions": [
+        {
+          "label": "Week 1",
+          "steps": [
+            { "say": "never suggest I post on LinkedIn, I hate that place", "tasks": 0, "memory": "Strong preference: no LinkedIn suggestions." },
+            { "say": "how should I promote Tidepool?", "tasks": "any", "expect": ["No LinkedIn."] }
+          ]
+        },
+        {
+          "label": "Week 2",
+          "steps": [
+            { "say": "lol someone got hired off a LinkedIn post, wild", "tasks": 0, "memory": "No change to the LinkedIn preference (a remark, not a decision)." }
+          ]
+        },
+        {
+          "label": "Week 6",
+          "steps": [
+            { "say": "ok I've come around, I want to start posting on LinkedIn for the job hunt", "tasks": 0, "memory": "LinkedIn preference revised (scoped to job hunt or general, as stated); old 'never' kept as history." },
+            { "say": "draft my first LinkedIn post", "tasks": "any", "expect": ["Drafts it without pushback."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L5-05",
+      "title": "Goals the user forgot he had",
+      "guards": "EV being a passive store instead of a partner with continuity",
+      "components": ["controller", "memory"],
+      "sessions": [
+        {
+          "label": "Month 1",
+          "steps": [
+            { "say": "I want to run a half marathon by December", "tasks": 0 }
+          ]
+        },
+        {
+          "label": "Month 3, new conversation",
+          "steps": [
+            { "say": "I'm so out of shape, I should start doing something", "tasks": 0, "expect": ["Connects it to the half-marathon goal, asks whether it's still on."], "fail": ["Generic fitness advice with no memory of the goal."] }
+          ]
+        }
+      ]
+    }
+  ]
+}
