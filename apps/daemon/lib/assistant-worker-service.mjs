@@ -1,11 +1,15 @@
 import { constants } from "node:fs";
-import { access, open } from "node:fs/promises";
+import { access, open, readFile, realpath } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permissions.mjs";
 
 import { AssistantSupervisor } from "./assistant-supervisor.mjs";
+import { reviewOpenClawReport } from "./ev-quality-gate.mjs";
+import { OpenClawWorkerAdapter } from "./openclaw-worker-adapter.mjs";
+import { validateOpenClawTaskReport } from "./openclaw-task-report.mjs";
+import { executionPrompt, normalizeTaskPlan, planManagedTask } from "./ev-task-manager.mjs";
 import { PiWorkerAdapter } from "./pi-worker-adapter.mjs";
 import { ScopedWorkspace } from "./scoped-workspace.mjs";
 
@@ -17,6 +21,36 @@ function codedError(code, message, details = {}) {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+async function waitForWorkerExit(run) {
+  if (!run?.child || run.child.exitCode !== null) return;
+  await Promise.race([
+    new Promise((resolve) => run.child.once("close", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 3_000))
+  ]);
+}
+
+function parseJsonObject(value) {
+  const source = String(value ?? "").trim();
+  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+  const start = source.indexOf("{");
+  const end = source.lastIndexOf("}");
+  const candidate = fenced ?? (start >= 0 && end > start ? source.slice(start, end + 1) : "");
+  try {
+    const parsed = JSON.parse(candidate);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    return parsed;
+  } catch {
+    throw codedError("R1_OUTPUT_INVALID", "The content worker returned malformed structured output");
+  }
+}
+
+function boundedOutput(value, field, maxBytes = 64 * 1024) {
+  if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > maxBytes) {
+    throw codedError("R1_OUTPUT_INVALID", `${field} must be non-empty bounded text`);
+  }
+  return value.trim();
 }
 
 function inside(root, candidate) {
@@ -82,6 +116,31 @@ export function createFixedCapabilityProfiles({ projectRoot = PROJECT_ROOT } = {
       requireArtifact: true,
       budget: Object.freeze({ maxTotalTokens: 12_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
     }),
+    "r1-content-package-v1": Object.freeze({
+      capability: "r1-content-package-v1",
+      tools: Object.freeze([]),
+      extensionPaths: Object.freeze([]),
+      skillPaths: Object.freeze([]),
+      requireContext: true,
+      requireArtifact: true,
+      structuredOutput: "r1-content-package-json",
+      timeoutMs: 180_000,
+      // A real draft-review-revision pass currently lands around 20k tokens
+      // because Pi reports the final turn with accumulated cached context.
+      // Five live packages used 6.7k-11.8k tokens; 16k keeps measured
+      // headroom for recovery variance without reopening tools or cost scope.
+      budget: Object.freeze({ maxTotalTokens: 16_000, maxCostUsd: 0.03, maxToolCalls: 0 }),
+    }),
+    "openclaw-general-v1": Object.freeze({
+      capability: "openclaw-general-v1",
+      tools: Object.freeze([]),
+      extensionPaths: Object.freeze([]),
+      skillPaths: Object.freeze([]),
+      requireContext: true,
+      requireArtifact: false,
+      timeoutMs: 300_000,
+      budget: Object.freeze({ maxTotalTokens: 0, maxCostUsd: 0, maxToolCalls: -1 }),
+    }),
   });
 }
 
@@ -118,6 +177,9 @@ export class AssistantWorkerService {
     workerId = "ev-pi-worker-v1",
     profiles = createFixedCapabilityProfiles(),
     adapterFactory = null,
+    planner = planManagedTask,
+    reviewer = reviewOpenClawReport,
+    maxConcurrentWorkers = 3,
     executable = process.env.EV_PI_EXECUTABLE ?? "pi",
     provider = process.env.EV_WORKER_PROVIDER ?? "opencode-go",
     model = process.env.EV_WORKER_MODEL ?? "deepseek-v4.1-flash",
@@ -140,13 +202,20 @@ export class AssistantWorkerService {
     this.timeoutMs = timeoutMs;
     this.settlementDelayMs = Math.max(0, settlementDelayMs);
     this.activeRuns = new Map();
+    this.planner = planner;
+    this.reviewer = reviewer;
+    this.maxConcurrentWorkers = Math.max(1, Math.min(8, Number(maxConcurrentWorkers) || 3));
+    this.runningWorkers = 0;
+    this.workerQueue = [];
     this.started = false;
     this.stopping = false;
-    this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => new PiWorkerAdapter({
+    this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => profile.capability === "openclaw-general-v1"
+      ? new OpenClawWorkerAdapter({ taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs })
+      : new PiWorkerAdapter({
       executable: this.executable,
       sessionDir,
       cwd: workspacePath,
-      timeoutMs: this.timeoutMs,
+      timeoutMs: profile.timeoutMs ?? this.timeoutMs,
       provider: this.provider,
       model: this.model,
       expectedVersion: this.expectedVersion,
@@ -155,7 +224,7 @@ export class AssistantWorkerService {
       skillPaths: profile.skillPaths,
       contextPaths: contextPath ? [contextPath] : [],
       env: { EV_WORKSPACE_ROOT: workspacePath, EV_TASK_ID: task.taskId },
-    }));
+      }));
   }
 
   async start() {
@@ -193,11 +262,19 @@ export class AssistantWorkerService {
     const active = this.activeRuns.get(taskId);
     if (active) {
       active.cancelRequested = true;
+      active.controller?.abort();
+      this._pumpWorkers();
       if (active.run) await active.adapter.cancel(active.run, { reason });
-      await active.promise;
     }
+    await this._cancelChildren(taskId, reason);
+    if (active) await active.promise;
     const task = await this.supervisor.getTask(taskId);
     return { ...task, replayed: command.replayed, task };
+  }
+
+  async _cancelChildren(taskId, reason) {
+    const children = (await this.supervisor.listTasks()).filter((task) => task.input.metadata?.parentTaskId === taskId && !["completed", "failed", "cancelled"].includes(task.status));
+    await Promise.all(children.map((task) => this.cancelTask({ taskId: task.taskId, reason })));
   }
 
   async recover() {
@@ -227,6 +304,7 @@ export class AssistantWorkerService {
     const active = [...this.activeRuns.values()];
     for (const entry of active) {
       entry.shutdownRequested = true;
+      entry.controller?.abort();
       if (entry.lease) {
         await this.supervisor.requeueTask({
           taskId: entry.taskId,
@@ -243,6 +321,7 @@ export class AssistantWorkerService {
         entry.releaseSettlement();
       }
     }
+    this._pumpWorkers();
     await Promise.allSettled(active.map((entry) => entry.promise));
   }
 
@@ -286,6 +365,105 @@ export class AssistantWorkerService {
     return active.promise;
   }
 
+  _pumpWorkers() {
+    this.workerQueue = this.workerQueue.filter((entry) => {
+      if (!entry.active.cancelRequested && !entry.active.shutdownRequested) return true;
+      entry.resolve(null);
+      return false;
+    });
+    while (this.runningWorkers < this.maxConcurrentWorkers && this.workerQueue.length) {
+      const entry = this.workerQueue.shift();
+      this.runningWorkers++;
+      entry.resolve(() => { this.runningWorkers--; this._pumpWorkers(); });
+    }
+  }
+
+  async _runWorker(active, prompt, { reuseCompleted = true } = {}) {
+    if (active.isGeneral) await this._progress(active, { phase: "waiting", message: "Waiting for an available agent." });
+    const release = await new Promise((resolve) => { this.workerQueue.push({ active, resolve }); this._pumpWorkers(); });
+    if (!release) return { status: "cancelled" };
+    try {
+      if (active.shutdownRequested || active.cancelRequested) return { status: "cancelled" };
+      active.run = await active.adapter.start({ runId: active.runId, sessionId: active.runId, prompt, reuseCompleted });
+      if (active.shutdownRequested || active.cancelRequested) await active.adapter.cancel(active.run, { reason: "stopped" });
+      if (active.isGeneral && !active.shutdownRequested && !active.cancelRequested) await this._progress(active, { phase: "working", message: "An agent is carrying out the request.", workerPid: active.run.child?.pid ?? null });
+      const result = await active.run.completion;
+      await waitForWorkerExit(active.run);
+      return result;
+    } catch (error) {
+      if (active.run) { await active.adapter.cancel(active.run, { reason: "worker-interrupted" }); await waitForWorkerExit(active.run); }
+      throw error;
+    } finally { active.run = null; release(); }
+  }
+
+  _progress(active, data, type = "progress") {
+    return this.supervisor.recordProgress({ taskId: active.taskId, runId: active.runId, fencingToken: active.lease.fencingToken, type, data });
+  }
+
+  async _runManagedTask(active, task) {
+    const request = task.input.metadata.sourceRequest;
+    let plan = task.history.findLast((event) => event.type === "manager_plan")?.plan;
+    if (!plan) {
+      await this._progress(active, { phase: "planning", message: "Working out the goal and assignments." });
+      active.controller = new AbortController();
+      try { plan = normalizeTaskPlan(await this.planner({ taskId: task.taskId, request, context: task.input.context, signal: active.controller.signal }), request); }
+      catch (error) {
+        if (active.cancelRequested || active.shutdownRequested) throw error;
+        plan = normalizeTaskPlan(null, request);
+        plan.reason = "Planning unavailable; continuing with one execution agent.";
+      } finally { active.controller = null; }
+      await this._progress(active, { plan }, "manager_plan");
+    }
+    active.plan = plan;
+    if (!plan.subtasks.length) {
+      await this._progress(active, { phase: "working", message: "An agent is carrying out the request." });
+      return this._runWorker(active, executionPrompt({ request, plan }));
+    }
+    await this._progress(active, { phase: "delegating", message: `${plan.subtasks.length} agents are working on independent parts of the goal.` });
+    const children = await Promise.all(plan.subtasks.map(async (assignment, index) => {
+      let previous = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (active.cancelRequested || active.shutdownRequested) return previous;
+        const taskId = `${task.taskId}-child-${index + 1}${attempt ? "-retry" : ""}`;
+        let child = await this.supervisor.getTask(taskId).catch(() => null);
+        if (!child) {
+          child = await this.submitTask({
+            taskId, capability: "openclaw-general-v1", workspace: taskId,
+            context: `${task.input.context}\n\n# Assignment\n\n${assignment.instruction}`,
+            prompt: executionPrompt({ request, plan, assignment: `${assignment.instruction}${previous ? `\nPrevious attempt failed: ${previous.error?.message}. Its workspace is ${resolve(this.workspaceRoot, previous.input.workspace)}. Inspect that work before retrying; do not repeat completed external actions.` : ""}` }),
+            metadata: { parentTaskId: task.taskId, title: assignment.title, conversationId: task.input.metadata.conversationId, sourceRequest: assignment.instruction, retryOf: previous?.taskId ?? null, attempt, verification: {} }
+          });
+        } else if (child.status === "queued") this._dispatch(taskId);
+        if (active.cancelRequested) await this.cancelTask({ taskId, reason: "parent-cancelled" });
+        child = await this.waitForTask(taskId);
+        if (child.status !== "failed") return child;
+        previous = child;
+        if (!assignment.retrySafe) return child;
+        if (attempt === 0) await this._progress(active, { childTaskId: child.taskId, message: `Retrying ${assignment.title}.`, code: child.error?.code }, "worker_retry");
+      }
+      return previous;
+    }));
+    if (active.cancelRequested || active.shutdownRequested) return { status: "cancelled" };
+    await this._progress(active, { phase: "combining", message: "Combining the workers' results and checking the outcome." });
+    const summaries = children.filter(Boolean).map((child) => ({
+      taskId: child.taskId, title: child.input.metadata.title, status: child.status,
+      workspacePath: resolve(this.workspaceRoot, child.input.workspace),
+      report: child.result?.report ? {
+        goal: child.result.report.goal, outcome: child.result.report.outcome, answer: child.result.report.answer.slice(0, 6_000),
+        evidence: child.result.report.evidence.slice(0, 8), deliverables: child.result.report.deliverables,
+        checks: child.result.report.checks.slice(0, 6), limitations: child.result.report.limitations.slice(0, 6)
+      } : null,
+      error: child.error
+    }));
+    active.children = children.filter(Boolean).map((child) => ({
+      taskId: child.taskId, status: child.status, workspacePath: resolve(this.workspaceRoot, child.input.workspace),
+      retryOf: child.input.metadata.retryOf, startedAt: child.run?.startedAt ?? null, finishedAt: child.updatedAt
+    }));
+    // Synthesis is a different stage from execution; never reuse an old answer
+    // that was returned before these child results became available.
+    return this._runWorker(active, executionPrompt({ request, plan, children: summaries }), { reuseCompleted: false });
+  }
+
   async _execute(active) {
     const { taskId } = active;
     let lease;
@@ -294,6 +472,7 @@ export class AssistantWorkerService {
       const task = await this.supervisor.getTask(taskId);
       if (task.status !== "queued") return task;
       const profile = this._profile(task.input.capability);
+      active.isGeneral = profile.capability === "openclaw-general-v1";
       await this._prepareTaskInput(taskId, profile, task.input);
       lease = await this.supervisor.leaseTask({ taskId, workerId: this.workerId });
       runId = randomUUID();
@@ -309,10 +488,9 @@ export class AssistantWorkerService {
       ensurePrivateDirectorySync(sessionDir);
       const contextPath = profile.requireContext ? join(workspacePath, "CONTEXT.md") : null;
       active.adapter = await this.adapterFactory({ profile, task, workspacePath, sessionDir, contextPath });
-      active.run = await active.adapter.start({ runId, sessionId: runId, prompt: task.input.prompt });
-      if (active.shutdownRequested) await active.adapter.cancel(active.run, { reason: "daemon-shutdown" });
-      if (active.cancelRequested) await active.adapter.cancel(active.run, { reason: "user-requested" });
-      const result = await active.run.completion;
+      let result = profile.capability === "openclaw-general-v1" && task.input.metadata?.managerMode
+        ? await this._runManagedTask(active, task)
+        : await this._runWorker(active, task.input.prompt);
       if (active.shutdownRequested) return this.supervisor.getTask(taskId);
       if (result.status === "cancelled") {
         return await this.supervisor.cancelTask({ taskId, reason: result.message ?? "worker-cancelled" });
@@ -328,6 +506,13 @@ export class AssistantWorkerService {
           (profile.budget.maxToolCalls >= 0 && toolCalls > profile.budget.maxToolCalls)) {
         throw codedError("WORKER_BUDGET_EXCEEDED", "The worker exceeded its reviewed task budget", { totalTokens, totalCost, toolCalls });
       }
+      if (profile.structuredOutput === "r1-content-package-json") {
+        await this._materializeR1StructuredOutput(task, result.text, workspacePath);
+      }
+      let report = null;
+      if (profile.capability === "openclaw-general-v1") {
+        ({ result, report } = await this._finishGeneralResult(active, task, result, workspacePath));
+      }
       if (this.settlementDelayMs > 0) {
         await new Promise((resolve) => {
           active.releaseSettlement = resolve;
@@ -338,17 +523,18 @@ export class AssistantWorkerService {
         active.settlementTimer = null;
         if (active.shutdownRequested) return this.supervisor.getTask(taskId);
       }
-      const receipts = await this._materializeArtifacts(task, result);
+      const receipts = report ? await this._materializeReportedDeliverables(task, report, workspacePath) : await this._materializeArtifacts(task, result);
       return await this.supervisor.completeTask({
         taskId,
         runId,
         fencingToken: lease.fencingToken,
-        result: { text: result.text, usage: result.usage ?? null, profile: profile.capability },
+        result: { text: report?.answer ?? result.text, report, usage: result.usage ?? null, profile: profile.capability },
         artifacts: receipts,
       });
     } catch (error) {
       const current = await this.supervisor.getTask(taskId).catch(() => null);
       if (current?.status === "cancelled" || error?.code === "STALE_FENCING_TOKEN") return current;
+      if (active.isGeneral) await this._cancelChildren(taskId, "parent-failed");
       if (lease && runId) {
         return await this.supervisor.failTask({
           taskId,
@@ -359,6 +545,96 @@ export class AssistantWorkerService {
       }
       return current ?? { taskId, status: "failed", error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed" } };
     }
+  }
+
+  async _inspectDeliverables(report, workspacePath) {
+    const checks = [];
+    const root = await realpath(workspacePath);
+    for (const item of report.deliverables) {
+      try {
+        const path = resolve(workspacePath, item.path);
+        const actual = await realpath(path);
+        if (actual === root || /(?:^|\/)(?:\.env(?:\..*)?|\.ssh|[^/]*(?:secret|credential)[^/]*)(?:\/|$)|\.(?:pem|key|p12)$/i.test(actual)) throw new Error("not a reviewable deliverable");
+        const handle = await open(actual, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        try {
+          const info = await handle.stat();
+          if (!info.isFile() || info.size > 20_000_000) throw new Error("not a file under 20 MB");
+          const downloadable = inside(root, actual);
+          checks.push({ path: item.path, verified: true, downloadable, bytes: info.size, ...(downloadable ? { sha256: createHash("sha256").update(await handle.readFile()).digest("hex") } : { existenceOnly: true }) });
+        } finally { await handle.close(); }
+      } catch (error) { checks.push({ path: item.path, verified: false, reason: error.code === "ENOENT" ? "File does not exist" : "File could not be verified in this task workspace" }); }
+    }
+    return checks;
+  }
+
+  async _finishGeneralResult(active, task, initial, workspacePath) {
+    const request = task.input.metadata?.sourceRequest ?? "";
+    let result = initial;
+    let best = null;
+    for (let attempt = 0; attempt <= 1; attempt++) {
+      let report = null;
+      let issues = [];
+      let quality = { pass: true, issues: [], caveats: [], skipped: true, summary: "Report structure and declared files checked." };
+      try { report = validateOpenClawTaskReport(result.text, { ...task.input.metadata?.verification, strictEvidence: false }); }
+      catch (error) { if (error.code !== "TASK_REPORT_INVALID") throw error; issues = [error.message]; }
+      if (report) {
+        report.verification.childTasks = active.children ?? [];
+        const deliverables = await this._inspectDeliverables(report, workspacePath);
+        issues = [...report.verification.issues, ...deliverables.filter((item) => !item.verified).map((item) => `Declared deliverable ${item.path}: ${item.reason}.`)];
+        if (!task.input.metadata?.parentTaskId && report.outcome !== "blocked") {
+          await this._progress(active, { phase: "checking", message: "Checking the result against the goal." });
+          try {
+            quality = await this.reviewer({
+              taskId: task.taskId, request: `${request}\n\nSuccess criteria: ${JSON.stringify(active.plan?.successCriteria ?? [])}`, report,
+              localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")],
+              sessionPath: join(process.env.HOME, ".openclaw", "agents", "ev-worker", "sessions", `${task.taskId}.jsonl`),
+              workspacePath
+            });
+          } catch { quality = { pass: true, issues: [], caveats: ["The separate result review was unavailable; agent checks and file checks are shown."], summary: "Review unavailable", unavailable: true }; }
+          if (!quality.pass) issues.push(...(quality.issues?.length ? quality.issues : [quality.summary]));
+        }
+        report.verification = { ...report.verification, qualityGate: quality, deliverables, repairCount: attempt, successCriteria: active.plan?.successCriteria ?? [] };
+        best = { result, report, issues };
+      }
+      if (!issues.length || attempt === 1) break;
+      const prompt = [
+        "Correct these material gaps using your tools. Preserve successful work and supported coverage. Return a complete replacement JSON task report with goal, outcome, answer, evidence, deliverables, checks, limitations. If a criterion cannot be achieved, return an honest partial or blocked result instead of inventing support.",
+        `Original request:\n${request}`, `Issues:\n${JSON.stringify(issues)}`,
+        ...(best ? [`Previous useful result:\n${JSON.stringify(best.report)}`] : [])
+      ].join("\n\n");
+      const repaired = await this._runWorker(active, prompt, { reuseCompleted: false });
+      if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+      if (repaired.status !== "completed") {
+        if (!best) throw codedError(repaired.code ?? "WORKER_ERROR", repaired.message ?? "Worker could not produce a report");
+        best.issues.push(`Correction attempt did not finish: ${repaired.message ?? repaired.status}.`);
+        break;
+      }
+      result = repaired;
+    }
+    if (!best) throw codedError("TASK_REPORT_INVALID", "The worker could not produce a usable task report after one correction.");
+    const { report } = best;
+    if (best.issues.length && report.outcome === "completed") report.outcome = "partial";
+    report.verification.unresolvedIssues = best.issues;
+    report.limitations = [...new Set([...report.limitations, ...(report.verification.qualityGate.caveats ?? []), ...best.issues])].slice(0, 14);
+    return best;
+  }
+
+  async _materializeReportedDeliverables(task, report, workspacePath) {
+    const receipts = [];
+    for (const [index, item] of report.deliverables.entries()) {
+      const checked = report.verification.deliverables.find((check) => check.path === item.path);
+      if (!checked?.verified || !checked.downloadable) continue;
+      const contents = await readFile(resolve(workspacePath, item.path));
+      if (createHash("sha256").update(contents).digest("hex") !== checked.sha256) {
+        report.outcome = "partial";
+        report.limitations.push(`Deliverable ${item.path} changed after verification.`);
+        continue;
+      }
+      const relativeName = `${task.taskId}/${index + 1}-${basename(item.path)}`;
+      await writeArtifact(this.supervisor.artifactRoot, relativeName, contents);
+      receipts.push({ artifactId: randomUUID(), title: item.title || basename(item.path), relativePath: relativeName, sha256: checked.sha256, bytes: contents.length });
+    }
+    return receipts;
   }
 
   async _materializeArtifacts(task, result) {
@@ -392,10 +668,51 @@ export class AssistantWorkerService {
         throw codedError("STANDING_ARTIFACT_INVALID", "The standing brief is missing required structure or scoped-tool receipts", { missing, usedTools });
       }
     }
+    if (task.input.capability === "r1-content-package-v1") {
+      const text = contents.toString("utf8");
+      const requiredHeadings = [
+        "## Interpreted brief",
+        "## Build-in-public post",
+        "## Short reel outline",
+        "## Review and revision receipt",
+        "## Assumptions"
+      ];
+      const missing = requiredHeadings.filter((heading) => !text.includes(heading));
+      let draft;
+      let review;
+      try {
+        [draft, review] = await Promise.all([
+          workspace.read("output/draft.md").then((value) => Buffer.from(value)),
+          workspace.read("output/review.md").then((value) => Buffer.from(value))
+        ]);
+      } catch {
+        throw codedError("R1_ARTIFACT_INVALID", "The content package is missing its draft or review receipt");
+      }
+      const reviewText = review.toString("utf8");
+      const missingReview = ["## Issues found", "## Revision decisions"].filter((heading) => !reviewText.includes(heading));
+      const unchanged = createHash("sha256").update(draft).digest("hex") === createHash("sha256").update(contents).digest("hex");
+      if (contents.byteLength < 500 || draft.byteLength < 300 || review.byteLength < 160 || missing.length || missingReview.length || unchanged) {
+        throw codedError("R1_ARTIFACT_INVALID", "The content package did not prove a complete draft-review-revision cycle", {
+          missing,
+          missingReview,
+          unchanged
+        });
+      }
+    }
     const relativeName = `${task.taskId}/${spec.relativePath ?? basename(spec.sourcePath)}`;
     relativePath(relativeName, "artifact destination");
     await writeArtifact(this.supervisor.artifactRoot, relativeName, contents);
     return [{ artifactId: randomUUID(), relativePath: relativeName, sha256: createHash("sha256").update(contents).digest("hex"), bytes: contents.byteLength }];
+  }
+
+  async _materializeR1StructuredOutput(task, text, workspacePath) {
+    const value = parseJsonObject(text);
+    const draft = boundedOutput(value.draft, "draft");
+    const review = boundedOutput(value.review, "review");
+    const final = boundedOutput(value.final, "final");
+    await writeArtifact(workspacePath, "output/draft.md", Buffer.from(`${draft}\n`));
+    await writeArtifact(workspacePath, "output/review.md", Buffer.from(`${review}\n`));
+    await writeArtifact(workspacePath, "output/content-package.md", Buffer.from(`${final}\n`));
   }
 }
 

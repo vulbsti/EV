@@ -18,6 +18,7 @@
     "assistant:phase4-local": "node scripts/run-phase4-local-canary.mjs",
     "assistant:phase4-github": "node scripts/run-phase4-github-canary.mjs",
     "assistant:phase4-faults": "node scripts/run-phase4-fault-canary.mjs",
+    "assistant:manager-check": "node scripts/run-manager-acceptance.mjs",
     "prototype": "node apps/daemon/server.mjs"
   },
   "engines": {

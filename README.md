@@ -1,18 +1,24 @@
-# EV Mission Control — experiment-first workspace
+# EV — personal assistant prototype
 
-**New product direction (reworked 2026-09-21):** EV is being built as one persistent personal assistant that develops an understanding of you, owns durable background work through Pi, and proves its value through one real connected standing responsibility in the first alpha. The target environment is EV's own isolated computer with versioned mandates, controlled connections, and limited host access; a narrow browser adapter may support the first workflow, while broad desktop/application autonomy comes later. Start with the [assistant plan](docs/assistant/README.md), [adaptive implementation and real-use test plan](docs/assistant/EXECUTION_PLAN.md), [build sequence](docs/assistant/BUILD_PLAN.md), [personal model](docs/assistant/PERSONAL_MODEL.md), and [computer design](docs/assistant/COMPUTER_ENVIRONMENT.md).
+EV's current proof of concept is one conversation with a working task manager: it turns a request into a goal, runs one OpenClaw executor or up to three independent child assignments, combines their results, and returns completed, partial, or blocked outcomes inline. OpenClaw and the manager use OpenCode Go `gpt-6-luna`. See the [prototype architecture and limits](docs/assistant/OPENCLAW_POC.md).
 
-EV is a browser-based tmux control workstation and emerging orchestrator for terminal agents. The repository contains a runnable control prototype plus the experiment lab used to validate its underlying assumptions.
-
-A first durable conversation slice is now runnable:
+Run it with Node.js 22+, OpenClaw installed, and `OPENCODE_API` set in the local `.env`:
 
 ```bash
 npm run prototype
 ```
 
-Open `http://127.0.0.1:4317`. The default surface is a durable conversation backed by SQLite. EV can run one reviewed launch-status capability through a supervised Pi worker, keep chat usable while it works, cancel it, recover it across a graceful daemon restart, and return a verified artifact. Other actions remain honestly `not_executable`.
+Open `http://127.0.0.1:4317`. The conversation and parent/child tasks are durable in SQLite. At most three supervised workers run at once. Completed children survive restart; cancelling a parent stops its active and waiting children. A failed child is retried once only when its assignment was planned as safe to repeat. Minor review concerns do not block delivery; relevant caveats accompany the answer, and unresolved material gaps remain visible as partial results. Produced files are checked and downloadable. The older Pi canaries remain available for development.
 
-`Understanding you` exposes the first source-linked memory controls. Explicit global guidance can be inspected, corrected, stopped, or erased and is recorded in the exact context manifest used by later tasks. A new conversation shares that reviewed guidance without copying the previous transcript.
+To exercise the manager through the running server with real workers, a disposable local fixture, public X research, parallel programs, and one interrupted child:
+
+```bash
+npm run assistant:manager-check -- --interrupt-child
+```
+
+The script opens no external write flow. Results and verification receipts stay under ignored `data/manager-check/`; it prints the conversation URL. `npm test` covers worker capacity, retry, partial delivery, cancellation, and recovery with deterministic fixtures.
+
+`Understanding you` exposes source-linked memory controls. Explicit global guidance can be inspected, corrected, stopped, or erased and is recorded in the context manifest for later tasks. Automatic learning of taste and goals is not implemented yet.
 
 `Responsibilities` exposes the first connected alpha: one read-only GitHub pull request with an inspectable, expiring, revocable mandate. EV establishes the current revision as a baseline, polls while the browser is closed, prepares a verified draft only after a material change, and shows recent outcomes with their exact provider revisions. The connector cannot comment, merge, push, label, publish, or message anyone.
 
