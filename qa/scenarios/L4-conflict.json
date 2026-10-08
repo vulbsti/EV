@@ -1,0 +1,157 @@
+{
+  "level": 4,
+  "name": "Conflict without confusion",
+  "summary": "The user contradicts himself, vents, quotes other people, is sarcastic, and misremembers. EV keeps one coherent picture, knows which statement is current, and asks only when the conflict actually matters.",
+  "scenarios": [
+    {
+      "id": "L4-01",
+      "title": "X then Y then X: oscillation is noticed",
+      "guards": "Flip-flopping with the latest message, or freezing in confusion",
+      "components": ["learning", "memory", "controller"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "I'm going to build Tidepool in React Native", "tasks": 0 }
+          ]
+        },
+        {
+          "label": "Day 4",
+          "steps": [
+            { "say": "nah, Flutter is better for Tidepool, switching", "tasks": 0, "memory": "Current framework Flutter; React Native superseded, history kept." }
+          ]
+        },
+        {
+          "label": "Day 9",
+          "steps": [
+            { "say": "ok React Native again, Flutter tooling annoyed me", "tasks": 0, "expect": ["Accepts the switch and briefly notes this is the second switch, without lecturing.", "May ask what would settle it, or record the reason (tooling friction)."], "memory": "Current: React Native. History shows RN → Flutter → RN with reasons." }
+          ]
+        },
+        {
+          "label": "Day 12, new conversation",
+          "steps": [
+            { "say": "scaffold the settings screen for Tidepool", "tasks": "any", "expect": ["React Native."], "fail": ["Flutter.", "Asks which framework without acknowledging the latest decision."] },
+            { "say": "how many times have I changed my mind on the framework?", "tasks": 0, "expect": ["Twice (RN → Flutter → RN), with the reasons if stated."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L4-02",
+      "title": "Venting is not an instruction",
+      "guards": "Treating frustration as a decision",
+      "components": ["controller", "learning"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Tidepool is in React Native, keep that in mind", "tasks": 0 },
+            { "say": "I HATE React Native, this build error is driving me insane. Metro bundler keeps failing with 'unable to resolve module'", "tasks": "any", "expect": ["Helps fix the build error in React Native.", "Does not propose rewriting in another framework unless asked."], "memory": "No change of framework. Optionally a low-confidence note of RN frustration." }
+          ]
+        },
+        {
+          "label": "Day 2, new conversation",
+          "steps": [
+            { "say": "add a dark mode toggle to Tidepool", "tasks": "any", "expect": ["React Native."], "fail": ["Switches framework because the user 'hates React Native'."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L4-03",
+      "title": "Other people's opinions are not the user's",
+      "guards": "Misattribution of quoted preferences",
+      "components": ["learning", "memory"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "I write most of my backend stuff in Go", "tasks": 0 },
+            { "say": "my cofounder Aditi keeps saying we should write the backend in Rust. I think it's overkill but whatever.", "tasks": 0, "memory": "Aditi (cofounder) prefers Rust. User thinks Rust is overkill. Nothing says the user prefers Rust." }
+          ]
+        },
+        {
+          "label": "Day 2, new conversation",
+          "steps": [
+            { "say": "set up a minimal backend for Tidepool sync", "tasks": "any", "expect": ["Go, the user's own language.", "Optionally mentions Aditi's Rust preference as a consideration."], "fail": ["Rust because 'you prefer Rust'."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L4-04",
+      "title": "Sarcasm",
+      "guards": "Literal reading of obviously sarcastic statements",
+      "components": ["controller", "learning"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "write a 3 line product description for Tidepool", "tasks": "any" },
+            { "say": "wow, amazing, I just love paragraphs that say 'unlock your potential'. truly groundbreaking.", "tasks": "any", "expect": ["Reads it as criticism: removes cliché marketing phrasing and revises."], "memory": "Dislikes cliché marketing phrases like 'unlock your potential'.", "fail": ["Thanks the user for the praise.", "Records that the user loves the phrase."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L4-05",
+      "title": "The user misremembers what he said",
+      "guards": "Sycophantic rewriting of memory on a false claim",
+      "components": ["controller", "memory"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "I like dark, minimal UIs for my own projects", "tasks": 0 }
+          ]
+        },
+        {
+          "label": "Day 3, new conversation",
+          "steps": [
+            { "say": "why did you make that mockup dark? I told you I hate dark mode", "tasks": 0, "expect": ["Politely says its record shows the opposite, cites when, and asks whether this is a change of mind.", "Does not accuse the user of lying."], "fail": ["Apologises and records 'hates dark mode' without checking.", "Insists the user is wrong and refuses to update."] },
+            { "say": "oh. yeah ok I did say that. but I've changed my mind, light mode now", "tasks": 0, "memory": "Light UI preference now current; dark kept as superseded history with the date of change." }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L4-06",
+      "title": "Stated vs revealed preference",
+      "guards": "Following the stated rule while every interaction contradicts it, or silently overriding it",
+      "components": ["learning", "memory", "controller"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "keep all your answers short, I don't read long stuff", "tasks": 0 },
+            { "say": "explain how push notifications work on Android", "tasks": "any", "expect": ["Short."] },
+            { "say": "go deeper, what actually happens between FCM and the device?", "tasks": "any" },
+            { "say": "more, what about doze mode and battery restrictions?", "tasks": "any" }
+          ]
+        },
+        {
+          "label": "Day 2",
+          "steps": [
+            { "say": "explain how websockets keep a connection alive", "tasks": "any", "expect": ["Short first, offers depth.", "OR surfaces the pattern: 'you said keep it short but you usually want depth on technical topics, should I go deeper by default for these?'"], "memory": "A hypothesis (not a fact): short by default, deep for technical how-it-works questions. Marked inferred with evidence." }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L4-07",
+      "title": "A conflict that matters gets one question",
+      "guards": "Picking silently when the choice is consequential, or asking when it is not",
+      "components": ["controller", "intent-brief"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "for the bakery site, use their brand colour, the deep green", "tasks": 0 },
+            { "say": "the bakery owner emailed, she wants everything burgundy now", "tasks": 0 },
+            { "say": "build the bakery homepage hero section", "tasks": "any", "expect": ["Uses burgundy (latest client instruction) and says so; or asks one question if it judges the brand change unconfirmed."], "fail": ["Mixes green and burgundy.", "Asks three questions about colour, font and layout."] }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,245 @@
+{
+  "level": 3,
+  "name": "Scope and time",
+  "summary": "Preferences have a scope (a project, a context) and a lifetime (today, this month, until further notice). EV must not let a local or temporary preference leak into everything forever.",
+  "scenarios": [
+    {
+      "id": "L3-01",
+      "title": "Project-scoped tone does not bleed",
+      "guards": "Over-generalising a preference from one project to all",
+      "components": [
+        "learning",
+        "memory",
+        "context-builder"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "For the Slow Bread bakery client website, keep all copy warm but formal, no slang, no emojis.",
+              "tasks": 0,
+              "memory": "Formal/no-emoji tone scoped to the Slow Bread project, not global."
+            },
+            {
+              "say": "For my YouTube devlog, I want the opposite: casual, jokey, emojis fine.",
+              "tasks": 0,
+              "memory": "Casual tone scoped to the devlog."
+            }
+          ]
+        },
+        {
+          "label": "Day 2, new conversation",
+          "steps": [
+            {
+              "say": "write the 'about us' paragraph for the bakery site",
+              "tasks": "any",
+              "expect": [
+                "Formal, warm, no emojis."
+              ]
+            },
+            {
+              "say": "now write the description for my next devlog video about adding streaks to Tidepool",
+              "tasks": "any",
+              "expect": [
+                "Casual, jokey; emojis allowed."
+              ],
+              "fail": [
+                "Formal bakery tone leaks in."
+              ]
+            },
+            {
+              "say": "write a LinkedIn post about Tidepool",
+              "tasks": "any",
+              "expect": [
+                "Picks a sensible middle or asks which tone; does not blindly apply either project's rule.",
+                "Says which tone it chose."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L3-02",
+      "title": "Temporary situation expires",
+      "guards": "A temporary constraint becoming a permanent trait",
+      "components": [
+        "learning",
+        "memory"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "I'm travelling for the next two weeks and only have my phone, so keep anything you give me phone-friendly",
+              "tasks": 0,
+              "memory": "Phone-only constraint with an end date about two weeks out."
+            },
+            {
+              "say": "give me a quick plan for adding reminders to Tidepool",
+              "tasks": "any",
+              "expect": [
+                "Short, phone-readable; no wide tables or big code blocks."
+              ]
+            }
+          ],
+          "day": 0
+        },
+        {
+          "label": "Week 4, new conversation (after the trip)",
+          "steps": [
+            {
+              "say": "give me a detailed implementation plan for reminders in Tidepool",
+              "tasks": "any",
+              "expect": [
+                "Full detail; no phone-only restriction applied.",
+                "Optionally checks: 'are you back from your trip?'"
+              ],
+              "fail": [
+                "Still compresses for a phone without asking."
+              ]
+            }
+          ],
+          "day": 28
+        }
+      ]
+    },
+    {
+      "id": "L3-03",
+      "title": "Exception beats the rule, only where it applies",
+      "guards": "An exception overwriting the general rule",
+      "components": [
+        "learning",
+        "memory",
+        "intent-brief"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "In general I want TypeScript for anything I build",
+              "tasks": 0
+            },
+            {
+              "say": "except data scripts, those should just be Python",
+              "tasks": 0,
+              "memory": "General rule TypeScript; exception: data scripts in Python. Both active."
+            }
+          ]
+        },
+        {
+          "label": "Day 3, new conversation",
+          "steps": [
+            {
+              "say": "write a small script that reads my Tidepool habits CSV export and prints weekly completion %",
+              "tasks": "any",
+              "expect": [
+                "Python."
+              ]
+            },
+            {
+              "say": "now a tiny web page that shows those numbers",
+              "tasks": "any",
+              "expect": [
+                "TypeScript."
+              ],
+              "fail": [
+                "Python for the web page because the last task was Python."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L3-04",
+      "title": "Mood is not a preference",
+      "guards": "Learning permanent traits from one bad day",
+      "components": [
+        "learning"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "ugh just give me the answer, no explanation, I'm so done today. how do I undo the last git commit but keep the changes",
+              "tasks": "any",
+              "expect": [
+                "Just the command."
+              ],
+              "memory": "At most a low-confidence, today-scoped note. No permanent 'never explain' rule."
+            }
+          ]
+        },
+        {
+          "label": "Day 2, new conversation",
+          "steps": [
+            {
+              "say": "how does git rebase actually work under the hood?",
+              "tasks": "any",
+              "expect": [
+                "A real explanation; the question asks for depth."
+              ],
+              "fail": [
+                "One-liner because 'user hates explanations'."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L3-05",
+      "title": "Stop using vs forget",
+      "guards": "Confusing 'pause this' with 'delete this'",
+      "components": [
+        "memory",
+        "controller"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "remember that I'm vegetarian",
+              "tasks": 0
+            },
+            {
+              "say": "for this month don't factor in that I'm vegetarian, I'm doing a protein experiment with my doctor",
+              "tasks": 0,
+              "memory": "Vegetarian claim kept but paused (stop-use with expiry), not erased."
+            },
+            {
+              "say": "suggest a high protein dinner",
+              "tasks": "any",
+              "expect": [
+                "Meat or fish options allowed."
+              ]
+            }
+          ],
+          "day": 0
+        },
+        {
+          "label": "Next month, new conversation",
+          "steps": [
+            {
+              "say": "suggest a high protein dinner",
+              "tasks": "any",
+              "expect": [
+                "Vegetarian options again."
+              ],
+              "fail": [
+                "Vegetarian fact lost because the pause was treated as erase."
+              ]
+            }
+          ],
+          "day": 35
+        }
+      ]
+    }
+  ]
+}
