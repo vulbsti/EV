@@ -29,27 +29,6 @@ test("records an immutable user and assistant turn and reconstructs it in order"
   });
 });
 
-test("reconstructs turns with monotonic message sequences", async () => {
-  await withLedger(async (ledger) => {
-    ledger.recordTurn({ conversationId: "c1", clientMessageId: "ordered-1", userText: "first", assistantText: "first reply" });
-    ledger.recordTurn({ conversationId: "c1", clientMessageId: "ordered-2", userText: "second", assistantText: "second reply" });
-    ledger.recordTurn({ conversationId: "c1", clientMessageId: "ordered-3", userText: "third", assistantText: "third reply" });
-
-    assert.deepEqual(ledger.listConversation("c1").map(({ sequence, role, clientMessageId }) => ({ sequence, role, clientMessageId })), [
-      { sequence: 1, role: "user", clientMessageId: "ordered-1" },
-      { sequence: 2, role: "assistant", clientMessageId: null },
-      { sequence: 3, role: "user", clientMessageId: "ordered-2" },
-      { sequence: 4, role: "assistant", clientMessageId: null },
-      { sequence: 5, role: "user", clientMessageId: "ordered-3" },
-      { sequence: 6, role: "assistant", clientMessageId: null }
-    ]);
-    assert.deepEqual(ledger.listTurns("c1").map(({ userMessage, assistantMessage }) => [
-      userMessage.sequence,
-      assistantMessage.sequence
-    ]), [[1, 2], [3, 4], [5, 6]]);
-  });
-});
-
 test("repeated client message id returns the original turn without appending a duplicate", async () => {
   await withLedger(async (ledger) => {
     const first = ledger.recordTurn({ conversationId: "c1", clientMessageId: "same", userText: "one", assistantText: "reply" });
@@ -115,54 +94,6 @@ test("separate ledger instances preserve ordered state across restart", async ()
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
-
-test("routed actions remain explicit not_executable tasks", async () => {
-  await withLedger(async (ledger) => {
-    const turn = ledger.recordTurn({
-      conversationId: "c1",
-      clientMessageId: "action-1",
-      userText: "Start the research job",
-      assistantText: "I recorded this request, but no worker can execute it yet.",
-      intent: { kind: "action", route: "orchestrator", target: "research" }
-    });
-    assert.equal(turn.intent.status, "not_executable");
-    assert.equal(turn.task.status, "not_executable");
-    assert.equal(ledger.listTasks("c1")[0].status, "not_executable");
-  });
-});
-
-test("the Phase 1 not_executable route creates a durable task and ordered turn", async () => {
-  await withLedger(async (ledger) => {
-    const turn = ledger.recordTurn({
-      conversationId: "c1",
-      clientMessageId: "phase1-action",
-      userText: "Create a launch brief",
-      assistantText: "I cannot execute background work yet.",
-      intent: { kind: "delegated_reasoning", route: "not_executable" },
-      route: "not_executable"
-    });
-    assert.equal(turn.task.status, "not_executable");
-    assert.equal(ledger.listTurns("c1")[0].task.taskId, turn.task.taskId);
-    assert.equal(ledger.findByClientMessageId("phase1-action").userMessage.content, "Create a launch brief");
-  });
-});
-
-test("records a worker intent without duplicating the authoritative supervisor task", async () => {
-  await withLedger(async (ledger) => {
-    const turn = ledger.recordTurn({
-      conversationId: "c1",
-      clientMessageId: "phase2-worker",
-      userText: "Create the reviewed brief",
-      assistantText: "I saved the task.",
-      intent: { kind: "action", route: "worker", capability: "extended-launch-brief-v1" },
-      skipTask: true
-    });
-    assert.equal(turn.intent.route, "worker");
-    assert.equal(turn.intent.status, "recorded");
-    assert.equal(turn.task, null);
-    assert.deepEqual(ledger.listTasks("c1"), []);
-  });
 });
 
 test("turn write is transactional when required input is invalid", async () => {

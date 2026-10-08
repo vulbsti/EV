@@ -32,7 +32,6 @@ function fakeAdapterFactory({ calls, delay = 0 } = {}) {
         await writeFile(join(workspacePath, "output.md"), "## Verified output\n", { mode: 0o600 });
         resolveCompletion({ status: "completed", text: "done", events: [] });
       }, delay);
-      timer.unref?.();
       run.cancelTimer = timer;
       return run;
     },

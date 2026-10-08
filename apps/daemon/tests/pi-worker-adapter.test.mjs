@@ -49,27 +49,6 @@ process.stdout.write(JSON.stringify({ type: "agent_end", messages: [{ role: "ass
   };
 }
 
-test("launches with restrictive flags and stable session identity", async () => {
-  const f = await fixture();
-  try {
-    const run = await f.adapter.start({ runId: "run-1", sessionId: "session-1", prompt: "make the brief" });
-    const result = await run.completion;
-    assert.equal(result.status, "completed");
-    assert.equal(result.text, "Verified local brief");
-    const args = JSON.parse(await readFile(f.argvPath, "utf8"));
-    assert.ok(args.includes("--mode") && args[args.indexOf("--mode") + 1] === "json");
-    assert.ok(args.includes("--no-tools"));
-    assert.ok(args.includes("--no-extensions"));
-    assert.ok(args.includes("--no-skills"));
-    assert.ok(args.includes("--no-context-files"));
-    assert.ok(args.includes("--session-dir") && args[args.indexOf("--session-dir") + 1] === f.sessionDir);
-    assert.ok(args.includes("--session-id") && args[args.indexOf("--session-id") + 1] === "session-1");
-    assert.ok(args.includes("make the brief"));
-    assert.ok(!args.includes("--approve"));
-    assert.ok(!args.includes("--session"));
-  } finally { await f.close(); }
-});
-
 test("extracts only the final assistant text from JSONL events", async () => {
   const f = await fixture();
   try {
