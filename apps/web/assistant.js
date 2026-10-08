@@ -93,7 +93,16 @@ function mergeTasks(incoming) {
 
 function taskLabel(status) {
   if (status === "leased" || status === "running") return "working";
+  if (status === "verifying") return "checking quality";
   return status?.replaceAll("_", " ") ?? "queued";
+}
+
+function reviewSummary(verification) {
+  const reviews = verification?.reviews?.filter((review) => !review.unavailable) ?? [];
+  if (!reviews.length) return "";
+  const accepted = reviews.at(-1).verdict === "accept";
+  if (reviews.length === 1) return accepted ? " Accepted on first review." : " Not accepted on review.";
+  return accepted ? ` Accepted after ${reviews.length - 1} revision round${reviews.length > 2 ? "s" : ""}.` : ` Still short of the brief after ${reviews.length} review rounds.`;
 }
 
 function renderTask(task) {
@@ -116,12 +125,13 @@ function renderTask(task) {
     ${report.evidence?.length ? `<details open><summary>Sources (${report.evidence.length})</summary><ul>${report.evidence.map((source) => `<li>${source.url.startsWith("file:") ? `<span>${escapeHtml(source.title || "Local source")}</span> <code>${escapeHtml(decodeURIComponent(new URL(source.url).pathname))}</code>` : `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title || source.url)}</a>`}${source.supports ? ` — ${escapeHtml(source.supports)}` : ""}${source.observedAt ? ` · ${escapeHtml(source.observedAt)}` : ""}</li>`).join("")}</ul></details>` : ""}
     ${report.checks?.length ? `<details><summary>Agent checks</summary><ul>${report.checks.map((check) => `<li>${escapeHtml(check)}</li>`).join("")}</ul></details>` : ""}
     ${task.artifacts?.length ? `<ul class="task-deliverables">${task.artifacts.map((file) => `<li><a href="/api/assistant/artifacts/${encodeURIComponent(file.artifactId)}" download>${escapeHtml(file.title || file.relativePath.split("/").at(-1))}</a></li>`).join("")}</ul>` : ""}
-    <small>${report.verification?.qualityGate?.unavailable ? "Separate review unavailable." : report.verification?.qualityGate?.skipped ? "Agent outcome and file checks recorded." : "EV checked the result against the goal and selected evidence."} ${report.verification?.deliverables?.filter((item) => item.verified).length ?? 0} files checked.${report.verification?.repairCount ? " The agent made a correction." : ""}</small>
+    <small>${report.verification?.qualityGate?.unavailable ? "Separate review unavailable." : report.verification?.qualityGate?.skipped ? "Agent outcome and file checks recorded." : "EV reviewed the result against its brief."} ${report.verification?.deliverables?.filter((item) => item.verified).length ?? 0} files checked.${reviewSummary(report.verification)}</small>
   </div>` : "";
   return `<section class="task-card ${escapeHtml(report?.outcome ?? task.status)}" data-task-id="${escapeHtml(task.taskId)}" aria-label="Background task">
     <div class="task-card-head"><span class="task-status ${escapeHtml(report?.outcome ?? task.status)}">${escapeHtml(displayStatus)}</span><span class="task-time">${escapeHtml(task.updatedAt ? new Date(task.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "")}</span></div>
     <h3>${escapeHtml(task.title ?? "Background task")}</h3>
     ${task.brief?.objective ? `<p><strong>Interpreted as:</strong> ${escapeHtml(task.brief.objective)}</p>` : ""}
+    ${!task.brief && task.plan?.intent ? `<p><strong>Interpreted as:</strong> ${escapeHtml(task.plan.intent)}</p><details class="task-brief"><summary>EV's brief</summary><p><strong>Success criteria</strong></p><ul>${(task.plan.successCriteria ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>${task.plan.qualityBar?.length ? `<p><strong>Quality bar</strong></p><ul>${task.plan.qualityBar.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}${task.plan.assumptions?.length ? `<p><strong>Assumptions</strong></p><ul>${task.plan.assumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}
     ${task.brief?.successCriteria?.length ? `<details class="task-brief"><summary>Success criteria and boundaries</summary><ul>${task.brief.successCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul><p><strong>Authority:</strong> prepare only</p><p><strong>Memory:</strong> reviewed EV guidance; derived memory providers are disabled</p>${task.contextManifestId ? `<p><strong>Context manifest:</strong> <code>${escapeHtml(task.contextManifestId)}</code></p>` : ""}</details>` : ""}
     <p>${escapeHtml(detail)}</p>
     ${children.length ? `<details class="task-children"><summary>Workers · ${children.filter((child) => ["completed", "failed", "cancelled"].includes(child.status)).length}/${children.length} finished</summary><ul>${children.map((child) => `<li><strong>${escapeHtml(child.title)}</strong>${child.retryOf ? " (retry)" : ""} · ${escapeHtml(child.result?.report?.outcome ?? taskLabel(child.status))}${child.error ? ` · ${escapeHtml(child.error.message)}` : ""}</li>`).join("")}</ul></details>` : ""}

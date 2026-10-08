@@ -64,19 +64,24 @@ test("independent review checks source text and can reject an incomplete answer"
   assert.match(reviewedInput, /x-opencode-session/);
 });
 
-test("exact X quotes fail when they omit a link from the post payload", async () => {
+test("links missing from an exact X quote reach the reviewer as an observation", async () => {
+  let reviewedInput = "";
   const verdict = await reviewOpenClawReport({
     taskId: "agent-exact-x",
     request: "Give the exact text of @tibo's post",
     report: { answer: "Que faites-vous encore ici ?", evidence: [{ url: "https://x.com/tibo/status/1951196640309563807" }] },
     apiKey: "test-only",
-    fetchImpl: async (url) => {
-      assert.equal(url, "https://x.com/tibo/status/1951196640309563807");
-      return new Response('<html><body>full_text:"Que faites-vous encore ici ? https://t.co/07YYB4H7fU"</body></html>', { status: 200 });
+    fetchImpl: async (url, options) => {
+      if (url === "https://x.com/tibo/status/1951196640309563807") {
+        return new Response('<html><body>full_text:"Que faites-vous encore ici ? https://t.co/07YYB4H7fU"</body></html>', { status: 200 });
+      }
+      reviewedInput = JSON.parse(options.body).input;
+      return Response.json({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: '{"verdict":"revise","missing":["The post link"],"feedback":["Include https://t.co/07YYB4H7fU"],"summary":"Quote is incomplete"}' }] }] });
     }
   });
-  assert.equal(verdict.pass, false);
-  assert.match(verdict.issues[0], /07YYB4H7fU/);
+  assert.match(reviewedInput, /Host observations:[\s\S]*07YYB4H7fU/);
+  assert.equal(verdict.verdict, "revise");
+  assert.deepEqual(verdict.feedback, ["Include https://t.co/07YYB4H7fU"]);
 });
 
 test("local project evidence reaches review with verified excerpts and bounded audit values", async () => {
