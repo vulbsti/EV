@@ -29,6 +29,18 @@ test("records an immutable user and assistant turn and reconstructs it in order"
   });
 });
 
+test("EV's own updates join the conversation in order and are posted once", async () => {
+  await withLedger(async (ledger) => {
+    ledger.recordTurn({ conversationId: "c1", clientMessageId: "client-1", userText: "Research flights", assistantText: "On it." });
+    ledger.recordUpdate({ conversationId: "c1", key: "settled:task-1:4", content: "Flights are done." });
+    assert.equal(ledger.recordUpdate({ conversationId: "c1", key: "settled:task-1:4", content: "Flights are done." }).replayed, true);
+    ledger.recordTurn({ conversationId: "c1", clientMessageId: "client-2", userText: "Thanks", assistantText: "Anytime." });
+    assert.deepEqual(ledger.listConversation("c1").map(({ content }) => content), ["Research flights", "On it.", "Flights are done.", "Thanks", "Anytime."]);
+    assert.equal(ledger.getTurn(ledger.findByClientMessageId("client-2").userMessage.messageId).assistantMessage.content, "Anytime.");
+    assert.deepEqual(ledger.listUpdates("c1").map(({ content }) => content), ["Flights are done."]);
+  });
+});
+
 test("repeated client message id returns the original turn without appending a duplicate", async () => {
   await withLedger(async (ledger) => {
     const first = ledger.recordTurn({ conversationId: "c1", clientMessageId: "same", userText: "one", assistantText: "reply" });

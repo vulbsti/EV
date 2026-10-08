@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { AssistantSupervisor } from "../lib/assistant-supervisor.mjs";
 import { AssistantWorkerService } from "../lib/assistant-worker-service.mjs";
 import { normalizeTaskPlan } from "../lib/ev-task-manager.mjs";
+import { taskUpdate } from "../lib/ev-main-agent.mjs";
 
 const plan = { goal: "Produce a combined report", successCriteria: ["Both assignments are covered"], subtasks: [
   { title: "Research", instruction: "Research the requested topic", retrySafe: true },
@@ -131,6 +132,31 @@ test("agents on one goal share a brief and team board, each working in its own d
       assert.equal(item.workspacePath, join(f.root, "workspaces", "goal", "tasks", item.taskId));
       assert.match(item.prompt, new RegExp(`${shared}/BRIEF.md`));
     }
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("EV's settled reading of the ask reaches the agents unchanged, and EV tells the person what was done", async () => {
+  const f = await fixture(); const prompts = []; const settled = []; let plannerSaw = null;
+  const understanding = { request: "Compare the two quotes in quotes/ and recommend one", literalAsk: "which one should i go with", title: "Pick a quote",
+    intent: "Choose the better-value quote for the kitchen job", servesGoal: "Renovate the kitchen this spring", successCriteria: ["Names one quote and why"], qualityBar: ["Short, plain answer"], assumptions: ["Price and timeline matter most"], unknowns: [] };
+  const service = new AssistantWorkerService({ ...f.options,
+    planner: async (input) => { plannerSaw = input.understanding; return { goal: "Recommend a quote", intent: "Something else entirely", reviewRounds: 2, subtasks: [] }; },
+    reviewer: async () => ({ verdict: "accept", summary: "Clear", handoff: "I compared both quotes and recommend B: same scope, two weeks sooner." }),
+    onTaskSettled: (task) => settled.push(task),
+    adapterFactory: async () => ({ async start({ prompt }) { prompts.push(prompt); return { completion: Promise.resolve({ status: "completed", text: report("Go with B") }) }; }, async cancel() {} })
+  });
+  try {
+    await service.submitTask({ taskId: "goal", capability: "openclaw-general-v1", layout: "shared", context: "# User request", prompt: "unused",
+      metadata: { managerMode: true, sourceRequest: understanding.request, understanding, title: understanding.title, conversationId: "test" } });
+    const final = await service.waitForTask("goal");
+    assert.equal(plannerSaw.intent, understanding.intent);
+    const brief = await readFile(join(f.root, "workspaces", "goal", "shared", "BRIEF.md"), "utf8");
+    assert.match(brief, /which one should i go with/); assert.match(brief, /better-value quote/); assert.doesNotMatch(brief, /Something else entirely/);
+    assert.match(brief, /Review rounds: up to 2/);
+    assert.match(prompts[0], /better-value quote/);
+    await until(() => settled.length === 1);
+    assert.match(taskUpdate(settled[0]), /"Pick a quote" is done\. I compared both quotes and recommend B/);
+    assert.equal(final.status, "completed");
   } finally { await service.shutdown(); await f.close(); }
 });
 

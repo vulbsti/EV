@@ -2,7 +2,15 @@
 
 ## Execution flow
 
-A user message creates one durable parent task. Before any agent starts, EV's mediator (GPT-6-Luna) writes a **brief** from the request, the recent conversation and EV's explicit guidance: what the user literally asked, what they most likely want, which of their goals it serves, observable success criteria, the quality bar this person expects, the assumptions EV made, what is still unknown, and how many review rounds the work deserves. The brief is stored in the task history and written to the goal's shared `BRIEF.md`. If planning is unavailable, EV continues with a minimal brief built from the request.
+Every user message goes to EV's **main agent** first (`ev-main-agent.mjs`, GPT-6-Luna). It reads the message with EV's reviewed guidance about the person, the recent conversation (including EV's own updates), and the work running or recently finished in this conversation, and decompresses it into what the person means. It then picks one action:
+
+- **reply**: conversation that needs no work (a greeting, thanks, a question about EV or about results already shown). EV answers itself and no agent runs.
+- **clarify**: something only the person can settle would change the outcome substantially. EV asks at most two short questions and waits. It asks one round at most: the next message is combined with the original ask, and anything still open becomes a stated assumption.
+- **work**: EV settles its understanding (a self-contained request with references resolved, intent, the goal it serves, success criteria, the quality bar this person expects, assumptions and unknowns) and starts one durable parent task with it.
+
+The planner then only decides how agents carry the work out (one executor or 2-3 parallel assignments, and how many review rounds it deserves); it cannot redefine the understanding. The resulting **brief** keeps the person's own words, EV's reading of them, and the plan. It is stored in the task history and written to the goal's shared `BRIEF.md`. If the main agent is unavailable, the message goes straight to the planner, which writes the whole brief as before.
+
+When the work settles, EV posts an update to the conversation in its own voice: what was done (the reviewer's hand-off note), or what is still missing, or why it could not finish. The full result stays on the task card.
 
 Ordinary requests use one executor. When assignments are independent, the manager starts two or three OpenClaw child tasks. It waits for the results, then runs the lead agent to combine them. Dependent edits stay with one executor; this is deliberately not a general task DAG framework.
 

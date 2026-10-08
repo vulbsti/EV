@@ -224,6 +224,7 @@ export class AssistantWorkerService {
     planner = planManagedTask,
     reviewer = reviewOpenClawReport,
     maxConcurrentWorkers = Number(process.env.EV_MAX_WORKERS ?? 3),
+    onTaskSettled = null,
     executable = process.env.EV_PI_EXECUTABLE ?? "pi",
     provider = process.env.EV_WORKER_PROVIDER ?? "opencode-go",
     model = process.env.EV_WORKER_MODEL ?? "deepseek-v4.1-flash",
@@ -249,6 +250,7 @@ export class AssistantWorkerService {
     this.planner = planner;
     this.reviewer = reviewer;
     this.maxConcurrentWorkers = Math.max(1, Math.min(8, Number(maxConcurrentWorkers) || 3));
+    this.onTaskSettled = typeof onTaskSettled === "function" ? onTaskSettled : null;
     this.runningWorkers = 0;
     this.workerQueue = [];
     this.queueSequence = 0;
@@ -422,6 +424,9 @@ export class AssistantWorkerService {
     active.promise = this._execute(active).finally(() => {
       this.activeRuns.delete(taskId);
     });
+    // EV's main agent tells the person when work settles; a failing listener
+    // must never affect the task itself.
+    if (this.onTaskSettled) active.promise.then((task) => task && this.onTaskSettled(task)).catch(() => {});
     this.activeRuns.set(taskId, active);
     return active.promise;
   }
@@ -499,19 +504,20 @@ export class AssistantWorkerService {
 
   async _runManagedTask(active, task) {
     const request = task.input.metadata.sourceRequest;
+    const understanding = task.input.metadata.understanding ?? null;
     let plan = task.history.findLast((event) => event.type === "manager_plan")?.plan;
     if (!plan) {
-      await this._progress(active, { phase: "planning", message: "Working out the goal and assignments." });
+      await this._progress(active, { phase: "planning", message: understanding ? "Breaking the work into assignments." : "Working out the goal and assignments." });
       active.controller = new AbortController();
-      try { plan = normalizeTaskPlan(await this.planner({ taskId: task.taskId, request, context: task.input.context, signal: active.controller.signal }), request); }
+      try { plan = normalizeTaskPlan(await this.planner({ taskId: task.taskId, request, context: task.input.context, understanding, signal: active.controller.signal }), request, understanding); }
       catch (error) {
         if (active.cancelRequested || active.shutdownRequested) throw error;
-        plan = normalizeTaskPlan(null, request);
+        plan = normalizeTaskPlan(null, request, understanding);
         plan.reason = "Planning unavailable; continuing with one execution agent.";
       } finally { active.controller = null; }
       await this._progress(active, { plan }, "manager_plan");
     }
-    active.plan = normalizeTaskPlan(plan, request);
+    active.plan = normalizeTaskPlan(plan, request, understanding);
     const sharedPath = this._sharedPath(task);
     if (sharedPath) {
       await writeSharedFiles(sharedPath, {

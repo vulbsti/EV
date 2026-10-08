@@ -227,6 +227,44 @@ export function createAssistantLedger({ path = ":memory:", clock = () => new Dat
     return { ...getTurn(userMessageId), replayed: false };
   }
 
+  /**
+   * A message EV sends on its own, outside a user turn: work finished, work
+   * stuck. `key` makes it idempotent, so the same update is never posted twice.
+   */
+  function recordUpdate({ conversationId = "default", key, content, taskId = null }) {
+    initialize();
+    text(conversationId, "conversationId");
+    const clientMessageId = `update:${text(key, "key")}`;
+    const body = text(content, "content");
+    const existing = db.prepare("SELECT * FROM messages WHERE client_message_id = ?").get(clientMessageId);
+    if (existing) return { ...mapMessage(existing), taskId, replayed: true };
+    const timestamp = now();
+    const messageId = randomUUID();
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const sequence = db.prepare(
+        "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM messages WHERE conversation_id = ?"
+      ).get(conversationId).sequence;
+      db.prepare(
+        "INSERT INTO messages (message_id, conversation_id, role, content, client_message_id, sequence, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, ?)"
+      ).run(messageId, conversationId, body, clientMessageId, sequence, timestamp);
+      db.prepare(
+        "INSERT INTO assistant_events (event_id, conversation_id, event_type, message_id, intent_id, task_id, payload_json, occurred_at) VALUES (?, ?, 'message.update_recorded', ?, NULL, NULL, ?, ?)"
+      ).run(randomUUID(), conversationId, messageId, JSON.stringify({ key, taskId }), timestamp);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    return { ...mapMessage(db.prepare("SELECT * FROM messages WHERE message_id = ?").get(messageId)), taskId, replayed: false };
+  }
+
+  function listUpdates(conversationId = "default") {
+    initialize();
+    return db.prepare("SELECT * FROM messages WHERE conversation_id = ? AND role = 'assistant' AND client_message_id LIKE 'update:%' ORDER BY sequence ASC")
+      .all(conversationId).map(mapMessage);
+  }
+
   function listConversation(conversationId = "default") {
     initialize();
     text(conversationId, "conversationId");
@@ -250,6 +288,8 @@ export function createAssistantLedger({ path = ":memory:", clock = () => new Dat
   return {
     initialize,
     recordTurn,
+    recordUpdate,
+    listUpdates,
     listConversation,
     getConversation: listConversation,
     listTurns,
