@@ -15,6 +15,7 @@ import { AssistantCoordinator, isR1ContentRequest } from "./lib/assistant-coordi
 import { AssistantSupervisor } from "./lib/assistant-supervisor.mjs";
 import { AssistantWorkerService } from "./lib/assistant-worker-service.mjs";
 import { executionPrompt, normalizeTaskPlan } from "./lib/ev-task-manager.mjs";
+import { clarifyingMessage, taskUpdate, understandMessage } from "./lib/ev-main-agent.mjs";
 import { AssistantMemoryStore } from "./lib/assistant-memory.mjs";
 import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
 import { StandingResponsibilityStore } from "./lib/standing-responsibility.mjs";
@@ -41,7 +42,7 @@ const assistantSupervisor = await AssistantSupervisor.open({
   statePath: join(assistantWorkerRoot, "supervisor-state.sqlite"),
   artifactRoot
 });
-const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot });
+const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate });
 await assistantWorkers.start();
 const assistantMemory = AssistantMemoryStore.open({ path: join(dataRoot, "assistant-memory.sqlite") });
 const assistantOwnerId = "default-person";
@@ -116,7 +117,7 @@ function publicTask(task) {
     run: task.run ? { runId: task.run.runId, startedAt: task.run.startedAt } : null,
     result: task.result,
     artifacts: task.artifacts,
-    error: task.error,
+    error: task.error ? { code: task.error.code, message: task.error.message } : null,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     revision: task.revision,
@@ -130,6 +131,7 @@ function publicTask(task) {
     retryOf: task.input?.metadata?.retryOf ?? null,
     progress: task.history.findLast((event) => event.type === "progress") ?? null,
     plan: task.history.findLast((event) => event.type === "manager_plan")?.plan ?? null,
+    reviews: task.history.filter((event) => event.type === "review").map(({ round, verdict, summary, missing }) => ({ round, verdict, summary, missing })),
     history: task.history
   };
 }
@@ -209,7 +211,8 @@ async function publicConversation(conversationId = "default", afterSequence = 0)
       taskId: linkedTasks.get(turn.userMessage.messageId)?.taskId ?? null,
       taskStatus: linkedTasks.get(turn.userMessage.messageId)?.status ?? null
     }
-  ]);
+  ]).concat(assistantLedger.listUpdates(conversationId).map((message) => ({ ...message, status: "update", taskId: null, taskStatus: null })))
+    .sort((left, right) => left.sequence - right.sequence);
   return {
     messages: allMessages.filter((message) => message.sequence > afterSequence),
     revision: allMessages.at(-1)?.sequence ?? 0
@@ -368,17 +371,94 @@ function verificationForRequest(request) {
   return { needsSources: Boolean(needsSources), expectedAccount: account };
 }
 
-async function ensureGeneralTask({ clientMessageId, conversationId = "default", request }) {
+/**
+ * The last few exchanges, so EV can resolve a short or vague message ("do the
+ * same for the other one", "make it shorter") from what came before. EV's own
+ * updates are part of the conversation too.
+ */
+async function recentConversation(conversationId, clientMessageId, limit = 6) {
+  const turns = assistantLedger.listTurns(conversationId).filter((turn) => turn.userMessage.clientMessageId !== clientMessageId).slice(-limit);
+  const entries = [];
+  for (const turn of turns) {
+    const lines = [`User: ${String(turn.userMessage.content ?? "").slice(0, 800)}`];
+    const task = await taskForTurn(turn);
+    const report = task?.result?.report;
+    if (report) lines.push(`EV (${report.outcome}): ${String(report.answer ?? "").slice(0, 600)}`);
+    else if (task) lines.push(`EV: task ${task.status}${task.error?.message ? ` (${task.error.message})` : ""}`);
+    else if (turn.assistantMessage?.content) lines.push(`EV: ${String(turn.assistantMessage.content).slice(0, 400)}`);
+    entries.push({ sequence: turn.userMessage.sequence, text: lines.join("\n") });
+  }
+  const since = turns[0]?.userMessage.sequence ?? 0;
+  for (const update of assistantLedger.listUpdates(conversationId).filter((message) => message.sequence > since)) {
+    entries.push({ sequence: update.sequence, text: `EV (update): ${String(update.content).slice(0, 400)}` });
+  }
+  return entries.sort((left, right) => left.sequence - right.sequence).map((entry) => entry.text).join("\n");
+}
+
+function reviewedGuidance() {
+  return assistantMemory.recall({ ownerId: assistantOwnerId, scope: "global" }).slice(-8);
+}
+
+/** Root tasks in this conversation that are running or recently settled. */
+async function workInProgress(conversationId) {
+  const tasks = (await assistantSupervisor.listTasks())
+    .filter((task) => task.input?.metadata?.conversationId === conversationId && !task.input?.metadata?.parentTaskId && task.input?.capability === "openclaw-general-v1")
+    .slice(-6);
+  return tasks.map((task) => {
+    const report = task.result?.report;
+    const state = report ? report.outcome : task.status;
+    return `- ${task.input.metadata.title ?? "Task"}: ${state}${report?.answer ? `. Result: ${String(report.answer).slice(0, 300)}` : ""}`;
+  }).join("\n");
+}
+
+/**
+ * EV's main agent reads the message before anything runs. Returns null when
+ * it is unavailable; the caller then hands the message straight to the
+ * planner as before.
+ */
+async function understandTurn({ clientMessageId, conversationId, text }) {
+  try {
+    const turns = assistantLedger.listTurns(conversationId);
+    const last = turns.at(-1);
+    const updates = assistantLedger.listUpdates(conversationId);
+    // An update EV posted after its question means the question is no longer the last word.
+    const alreadyAsked = last?.intent?.kind === "clarify" && !(updates.at(-1)?.sequence > last.assistantMessage.sequence);
+    return await understandMessage({
+      messageId: clientMessageId,
+      message: text,
+      guidance: reviewedGuidance().map((claim) => `- ${String(claim.current.value).slice(0, 600)}`).join("\n"),
+      recent: await recentConversation(conversationId, clientMessageId),
+      work: await workInProgress(conversationId),
+      alreadyAsked
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Called by the worker service whenever a task settles. */
+function postTaskUpdate(task) {
+  const content = taskUpdate(task);
+  const conversationId = task.input?.metadata?.conversationId;
+  if (!content || !conversationId || task.input?.capability !== "openclaw-general-v1") return;
+  assistantLedger.recordUpdate({ conversationId, key: `settled:${task.taskId}:${task.revision}`, content, taskId: task.taskId });
+}
+
+async function ensureGeneralTask({ clientMessageId, conversationId = "default", request: message, understanding = null }) {
   const taskId = taskIdForClientMessage(clientMessageId, "openclaw-general-v1");
   const existing = await assistantSupervisor.getTask(taskId).catch(() => null);
   if (existing) return existing;
-  const guidance = assistantMemory.recall({ ownerId: assistantOwnerId, scope: "global" }).slice(-8);
+  // Agents work to EV's settled reading of the message; the person's own
+  // words stay in the brief as what they literally asked.
+  const request = understanding?.request || message;
+  const guidance = reviewedGuidance();
   const claimRevisionIds = guidance.map((claim) => claim.current.revisionId);
   const sourceIds = [...new Set(guidance.flatMap((claim) => claim.sources.map((source) => source.sourceId)))];
   const manifest = assistantMemory.buildContextManifest({
     ownerId: assistantOwnerId, taskId, conversationId, scope: "global", claimRevisionIds, sourceIds, tokenBudget: 0
   });
   const verification = verificationForRequest(request);
+  const recent = await recentConversation(conversationId, clientMessageId);
   const context = [
     "# EV delegated goal",
     `Task ID: ${taskId}`,
@@ -391,22 +471,25 @@ async function ensureGeneralTask({ clientMessageId, conversationId = "default", 
     "Take external actions only when the user's request authorizes them. Report every action you actually took.",
     "# Reviewed guidance about the user",
     guidance.length ? guidance.map((claim) => `- ${String(claim.current.value).slice(0, 600)}`).join("\n") : "No active explicit guidance.",
+    "# Recent conversation",
+    recent || "This is the first request in this conversation.",
+    ...(understanding && understanding.literalAsk !== request ? ["# What the user wrote", understanding.literalAsk] : []),
     "# User request",
     request
   ].join("\n\n");
-  const prompt = executionPrompt({ request, plan: normalizeTaskPlan(null, request) });
+  const prompt = executionPrompt({ request, plan: normalizeTaskPlan(null, request, understanding) });
   return assistantWorkers.submitTask({
     taskId,
     capability: "openclaw-general-v1",
     prompt,
-    workspace: taskId,
+    layout: "shared",
     context,
-    metadata: { clientMessageId, conversationId, sourceRequest: request, title: request.slice(0, 140), contextManifestId: manifest.manifestId, verification, memoryMode: "explicit-ev-memory", managerMode: true }
+    metadata: { clientMessageId, conversationId, sourceRequest: request, understanding, title: (understanding?.title || message).slice(0, 140), contextManifestId: manifest.manifestId, verification, memoryMode: "explicit-ev-memory", managerMode: true }
   });
 }
 
-async function ensureWorkerTask({ clientMessageId, conversationId, request, capability, brief = null }) {
-  if (capability === "openclaw-general-v1") return ensureGeneralTask({ clientMessageId, conversationId, request });
+async function ensureWorkerTask({ clientMessageId, conversationId, request, capability, brief = null, understanding = null }) {
+  if (capability === "openclaw-general-v1") return ensureGeneralTask({ clientMessageId, conversationId, request, understanding });
   if (capability === "r1-content-package-v1") {
     if (!brief) ({ brief } = await planR1Task({ clientMessageId, conversationId, request }));
     return ensureR1ContentTask({ clientMessageId, conversationId, request, brief });
@@ -433,12 +516,22 @@ async function createAssistantTurn({ clientMessageId, conversationId, text }) {
   } else if (process.env.EV_LEGACY_FIXTURE === "1") {
     planned = planAssistantTurn({ clientMessageId, transcript: text, fleet: await controlSnapshot(72) });
   } else {
-    planned = {
-      classification: "action",
-      route: "worker",
-      capability: "openclaw-general-v1",
-      response: "I’m working on this now. I’ll check the result before showing it here. You can send another request while this runs."
-    };
+    const understanding = await understandTurn({ clientMessageId, conversationId, text });
+    if (understanding?.action === "reply" && understanding.message) {
+      planned = { classification: "conversation", route: "companion", response: understanding.message };
+    } else if (understanding?.action === "clarify") {
+      planned = { classification: "clarify", route: "companion", understanding, response: clarifyingMessage(understanding) };
+    } else {
+      planned = {
+        classification: "action",
+        route: "worker",
+        capability: "openclaw-general-v1",
+        understanding: understanding?.action === "work" ? understanding : null,
+        response: understanding?.action === "work" && understanding.message
+          ? understanding.message
+          : "I’m working on this now. I’ll check the result before showing it here. You can send another request while this runs."
+      };
+    }
   }
   if (planned.route === "worker") {
     await ensureWorkerTask({
@@ -446,7 +539,8 @@ async function createAssistantTurn({ clientMessageId, conversationId, text }) {
       conversationId,
       request: text,
       capability: planned.capability,
-      brief: planned.brief ?? null
+      brief: planned.brief ?? null,
+      understanding: planned.understanding ?? null
     });
   }
   return assistantLedger.recordTurn({
@@ -459,6 +553,7 @@ async function createAssistantTurn({ clientMessageId, conversationId, text }) {
       route: planned.route,
       capability: planned.capability ?? null,
       brief: planned.brief ?? null,
+      understanding: planned.understanding ?? null,
       derivedMemoryStatus: planned.derivedMemoryStatus ?? null
     },
     route: planned.route === "worker" ? "assistant" : planned.route,
@@ -778,7 +873,7 @@ async function handleApi(request, response, url) {
     const clientMessageId = String(body.clientMessageId ?? "");
     const conversationId = String(body.conversationId ?? "default");
     const text = String(body.text ?? "").trim();
-    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(clientMessageId)) throw Object.assign(new Error("A safe clientMessageId is required"), { statusCode: 400 });
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(clientMessageId) || clientMessageId.startsWith("update:")) throw Object.assign(new Error("A safe clientMessageId is required"), { statusCode: 400 });
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
     if (!text) throw Object.assign(new Error("text is required"), { statusCode: 400 });
     if (text.length > 8000) throw Object.assign(new Error("text must not exceed 8000 characters"), { statusCode: 400 });
@@ -792,7 +887,8 @@ async function handleApi(request, response, url) {
           conversationId,
           request: existing.userMessage.content,
           capability: existing.intent.payload?.capability,
-          brief: existing.intent.payload?.brief ?? null
+          brief: existing.intent.payload?.brief ?? null,
+          understanding: existing.intent.payload?.understanding ?? null
         });
       }
       return json(response, 200, await publicTurn({ ...existing, replayed: true }));

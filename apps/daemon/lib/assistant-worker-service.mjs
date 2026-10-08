@@ -9,9 +9,18 @@ import { AssistantSupervisor } from "./assistant-supervisor.mjs";
 import { reviewOpenClawReport } from "./ev-quality-gate.mjs";
 import { OpenClawWorkerAdapter } from "./openclaw-worker-adapter.mjs";
 import { validateOpenClawTaskReport } from "./openclaw-task-report.mjs";
-import { executionPrompt, normalizeTaskPlan, planManagedTask } from "./ev-task-manager.mjs";
+import { executionPrompt, normalizeTaskPlan, planManagedTask, revisionPrompt } from "./ev-task-manager.mjs";
 import { PiWorkerAdapter } from "./pi-worker-adapter.mjs";
 import { ScopedWorkspace } from "./scoped-workspace.mjs";
+import { renderBrief, renderReviews, renderTeam, sharedLayout, writeSharedFiles } from "./shared-workspace.mjs";
+import { emptyUsage, exceededBudget, mergeUsage } from "./worker-usage.mjs";
+
+// Worker failures that say nothing about the work itself. Workspace-only
+// profiles have no external side effects, so one fresh attempt is safe.
+const TRANSIENT_WORKER_CODES = new Set(["PI_PROCESS_EXIT", "PI_PROCESS_START", "PI_EMPTY_RESULT", "PI_TIMEOUT"]);
+// Admission order: finish work already under way before starting new work,
+// and let what the user is waiting on go ahead of background preparation.
+const PRIORITY = Object.freeze({ continuing: 0, interactive: 1, background: 2 });
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -51,6 +60,31 @@ function boundedOutput(value, field, maxBytes = 64 * 1024) {
     throw codedError("R1_OUTPUT_INVALID", `${field} must be non-empty bounded text`);
   }
   return value.trim();
+}
+
+function workerError(result) {
+  return {
+    code: result.code ?? "WORKER_ERROR",
+    message: result.message ?? "Worker failed",
+    ...(result.diagnosticsLog ? { diagnosticsLog: result.diagnosticsLog } : {})
+  };
+}
+
+/** Accepts both the review shape and the older {pass, issues} verdict. */
+function normalizeReviewShape(review) {
+  const pass = review?.verdict ? review.verdict === "accept" : review?.pass !== false;
+  const missing = review?.missing ?? (pass ? [] : review?.issues ?? []);
+  return {
+    ...review,
+    verdict: pass ? "accept" : "revise",
+    pass,
+    criteria: review?.criteria ?? [],
+    missing,
+    feedback: review?.feedback ?? [],
+    issues: pass ? [] : review?.issues ?? missing,
+    caveats: review?.caveats ?? [],
+    summary: review?.summary ?? ""
+  };
 }
 
 function inside(root, candidate) {
@@ -96,7 +130,10 @@ export function createFixedCapabilityProfiles({ projectRoot = PROJECT_ROOT } = {
       skillPaths: Object.freeze([skill]),
       requireContext: true,
       requireArtifact: true,
-      budget: Object.freeze({ maxTotalTokens: 12_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
+      // Usage is summed over every model call (cache reads excluded), so a
+      // multi-step tool run needs more headroom than one final-call figure.
+      budget: Object.freeze({ maxTotalTokens: 60_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
+      review: Object.freeze({ maxRounds: 2 }),
     }),
     "extended-launch-brief-v1": Object.freeze({
       capability: "extended-launch-brief-v1",
@@ -105,7 +142,10 @@ export function createFixedCapabilityProfiles({ projectRoot = PROJECT_ROOT } = {
       skillPaths: Object.freeze([skill]),
       requireContext: true,
       requireArtifact: true,
-      budget: Object.freeze({ maxTotalTokens: 12_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
+      // Usage is summed over every model call (cache reads excluded), so a
+      // multi-step tool run needs more headroom than one final-call figure.
+      budget: Object.freeze({ maxTotalTokens: 60_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
+      review: Object.freeze({ maxRounds: 2 }),
     }),
     "standing-brief-v1": Object.freeze({
       capability: "standing-brief-v1",
@@ -114,7 +154,10 @@ export function createFixedCapabilityProfiles({ projectRoot = PROJECT_ROOT } = {
       skillPaths: Object.freeze([skill]),
       requireContext: true,
       requireArtifact: true,
-      budget: Object.freeze({ maxTotalTokens: 12_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
+      // Usage is summed over every model call (cache reads excluded), so a
+      // multi-step tool run needs more headroom than one final-call figure.
+      budget: Object.freeze({ maxTotalTokens: 60_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
+      review: Object.freeze({ maxRounds: 2 }),
     }),
     "r1-content-package-v1": Object.freeze({
       capability: "r1-content-package-v1",
@@ -124,6 +167,7 @@ export function createFixedCapabilityProfiles({ projectRoot = PROJECT_ROOT } = {
       requireContext: true,
       requireArtifact: true,
       structuredOutput: "r1-content-package-json",
+      review: Object.freeze({ maxRounds: 2 }),
       timeoutMs: 180_000,
       // A real draft-review-revision pass currently lands around 20k tokens
       // because Pi reports the final turn with accumulated cached context.
@@ -179,7 +223,8 @@ export class AssistantWorkerService {
     adapterFactory = null,
     planner = planManagedTask,
     reviewer = reviewOpenClawReport,
-    maxConcurrentWorkers = 3,
+    maxConcurrentWorkers = Number(process.env.EV_MAX_WORKERS ?? 3),
+    onTaskSettled = null,
     executable = process.env.EV_PI_EXECUTABLE ?? "pi",
     provider = process.env.EV_WORKER_PROVIDER ?? "opencode-go",
     model = process.env.EV_WORKER_MODEL ?? "deepseek-v4.1-flash",
@@ -205,8 +250,10 @@ export class AssistantWorkerService {
     this.planner = planner;
     this.reviewer = reviewer;
     this.maxConcurrentWorkers = Math.max(1, Math.min(8, Number(maxConcurrentWorkers) || 3));
+    this.onTaskSettled = typeof onTaskSettled === "function" ? onTaskSettled : null;
     this.runningWorkers = 0;
     this.workerQueue = [];
+    this.queueSequence = 0;
     this.started = false;
     this.stopping = false;
     this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => profile.capability === "openclaw-general-v1"
@@ -241,12 +288,28 @@ export class AssistantWorkerService {
     return { recovery, taskIds: tasks.map((task) => task.taskId) };
   }
 
-  async submitTask({ taskId, capability, prompt, workspace, context = null, artifact = null, metadata = null }) {
+  /**
+   * `layout: "shared"` starts a new goal with its own shared directory; a
+   * `sharedWorkspace` puts this task on an existing goal (a child agent).
+   * Either way the task works in `<goal>/tasks/<taskId>`. Without them the
+   * task keeps the original one-directory-per-task layout.
+   */
+  async submitTask({ taskId, capability, prompt, workspace, context = null, artifact = null, metadata = null, layout = null, sharedWorkspace = null }) {
     if (this.stopping) throw codedError("WORKER_SERVICE_STOPPING", "The worker service is stopping");
     const id = safeTaskId(taskId);
     const profile = this._profile(capability);
     if (typeof prompt !== "string" || !prompt.trim()) throw codedError("INVALID_PROMPT", "prompt is required");
-    const input = { capability: profile.capability, prompt, workspace: workspace ?? id, context, artifact, metadata };
+    let shared = null;
+    if (sharedWorkspace) shared = relativePath(sharedWorkspace, "sharedWorkspace");
+    else if (layout === "shared") shared = sharedLayout(id).shared;
+    else if (layout !== null) throw codedError("INVALID_LAYOUT", "layout must be \"shared\" or omitted");
+    const goal = shared ? shared.split("/").slice(0, -1).join("/") : null;
+    const input = {
+      capability: profile.capability, prompt,
+      workspace: shared ? sharedLayout(goal, id).workspace : workspace ?? id,
+      ...(shared ? { sharedWorkspace: shared } : {}),
+      context, artifact, metadata
+    };
     await this._prepareTaskInput(id, profile, input);
     const task = await this.supervisor.createTask({ taskId: id, input });
     this._dispatch(id);
@@ -361,6 +424,9 @@ export class AssistantWorkerService {
     active.promise = this._execute(active).finally(() => {
       this.activeRuns.delete(taskId);
     });
+    // EV's main agent tells the person when work settles; a failing listener
+    // must never affect the task itself.
+    if (this.onTaskSettled) active.promise.then((task) => task && this.onTaskSettled(task)).catch(() => {});
     this.activeRuns.set(taskId, active);
     return active.promise;
   }
@@ -371,6 +437,7 @@ export class AssistantWorkerService {
       entry.resolve(null);
       return false;
     });
+    this.workerQueue.sort((left, right) => left.priority - right.priority || left.sequence - right.sequence);
     while (this.runningWorkers < this.maxConcurrentWorkers && this.workerQueue.length) {
       const entry = this.workerQueue.shift();
       this.runningWorkers++;
@@ -378,22 +445,57 @@ export class AssistantWorkerService {
     }
   }
 
-  async _runWorker(active, prompt, { reuseCompleted = true } = {}) {
+  _priority(active) {
+    const metadata = active.task?.input?.metadata ?? {};
+    if (metadata.parentTaskId || active.round > 1) return PRIORITY.continuing;
+    if (metadata.kind === "standing-prepared-output" || metadata.priority === "background") return PRIORITY.background;
+    return PRIORITY.interactive;
+  }
+
+  /** The budget left for this task's next run, across all its rounds. */
+  _remainingBudget(active, profile) {
+    const total = active.plan?.budget?.maxTotalTokens && profile.capability === "openclaw-general-v1"
+      ? { maxTotalTokens: active.plan.budget.maxTotalTokens, maxCostUsd: 0, maxToolCalls: -1 }
+      : profile.budget;
+    if (!total) return null;
+    if (profile.capability !== "openclaw-general-v1") return total;
+    return {
+      maxTotalTokens: total.maxTotalTokens > 0 ? Math.max(1, total.maxTotalTokens - active.usage.budgetTokens) : 0,
+      maxCostUsd: total.maxCostUsd > 0 ? Math.max(0.000001, total.maxCostUsd - active.usage.costUsd) : 0,
+      maxToolCalls: total.maxToolCalls
+    };
+  }
+
+  async _runWorker(active, prompt, { reuseCompleted = true, sessionId = active.runId } = {}) {
     if (active.isGeneral) await this._progress(active, { phase: "waiting", message: "Waiting for an available agent." });
-    const release = await new Promise((resolve) => { this.workerQueue.push({ active, resolve }); this._pumpWorkers(); });
+    const release = await new Promise((resolve) => {
+      this.workerQueue.push({ active, resolve, priority: this._priority(active), sequence: this.queueSequence++ });
+      this._pumpWorkers();
+    });
     if (!release) return { status: "cancelled" };
+    let result;
     try {
       if (active.shutdownRequested || active.cancelRequested) return { status: "cancelled" };
-      active.run = await active.adapter.start({ runId: active.runId, sessionId: active.runId, prompt, reuseCompleted });
+      const budget = this._remainingBudget(active, active.profile);
+      active.run = await active.adapter.start({ runId: active.runId, sessionId, prompt, reuseCompleted, budget });
       if (active.shutdownRequested || active.cancelRequested) await active.adapter.cancel(active.run, { reason: "stopped" });
-      if (active.isGeneral && !active.shutdownRequested && !active.cancelRequested) await this._progress(active, { phase: "working", message: "An agent is carrying out the request.", workerPid: active.run.child?.pid ?? null });
-      const result = await active.run.completion;
+      if (active.isGeneral && !active.shutdownRequested && !active.cancelRequested) await this._progress(active, { phase: "working", message: active.round > 1 ? "The agent is revising its work from EV's review." : "An agent is carrying out the request.", workerPid: active.run.child?.pid ?? null });
+      result = await active.run.completion;
       await waitForWorkerExit(active.run);
-      return result;
     } catch (error) {
       if (active.run) { await active.adapter.cancel(active.run, { reason: "worker-interrupted" }); await waitForWorkerExit(active.run); }
       throw error;
     } finally { active.run = null; release(); }
+    if (result?.usage) mergeUsage(active.usage, result.usage);
+    return result;
+  }
+
+  /** One fresh attempt after a failure that says nothing about the work. */
+  async _runWorkerWithRetry(active, prompt, options = {}) {
+    const result = await this._runWorker(active, prompt, options);
+    if (active.isGeneral || !TRANSIENT_WORKER_CODES.has(result?.code) || active.cancelRequested || active.shutdownRequested) return result;
+    await this._progress(active, { message: "The worker stopped unexpectedly; trying once more.", code: result.code }, "worker_retry");
+    return this._runWorker(active, `${prompt}\n\nA previous attempt at this task stopped unexpectedly. Check what is already in the workspace before continuing.`, { ...options, sessionId: `${active.runId}-retry` });
   }
 
   _progress(active, data, type = "progress") {
@@ -402,22 +504,32 @@ export class AssistantWorkerService {
 
   async _runManagedTask(active, task) {
     const request = task.input.metadata.sourceRequest;
+    const understanding = task.input.metadata.understanding ?? null;
     let plan = task.history.findLast((event) => event.type === "manager_plan")?.plan;
     if (!plan) {
-      await this._progress(active, { phase: "planning", message: "Working out the goal and assignments." });
+      await this._progress(active, { phase: "planning", message: understanding ? "Breaking the work into assignments." : "Working out the goal and assignments." });
       active.controller = new AbortController();
-      try { plan = normalizeTaskPlan(await this.planner({ taskId: task.taskId, request, context: task.input.context, signal: active.controller.signal }), request); }
+      try { plan = normalizeTaskPlan(await this.planner({ taskId: task.taskId, request, context: task.input.context, understanding, signal: active.controller.signal }), request, understanding); }
       catch (error) {
         if (active.cancelRequested || active.shutdownRequested) throw error;
-        plan = normalizeTaskPlan(null, request);
+        plan = normalizeTaskPlan(null, request, understanding);
         plan.reason = "Planning unavailable; continuing with one execution agent.";
       } finally { active.controller = null; }
       await this._progress(active, { plan }, "manager_plan");
     }
-    active.plan = plan;
+    active.plan = normalizeTaskPlan(plan, request, understanding);
+    const sharedPath = this._sharedPath(task);
+    if (sharedPath) {
+      await writeSharedFiles(sharedPath, {
+        "BRIEF.md": renderBrief(active.plan, request),
+        "CONTEXT.md": task.input.context ?? "",
+        "REVIEW.md": renderReviews([])
+      });
+      await this._updateTeam(task);
+    }
     if (!plan.subtasks.length) {
       await this._progress(active, { phase: "working", message: "An agent is carrying out the request." });
-      return this._runWorker(active, executionPrompt({ request, plan }));
+      return this._runWorker(active, executionPrompt({ request, plan: active.plan, sharedPath }));
     }
     await this._progress(active, { phase: "delegating", message: `${plan.subtasks.length} agents are working on independent parts of the goal.` });
     const children = await Promise.all(plan.subtasks.map(async (assignment, index) => {
@@ -428,14 +540,17 @@ export class AssistantWorkerService {
         let child = await this.supervisor.getTask(taskId).catch(() => null);
         if (!child) {
           child = await this.submitTask({
-            taskId, capability: "openclaw-general-v1", workspace: taskId,
+            taskId, capability: "openclaw-general-v1",
+            ...(task.input.sharedWorkspace ? { sharedWorkspace: task.input.sharedWorkspace } : { workspace: taskId }),
             context: `${task.input.context}\n\n# Assignment\n\n${assignment.instruction}`,
-            prompt: executionPrompt({ request, plan, assignment: `${assignment.instruction}${previous ? `\nPrevious attempt failed: ${previous.error?.message}. Its workspace is ${resolve(this.workspaceRoot, previous.input.workspace)}. Inspect that work before retrying; do not repeat completed external actions.` : ""}` }),
+            prompt: executionPrompt({ request, plan: active.plan, sharedPath, assignment: `${assignment.instruction}${previous ? `\nPrevious attempt failed: ${previous.error?.message}. Its workspace is ${resolve(this.workspaceRoot, previous.input.workspace)}. Inspect that work before retrying; do not repeat completed external actions.` : ""}` }),
             metadata: { parentTaskId: task.taskId, title: assignment.title, conversationId: task.input.metadata.conversationId, sourceRequest: assignment.instruction, retryOf: previous?.taskId ?? null, attempt, verification: {} }
           });
+          await this._updateTeam(task);
         } else if (child.status === "queued") this._dispatch(taskId);
         if (active.cancelRequested) await this.cancelTask({ taskId, reason: "parent-cancelled" });
         child = await this.waitForTask(taskId);
+        await this._updateTeam(task);
         if (child.status !== "failed") return child;
         previous = child;
         if (!assignment.retrySafe) return child;
@@ -461,7 +576,31 @@ export class AssistantWorkerService {
     }));
     // Synthesis is a different stage from execution; never reuse an old answer
     // that was returned before these child results became available.
-    return this._runWorker(active, executionPrompt({ request, plan, children: summaries }), { reuseCompleted: false });
+    return this._runWorker(active, executionPrompt({ request, plan: active.plan, children: summaries, sharedPath }), { reuseCompleted: false });
+  }
+
+  _sharedPath(task) {
+    return task.input.sharedWorkspace ? resolve(this.workspaceRoot, relativePath(task.input.sharedWorkspace, "sharedWorkspace")) : null;
+  }
+
+  /** Rewrites TEAM.md from supervisor state, so it never drifts from the truth. */
+  async _updateTeam(rootTask) {
+    const sharedPath = this._sharedPath(rootTask);
+    if (!sharedPath) return;
+    const tasks = await this.supervisor.listTasks();
+    const team = [rootTask, ...tasks.filter((item) => item.input.metadata?.parentTaskId === rootTask.taskId)].map((item) => {
+      const current = tasks.find((candidate) => candidate.taskId === item.taskId) ?? item;
+      return {
+        taskId: current.taskId,
+        title: current.input.metadata?.parentTaskId ? current.input.metadata.title : "Lead agent (combines and delivers)",
+        status: current.status,
+        retryOf: current.input.metadata?.retryOf ?? null,
+        workspacePath: resolve(this.workspaceRoot, current.input.workspace),
+        assignment: current.input.metadata?.parentTaskId ? current.input.metadata.sourceRequest : null,
+        summary: current.result?.report ? `${current.result.report.outcome}: ${current.result.report.answer.slice(0, 280)}` : current.error?.message ?? null
+      };
+    });
+    await writeSharedFiles(sharedPath, { "TEAM.md": renderTeam(team) }).catch(() => {});
   }
 
   async _execute(active) {
@@ -472,6 +611,10 @@ export class AssistantWorkerService {
       const task = await this.supervisor.getTask(taskId);
       if (task.status !== "queued") return task;
       const profile = this._profile(task.input.capability);
+      active.task = task;
+      active.profile = profile;
+      active.usage = emptyUsage();
+      active.round = 1;
       active.isGeneral = profile.capability === "openclaw-general-v1";
       await this._prepareTaskInput(taskId, profile, task.input);
       lease = await this.supervisor.leaseTask({ taskId, workerId: this.workerId });
@@ -488,30 +631,30 @@ export class AssistantWorkerService {
       ensurePrivateDirectorySync(sessionDir);
       const contextPath = profile.requireContext ? join(workspacePath, "CONTEXT.md") : null;
       active.adapter = await this.adapterFactory({ profile, task, workspacePath, sessionDir, contextPath });
-      let result = profile.capability === "openclaw-general-v1" && task.input.metadata?.managerMode
+      const artifactBefore = await this._artifactDigest(task, workspacePath);
+      let result = active.isGeneral && task.input.metadata?.managerMode
         ? await this._runManagedTask(active, task)
-        : await this._runWorker(active, task.input.prompt);
+        : await this._runWorkerWithRetry(active, task.input.prompt);
       if (active.shutdownRequested) return this.supervisor.getTask(taskId);
       if (result.status === "cancelled") {
         return await this.supervisor.cancelTask({ taskId, reason: result.message ?? "worker-cancelled" });
       }
-      if (result.status !== "completed") {
-        return await this.supervisor.failTask({ taskId, runId, fencingToken: lease.fencingToken, error: { code: result.code ?? "WORKER_ERROR", message: result.message ?? "Worker failed" } });
+      // A general agent stopped at its budget keeps whatever it produced;
+      // review decides whether that is usable. Other profiles fail closed.
+      const stoppedAtBudget = result.status === "budget_exceeded" && active.isGeneral && result.text;
+      if (result.status !== "completed" && !stoppedAtBudget) {
+        return await this.supervisor.failTask({ taskId, runId, fencingToken: lease.fencingToken, error: workerError(result) });
       }
-      const totalTokens = Number(result.usage?.totalTokens ?? 0);
-      const totalCost = Number(result.usage?.cost?.total ?? 0);
-      const toolCalls = (result.events ?? []).filter((event) => event.type === "tool_execution_start").length;
-      if ((profile.budget.maxTotalTokens && totalTokens > profile.budget.maxTotalTokens) ||
-          (profile.budget.maxCostUsd && totalCost > profile.budget.maxCostUsd) ||
-          (profile.budget.maxToolCalls >= 0 && toolCalls > profile.budget.maxToolCalls)) {
-        throw codedError("WORKER_BUDGET_EXCEEDED", "The worker exceeded its reviewed task budget", { totalTokens, totalCost, toolCalls });
-      }
-      if (profile.structuredOutput === "r1-content-package-json") {
-        await this._materializeR1StructuredOutput(task, result.text, workspacePath);
+      const exceeded = active.isGeneral ? null : exceededBudget(active.usage, profile.budget);
+      if (exceeded) {
+        throw codedError("WORKER_BUDGET_EXCEEDED", "The worker exceeded its reviewed task budget", { totalTokens: active.usage.budgetTokens, totalCost: active.usage.costUsd, toolCalls: active.usage.toolCalls });
       }
       let report = null;
-      if (profile.capability === "openclaw-general-v1") {
-        ({ result, report } = await this._finishGeneralResult(active, task, result, workspacePath));
+      let review = null;
+      if (active.isGeneral) {
+        ({ result, report } = await this._finishGeneralResult(active, task, { ...result, stoppedAtBudget: Boolean(stoppedAtBudget) }, workspacePath));
+      } else {
+        ({ result, review } = await this._reviewArtifactResult(active, task, result, workspacePath, artifactBefore));
       }
       if (this.settlementDelayMs > 0) {
         await new Promise((resolve) => {
@@ -523,12 +666,12 @@ export class AssistantWorkerService {
         active.settlementTimer = null;
         if (active.shutdownRequested) return this.supervisor.getTask(taskId);
       }
-      const receipts = report ? await this._materializeReportedDeliverables(task, report, workspacePath) : await this._materializeArtifacts(task, result);
+      const receipts = report ? await this._materializeReportedDeliverables(task, report, workspacePath) : await this._materializeArtifacts(task, workspacePath);
       return await this.supervisor.completeTask({
         taskId,
         runId,
         fencingToken: lease.fencingToken,
-        result: { text: report?.answer ?? result.text, report, usage: result.usage ?? null, profile: profile.capability },
+        result: { text: report?.answer ?? result.text, report, review, usage: { ...active.usage }, profile: profile.capability },
         artifacts: receipts,
       });
     } catch (error) {
@@ -545,6 +688,104 @@ export class AssistantWorkerService {
       }
       return current ?? { taskId, status: "failed", error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed" } };
     }
+  }
+
+  async _artifactDigest(task, workspacePath) {
+    const sourcePath = task.input.artifact?.sourcePath;
+    if (!sourcePath) return null;
+    try {
+      const workspace = await ScopedWorkspace.open(workspacePath);
+      return createHash("sha256").update(await workspace.read(sourcePath)).digest("hex");
+    } catch { return null; }
+  }
+
+  async _review(active, task, { request, brief, report, workspacePath, hostNotes = [], sessionPath = null }) {
+    const round = active.round;
+    const maxRounds = active.maxRounds;
+    await this.supervisor.beginVerification({ taskId: task.taskId, runId: active.runId, fencingToken: active.lease.fencingToken, round });
+    if (active.isGeneral) await this._progress(active, { phase: "checking", message: round > 1 ? `Reviewing the revised result (round ${round}).` : "Checking the result against the brief." });
+    let review;
+    try {
+      review = await this.reviewer({
+        taskId: task.taskId, request, brief, report, round, maxRounds, previousReviews: active.reviews, hostNotes,
+        localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionPath, workspacePath
+      });
+      review = { ...normalizeReviewShape(review), round };
+    } catch {
+      review = { verdict: "accept", pass: true, unavailable: true, round, criteria: [], missing: [], feedback: [], issues: [], caveats: ["EV's quality review was unavailable, so this result was not checked against the brief."], summary: "Review unavailable" };
+    }
+    active.reviews.push(review);
+    await this._progress(active, { round, verdict: review.verdict, intentMatch: review.intentMatch ?? null, summary: review.summary, missing: review.missing, feedback: review.feedback, unavailable: Boolean(review.unavailable) }, "review");
+    const sharedPath = this._sharedPath(task);
+    if (sharedPath) await writeSharedFiles(sharedPath, { "REVIEW.md": renderReviews(active.reviews) }).catch(() => {});
+    else if (workspacePath) await writeArtifact(workspacePath, "REVIEW.md", Buffer.from(renderReviews(active.reviews))).catch(() => {});
+    return review;
+  }
+
+  async _sendBack(active, task) {
+    active.round += 1;
+    await this.supervisor.resumeAfterReview({ taskId: task.taskId, runId: active.runId, fencingToken: active.lease.fencingToken, round: active.round });
+  }
+
+  _budgetSpent(active) {
+    const budget = active.isGeneral
+      ? { maxTotalTokens: active.plan?.budget?.maxTotalTokens ?? 0, maxCostUsd: 0, maxToolCalls: -1 }
+      : active.profile.budget;
+    return Boolean(exceededBudget(active.usage, budget));
+  }
+
+  /**
+   * Fixed-profile (Pi) tasks: EV reviews the produced file against the task's
+   * brief and sends it back with the reviewer's feedback until it is accepted
+   * or the review rounds run out. There are no structural checks; whether the
+   * file is good is the reviewer's call.
+   */
+  async _reviewArtifactResult(active, task, initial, workspacePath, artifactBefore) {
+    if (!this.reviewer || !task.input.artifact) return { result: initial, review: null };
+    const profile = active.profile;
+    const brief = task.input.brief ?? {
+      intent: task.input.metadata?.title ?? task.input.prompt,
+      goal: task.input.prompt,
+      successCriteria: task.input.metadata?.successCriteria ?? [],
+      qualityBar: task.input.metadata?.qualityBar ?? []
+    };
+    active.reviews = [];
+    active.maxRounds = Math.max(1, profile.review?.maxRounds ?? 1);
+    const request = task.input.metadata?.sourceRequest ?? task.input.prompt;
+    let result = initial;
+    let digestBefore = artifactBefore;
+    let review = null;
+    for (;;) {
+      if (profile.structuredOutput === "r1-content-package-json") await this._materializeR1StructuredOutput(task, result.text, workspacePath);
+      const hostNotes = [];
+      let contents = "";
+      try {
+        contents = await (await ScopedWorkspace.open(workspacePath)).read(task.input.artifact.sourcePath);
+        const digest = createHash("sha256").update(contents).digest("hex");
+        if (digest === digestBefore) hostNotes.push(`The deliverable ${task.input.artifact.sourcePath} was not written or changed in this round.`);
+        digestBefore = digest;
+      } catch { hostNotes.push(`The required deliverable ${task.input.artifact.sourcePath} does not exist.`); }
+      review = await this._review(active, task, {
+        request, brief, workspacePath, hostNotes,
+        report: { goal: brief.goal, outcome: contents ? "completed" : "blocked", answer: contents.slice(0, 12_000) || result.text || "", evidence: [], deliverables: [{ path: task.input.artifact.sourcePath, title: "Deliverable" }], checks: [], limitations: [] }
+      });
+      if (review.pass && contents) break;
+      if (active.round >= active.maxRounds || active.cancelRequested || active.shutdownRequested) {
+        if (!contents) throw codedError("DELIVERABLE_MISSING", "The worker did not produce its deliverable");
+        if (!review.pass) throw codedError("QUALITY_NOT_REACHED", `EV's review did not accept the result: ${review.summary || review.missing.join("; ")}`.slice(0, 500));
+        break;
+      }
+      await this._sendBack(active, task);
+      result = await this._runWorkerWithRetry(active, [
+        task.input.prompt,
+        `EV reviewed your deliverable ${task.input.artifact.sourcePath} and it is not ready yet (round ${active.round - 1} of ${active.maxRounds}). REVIEW.md in your workspace has the details.`,
+        review.missing.length ? `Missing:\n${review.missing.map((item) => `- ${item}`).join("\n")}` : "",
+        review.feedback.length ? `What to change:\n${review.feedback.map((item) => `- ${item}`).join("\n")}` : "",
+        "Revise the deliverable in place, keep what is already good, and check the finished file again."
+      ].filter(Boolean).join("\n\n"), { sessionId: `${active.runId}-r${active.round}` });
+      if (result.status !== "completed") throw codedError(result.code ?? "WORKER_ERROR", result.message ?? "The revision run failed");
+    }
+    return { result, review };
   }
 
   async _inspectDeliverables(report, workspacePath) {
@@ -567,54 +808,86 @@ export class AssistantWorkerService {
     return checks;
   }
 
+  /**
+   * The review loop for general agents. EV reviews the agent's report against
+   * the brief; when the reviewer asks for changes, its feedback goes back to
+   * the same agent session (which keeps its context and files) and the
+   * revised result is reviewed again, up to the brief's review rounds and
+   * token budget. Only an accepted result is delivered as completed. If the
+   * rounds or budget run out first, the best result is delivered as partial
+   * with exactly what is still missing.
+   */
   async _finishGeneralResult(active, task, initial, workspacePath) {
     const request = task.input.metadata?.sourceRequest ?? "";
+    const isChild = Boolean(task.input.metadata?.parentTaskId);
+    active.plan ??= normalizeTaskPlan(null, request);
+    active.reviews = [];
+    active.maxRounds = isChild ? 1 : active.plan.budget.maxReviewRounds;
+    const sharedPath = this._sharedPath(task);
     let result = initial;
     let best = null;
-    for (let attempt = 0; attempt <= 1; attempt++) {
+    let formatFixUsed = false;
+    let stopReason = initial.stoppedAtBudget ? "budget" : null;
+    for (;;) {
       let report = null;
-      let issues = [];
-      let quality = { pass: true, issues: [], caveats: [], skipped: true, summary: "Report structure and declared files checked." };
       try { report = validateOpenClawTaskReport(result.text, { ...task.input.metadata?.verification, strictEvidence: false }); }
-      catch (error) { if (error.code !== "TASK_REPORT_INVALID") throw error; issues = [error.message]; }
-      if (report) {
-        report.verification.childTasks = active.children ?? [];
-        const deliverables = await this._inspectDeliverables(report, workspacePath);
-        issues = [...report.verification.issues, ...deliverables.filter((item) => !item.verified).map((item) => `Declared deliverable ${item.path}: ${item.reason}.`)];
-        if (!task.input.metadata?.parentTaskId && report.outcome !== "blocked") {
-          await this._progress(active, { phase: "checking", message: "Checking the result against the goal." });
-          try {
-            quality = await this.reviewer({
-              taskId: task.taskId, request: `${request}\n\nSuccess criteria: ${JSON.stringify(active.plan?.successCriteria ?? [])}`, report,
-              localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")],
-              sessionPath: join(process.env.HOME, ".openclaw", "agents", "ev-worker", "sessions", `${task.taskId}.jsonl`),
-              workspacePath
-            });
-          } catch { quality = { pass: true, issues: [], caveats: ["The separate result review was unavailable; agent checks and file checks are shown."], summary: "Review unavailable", unavailable: true }; }
-          if (!quality.pass) issues.push(...(quality.issues?.length ? quality.issues : [quality.summary]));
-        }
-        report.verification = { ...report.verification, qualityGate: quality, deliverables, repairCount: attempt, successCriteria: active.plan?.successCriteria ?? [] };
-        best = { result, report, issues };
+      catch (error) { if (error.code !== "TASK_REPORT_INVALID") throw error; }
+      if (!report) {
+        // Format, not quality: one chance to restate the result as a report.
+        if (formatFixUsed || stopReason || active.cancelRequested || active.shutdownRequested) break;
+        formatFixUsed = true;
+        const repaired = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, formatOnly: true, round: active.round, maxRounds: active.maxRounds, sharedPath }), { reuseCompleted: false });
+        if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+        if (repaired.status === "budget_exceeded") stopReason = "budget";
+        else if (repaired.status !== "completed") break;
+        result = repaired;
+        continue;
       }
-      if (!issues.length || attempt === 1) break;
-      const prompt = [
-        "Correct these material gaps using your tools. Preserve successful work and supported coverage. Return a complete replacement JSON task report with goal, outcome, answer, evidence, deliverables, checks, limitations. If a criterion cannot be achieved, return an honest partial or blocked result instead of inventing support.",
-        `Original request:\n${request}`, `Issues:\n${JSON.stringify(issues)}`,
-        ...(best ? [`Previous useful result:\n${JSON.stringify(best.report)}`] : [])
-      ].join("\n\n");
-      const repaired = await this._runWorker(active, prompt, { reuseCompleted: false });
-      if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
-      if (repaired.status !== "completed") {
-        if (!best) throw codedError(repaired.code ?? "WORKER_ERROR", repaired.message ?? "Worker could not produce a report");
-        best.issues.push(`Correction attempt did not finish: ${repaired.message ?? repaired.status}.`);
+      report.verification.childTasks = active.children ?? [];
+      const deliverables = await this._inspectDeliverables(report, workspacePath);
+      // Host observations go to the reviewer as evidence, not as hard rules.
+      const hostNotes = [...report.verification.issues, ...deliverables.filter((item) => !item.verified).map((item) => `Declared deliverable ${item.path}: ${item.reason}.`)];
+      let review = null;
+      if (!isChild && report.outcome !== "blocked") {
+        review = await this._review(active, task, {
+          request, brief: active.plan, report, workspacePath, hostNotes,
+          sessionPath: join(process.env.HOME ?? "", ".openclaw", "agents", "ev-worker", "sessions", `${task.taskId}.jsonl`)
+        });
+      }
+      // A file the agent claims but that does not exist can never be
+      // delivered, whatever the review says; that is integrity, not taste.
+      const missingFiles = deliverables.filter((item) => !item.verified).map((item) => `Declared deliverable ${item.path}: ${item.reason}.`);
+      const unresolved = [...new Set([...(review ? (review.pass ? [] : [...review.missing, ...review.feedback]) : report.verification.issues), ...missingFiles])];
+      report.verification = {
+        ...report.verification, deliverables, hostNotes,
+        qualityGate: review ?? { pass: !hostNotes.length, skipped: true, issues: hostNotes, caveats: [], summary: isChild ? "Reviewed together with the combined result." : "Blocked results are delivered as reported." },
+        reviews: active.reviews.map(({ round, verdict, intentMatch, summary, missing, feedback, unavailable }) => ({ round, verdict, intentMatch: intentMatch ?? null, summary, missing, feedback, unavailable: Boolean(unavailable) })),
+        repairCount: active.round - 1,
+        successCriteria: active.plan.successCriteria
+      };
+      best = { result, report, issues: unresolved };
+      if (!unresolved.length || isChild || report.outcome === "blocked") break;
+      if (stopReason || active.round >= active.maxRounds || this._budgetSpent(active)) {
+        stopReason ??= active.round >= active.maxRounds ? "rounds" : "budget";
         break;
       }
-      result = repaired;
+      if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+      await this._sendBack(active, task);
+      const revised = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, review: review ?? { missing: hostNotes }, round: active.round - 1, maxRounds: active.maxRounds, sharedPath }), { reuseCompleted: false });
+      if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+      if (revised.status === "budget_exceeded" && revised.text) { stopReason = "budget"; result = revised; continue; }
+      if (revised.status !== "completed") {
+        best.issues.push(`The revision round did not finish: ${revised.message ?? revised.status}.`);
+        break;
+      }
+      result = revised;
     }
     if (!best) throw codedError("TASK_REPORT_INVALID", "The worker could not produce a usable task report after one correction.");
     const { report } = best;
     if (best.issues.length && report.outcome === "completed") report.outcome = "partial";
+    if (stopReason === "budget" && best.issues.length) best.issues.push("EV stopped revising because this task reached its budget.");
     report.verification.unresolvedIssues = best.issues;
+    report.verification.stopReason = best.issues.length ? stopReason ?? "unfinished" : null;
     report.limitations = [...new Set([...report.limitations, ...(report.verification.qualityGate.caveats ?? []), ...best.issues])].slice(0, 14);
     return best;
   }
@@ -637,68 +910,11 @@ export class AssistantWorkerService {
     return receipts;
   }
 
-  async _materializeArtifacts(task, result) {
+  async _materializeArtifacts(task, workspacePath = resolve(this.workspaceRoot, relativePath(task.input.workspace, "workspace"))) {
     const spec = task.input.artifact;
     if (!spec) return [];
-    const workspacePath = resolve(this.workspaceRoot, relativePath(task.input.workspace, "workspace"));
     const workspace = await ScopedWorkspace.open(workspacePath);
     const contents = Buffer.from(await workspace.read(spec.sourcePath));
-    if (task.input.capability === "extended-launch-brief-v1") {
-      const text = contents.toString("utf8");
-      const requiredHeadings = ["## Current state", "## Evidence", "## Risks", "## Next actions"];
-      const missing = requiredHeadings.filter((heading) => !text.includes(heading));
-      const usedTools = [...new Set((result.events ?? [])
-        .filter((event) => event.type?.startsWith("tool_execution"))
-        .map((event) => event.toolName ?? event.tool_name ?? event.name)
-        .filter(Boolean))];
-      const requiredTools = ["workspace_read", "workspace_write", "workspace_run"];
-      if (contents.byteLength < 240 || missing.length || requiredTools.some((tool) => !usedTools.includes(tool))) {
-        throw codedError("EXTENDED_ARTIFACT_INVALID", "The brief is missing required structure or scoped-tool receipts", { missing, usedTools });
-      }
-    }
-    if (task.input.capability === "standing-brief-v1") {
-      const text = contents.toString("utf8");
-      const requiredHeadings = ["## Source change", "## Impact", "## Prepared response", "## Evidence"];
-      const missing = requiredHeadings.filter((heading) => !text.includes(heading));
-      const usedTools = [...new Set((result.events ?? [])
-        .filter((event) => event.type?.startsWith("tool_execution"))
-        .map((event) => event.toolName ?? event.tool_name ?? event.name)
-        .filter(Boolean))];
-      if (contents.byteLength < 200 || missing.length || !usedTools.includes("workspace_read") || !usedTools.includes("workspace_write")) {
-        throw codedError("STANDING_ARTIFACT_INVALID", "The standing brief is missing required structure or scoped-tool receipts", { missing, usedTools });
-      }
-    }
-    if (task.input.capability === "r1-content-package-v1") {
-      const text = contents.toString("utf8");
-      const requiredHeadings = [
-        "## Interpreted brief",
-        "## Build-in-public post",
-        "## Short reel outline",
-        "## Review and revision receipt",
-        "## Assumptions"
-      ];
-      const missing = requiredHeadings.filter((heading) => !text.includes(heading));
-      let draft;
-      let review;
-      try {
-        [draft, review] = await Promise.all([
-          workspace.read("output/draft.md").then((value) => Buffer.from(value)),
-          workspace.read("output/review.md").then((value) => Buffer.from(value))
-        ]);
-      } catch {
-        throw codedError("R1_ARTIFACT_INVALID", "The content package is missing its draft or review receipt");
-      }
-      const reviewText = review.toString("utf8");
-      const missingReview = ["## Issues found", "## Revision decisions"].filter((heading) => !reviewText.includes(heading));
-      const unchanged = createHash("sha256").update(draft).digest("hex") === createHash("sha256").update(contents).digest("hex");
-      if (contents.byteLength < 500 || draft.byteLength < 300 || review.byteLength < 160 || missing.length || missingReview.length || unchanged) {
-        throw codedError("R1_ARTIFACT_INVALID", "The content package did not prove a complete draft-review-revision cycle", {
-          missing,
-          missingReview,
-          unchanged
-        });
-      }
-    }
     const relativeName = `${task.taskId}/${spec.relativePath ?? basename(spec.sourcePath)}`;
     relativePath(relativeName, "artifact destination");
     await writeArtifact(this.supervisor.artifactRoot, relativeName, contents);
