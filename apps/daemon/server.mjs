@@ -26,6 +26,7 @@ import { createExplainer } from "./lib/explainer.mjs";
 import { createExperimentRunner } from "./lib/experiment-runner.mjs";
 import { inspectAttention, redactCommandPreview, stripTerminalControls, terminalDigest } from "./lib/attention.mjs";
 import { assertLoopbackHost, ensurePrivateDirectorySync, ensurePrivateFileSync } from "./lib/file-permissions.mjs";
+import { localRequestRejection } from "./lib/local-request-guard.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const webRoot = join(projectRoot, "apps", "web");
@@ -1000,8 +1001,12 @@ async function serveStatic(response, url) {
 }
 
 const server = createServer(async (request, response) => {
-  const url = new URL(request.url, `http://${request.headers.host ?? `${config.host}:${config.port}`}`);
+  const rejection = localRequestRejection({ host: request.headers.host, origin: request.headers.origin, port: config.port });
+  if (rejection) return json(response, 403, { error: rejection, code: "NOT_LOCAL_REQUEST" });
+  let url;
   try {
+    try { url = new URL(request.url, `http://${request.headers.host}`); }
+    catch { throw Object.assign(new Error("Invalid request URL"), { statusCode: 400 }); }
     if (url.pathname.startsWith("/api/")) {
       const handled = await handleApi(request, response, url);
       if (handled === false) return json(response, 404, { error: "API route not found" });
@@ -1009,7 +1014,7 @@ const server = createServer(async (request, response) => {
     }
     await serveStatic(response, url);
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] ${request.method} ${url.pathname}: ${error.message}`);
+    console.error(`[${new Date().toISOString()}] ${request.method} ${url?.pathname ?? request.url}: ${error.message}`);
     const codedStatus = {
       TASK_NOT_FOUND: 404,
       ARTIFACT_NOT_FOUND: 404,
