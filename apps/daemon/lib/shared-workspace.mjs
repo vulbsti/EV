@@ -129,7 +129,7 @@ export function renderBrief(brief, request) {
     ...(brief.updates?.length ? ["## Later from the user (overrides the above where they differ)", "", bullet(brief.updates), ""] : []),
     "## Budget",
     "",
-    `- Review rounds: up to ${brief.budget?.maxReviewRounds ?? 1}`,
+    "- Review: until EV accepts the result, or asks the user when the work is stuck",
     ...(brief.budget?.maxTotalTokens ? [`- Tokens per agent (excluding cache reads): ${brief.budget.maxTotalTokens.toLocaleString("en-US")}`] : []),
     ""
   ].join("\n");
