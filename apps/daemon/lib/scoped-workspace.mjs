@@ -106,16 +106,26 @@ async function safeWritePath(root, relativePath) {
   return resolvedPath.lexical;
 }
 
-async function findBubblewrap() {
-  for (const candidate of ["/usr/bin/bwrap", "/bin/bwrap"]) {
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Continue to the next conventional location.
+let bubblewrapProbe = null;
+
+// An installed bwrap can still be unusable, for example where AppArmor
+// restricts unprivileged user namespaces (Ubuntu 24.04), so it is run once
+// with the namespaces EV uses before it is trusted.
+function findBubblewrap() {
+  bubblewrapProbe ??= (async () => {
+    for (const candidate of ["/usr/bin/bwrap", "/bin/bwrap"]) {
+      try {
+        await access(candidate, constants.X_OK);
+      } catch {
+        continue; // Try the next conventional location.
+      }
+      const probe = spawn(candidate, ["--die-with-parent", "--unshare-net", "--unshare-pid", "--ro-bind", "/", "/", "--", "true"], { stdio: "ignore" });
+      const [code] = await once(probe, "close").catch(() => [1]);
+      return code === 0 ? candidate : null;
     }
-  }
-  return null;
+    return null;
+  })();
+  return bubblewrapProbe;
 }
 
 function commandPathLooksUnsafe(argument) {
