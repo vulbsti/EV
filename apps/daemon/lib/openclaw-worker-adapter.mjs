@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -123,13 +123,13 @@ function accumulateUsage(events, state) {
  * own user (so files it writes stay theirs) and never as root on the host.
  * Paths are mounted at the same absolute location, so prompts stay valid.
  */
-export function openClawCommand({ executable, args, sandbox, workspacePath, sessionDir, homeDir, runId, taskId }) {
+export function openClawCommand({ executable, args, sandbox, workspacePath, sessionDir, homeDir, runId, taskId, containerName = `ev-openclaw-${runId.slice(0, 12)}` }) {
   if (!sandbox) return { command: executable, args };
   const mounts = [...new Set([sandbox.mountRoot, homeDir])].flatMap((path) => ["-v", `${path}:${path}`]);
   return {
     command: "docker",
     args: [
-      "run", "--rm", "--init", "--name", `ev-openclaw-${runId.slice(0, 12)}`, "--label", `ev.task=${taskId}`,
+      "run", "--rm", "--init", "--name", containerName, "--label", `ev.task=${taskId}`,
       "--user", `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
       "--cpus", String(sandbox.cpus ?? 2), "--memory", sandbox.memory ?? "4g", "--pids-limit", "1024", "--shm-size", "1g",
       "--security-opt", "no-new-privileges", "--cap-drop", "ALL",
@@ -156,9 +156,11 @@ function removeTaskContainers(taskId) {
 }
 
 function terminate(run, signal = "SIGTERM") {
+  // A finished run leaves containers alone: the task's next run (a wrap-up
+  // or revision) may already have started under the same label.
+  if (!run.child || run.child.exitCode !== null || run.child.signalCode !== null) return;
   // Signals reach the docker client, not necessarily the container.
-  if (run.sandboxed && signal === "SIGKILL") void removeTaskContainers(run.taskId);
-  if (!run.child || run.child.exitCode !== null) return;
+  if (run.sandboxed && signal === "SIGKILL") spawn("docker", ["rm", "-f", run.containerName], { stdio: "ignore" }).on("error", () => {});
   try {
     if (process.platform !== "win32" && run.child.pid) process.kill(-run.child.pid, signal);
     else run.child.kill(signal);
@@ -193,14 +195,7 @@ export class OpenClawWorkerAdapter {
     const configPath = join(this.sessionDir, "openclaw-task-config.json");
     await writeFile(configPath, JSON.stringify(openClawTaskConfig({ taskId: this.taskId, workspacePath: this.workspacePath, searchPlugin: searchPluginPath(this.sandbox) })), { mode: 0o600 });
     const transcript = (afterSeq) => readTranscript({ homeDir: this.homeDir, sessionId: this.taskId, afterSeq });
-    // A run that was just stopped can still hold the store. Reading it as
-    // empty would count the earlier runs' usage against this one.
-    let earlier = transcript(0);
-    for (let wait = 0; earlier.busy && wait < 20; wait++) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      earlier = transcript(0);
-    }
-    if (earlier.busy) return { runId, completion: Promise.resolve({ status: "failed", code: "OPENCLAW_STORE_BUSY", message: "OpenClaw's session store stayed locked by an earlier run" }) };
+    const earlier = transcript(0);
     if (reuseCompleted && earlier.events.length) {
       const prior = completedResult(earlier.events);
       if (prior?.status === "completed") return { runId, completion: Promise.resolve(prior) };
@@ -209,8 +204,10 @@ export class OpenClawWorkerAdapter {
       ensurePrivateDirectorySync(this.homeDir);
       await removeTaskContainers(this.taskId);
     }
+    // Each start gets its own container name: runs of one task can share a run id.
+    const containerName = `ev-openclaw-${runId.slice(0, 12)}-${randomBytes(3).toString("hex")}`;
     const { command, args } = openClawCommand({
-      executable: this.executable, sandbox: this.sandbox, workspacePath: this.workspacePath, sessionDir: this.sessionDir, homeDir: this.homeDir, runId, taskId: this.taskId,
+      containerName, executable: this.executable, sandbox: this.sandbox, workspacePath: this.workspacePath, sessionDir: this.sessionDir, homeDir: this.homeDir, runId, taskId: this.taskId,
       args: ["agent", "--local", "--agent", "ev-worker", "--session-id", this.taskId, "--message", prompt, "--json", "--timeout", String(Math.ceil(this.timeoutMs / 1000))]
     });
     const child = spawn(command, args, {
@@ -219,7 +216,7 @@ export class OpenClawWorkerAdapter {
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32"
     });
-    const run = { runId, child, cancelled: false, timedOut: false, budgetExceeded: null, taskId: this.taskId, sandboxed: Boolean(this.sandbox) };
+    const run = { runId, child, cancelled: false, timedOut: false, budgetExceeded: null, taskId: this.taskId, sandboxed: Boolean(this.sandbox), containerName };
     // The final answer is normally read from the session file; stdout is only a
     // fallback envelope. If it overflows, say so instead of failing to parse it.
     let stdout = "";
