@@ -98,14 +98,60 @@ async function observeLocalSource(source, localRoots) {
 
 const WEB_TOOLS = new Set(["web_fetch", "web_search"]);
 
+/** Parses JSON, or returns null. */
+function json(text) {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+/**
+ * What a web search or fetch actually returned, in a few lines. OpenClaw wraps
+ * web results in an untrusted-content banner and a JSON envelope, so the raw
+ * first lines say nothing about the page.
+ */
+function answerTerms(answer) {
+  const found = String(answer ?? "").match(/[$€£]\s?\d[\d.,]*|\b[A-Z][A-Za-z0-9+.-]{2,}(?:\s+[A-Z][A-Za-z0-9+.-]{2,})*/g) ?? [];
+  return [...new Set(found.map((term) => term.toLowerCase()))].slice(0, 40);
+}
+
+/** The opening of a page, plus the sentences that mention what the answer claims. */
+function pageExcerpt(text, terms) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  const sentences = flat.split(/(?<=[.!?])\s+/);
+  const matching = sentences.filter((sentence, index) => index > 0 && terms.some((term) => sentence.toLowerCase().includes(term))).slice(0, 6);
+  return [flat.slice(0, 800), ...matching];
+}
+
+function webExcerpt(output, terms = []) {
+  const lines = output.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === "---");
+  let body = (start >= 0 && lines.slice(0, start).some((line) => line.includes("EXTERNAL_UNTRUSTED_CONTENT")) ? lines.slice(start + 1) : lines)
+    .filter((line) => !line.includes("END_EXTERNAL_UNTRUSTED_CONTENT")).join("\n").trim();
+  let value = json(body);
+  for (let depth = 0; depth < 3 && value && typeof value === "object"; depth++) {
+    const inner = value.result?.content?.find?.((part) => typeof part?.text === "string")?.text ?? (typeof value.result === "string" ? value.result : null);
+    if (inner === null) break;
+    body = inner;
+    value = json(inner);
+  }
+  if (Array.isArray(value?.results)) {
+    return value.results.slice(0, 6).map((item) => [item.title, item.url, item.snippet ?? item.description].filter(Boolean).join(" — "));
+  }
+  if (value && typeof value === "object") {
+    const head = [value.status, value.finalUrl ?? value.url, value.title].filter(Boolean).join(" · ");
+    return [head, ...pageExcerpt(String(value.text ?? value.content ?? ""), terms)].filter(Boolean);
+  }
+  return pageExcerpt(body, terms).filter(Boolean);
+}
+
 /** A tool call as the agent made it; OpenClaw may wrap tools found through tool_search in `tool_call`. */
 function unwrapCall(part) {
-  const wrapped = part.name === "tool_call" ? /:([a-z_]+)$/.exec(String(part.arguments?.id ?? ""))?.[1] : null;
+  const wrapped = part.name === "tool_call" ? /(?:^|:)([a-z_]+)$/.exec(String(part.arguments?.id ?? ""))?.[1] : null;
   return wrapped ? { name: wrapped, arguments: part.arguments?.args ?? {} } : { name: part.name, arguments: part.arguments ?? {} };
 }
 
 /** Completed commands and web fetches/searches from the agent's own transcript events (newest 20). */
-function observeExecution(sessionEvents = []) {
+function observeExecution(sessionEvents = [], answer = "") {
+  const terms = answerTerms(answer);
   const calls = new Map();
   const sessions = new Map();
   const receipts = new Map();
@@ -143,7 +189,7 @@ function observeExecution(sessionEvents = []) {
       const output = (message.content ?? []).filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n");
       if (target) receipts.set(`${call.name}\n${target}`, {
         tool: call.name, command: redactEvidence(target), isError: Boolean(message.isError), outputSha256: createHash("sha256").update(output).digest("hex"),
-        summaryLines: output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 4).map((line) => redactEvidence(line.slice(0, 280)))
+        summaryLines: webExcerpt(output, terms).map((line) => redactEvidence(String(line).slice(0, 600)))
       });
     } else if (message.toolName === "exec" && call?.name === "exec") {
       if (message.details?.status === "running" && message.details.sessionId) sessions.set(message.details.sessionId, call.arguments);
@@ -263,7 +309,7 @@ export async function reviewOpenClawReport({
   }
   const [sources, execution] = await Promise.all([
     Promise.all(selected.map((source) => observeSource(source, request, report.answer, fetchImpl, localRoots))),
-    observeExecution(sessionEvents)
+    observeExecution(sessionEvents, report.answer)
   ]);
   const reviewReport = { ...report, evidence: evidence.map(({ quotes, jsonPointers, ...source }) => source) };
   const notes = [
