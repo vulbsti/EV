@@ -100,7 +100,7 @@ const WEB_TOOLS = new Set(["web_fetch", "web_search"]);
 
 /** A tool call as the agent made it; OpenClaw may wrap tools found through tool_search in `tool_call`. */
 function unwrapCall(part) {
-  const wrapped = part.name === "tool_call" ? /:([a-z_]+)$/.exec(String(part.arguments?.id ?? ""))?.[1] : null;
+  const wrapped = part.name === "tool_call" ? /(?:^|:)([a-z_]+)$/.exec(String(part.arguments?.id ?? ""))?.[1] : null;
   return wrapped ? { name: wrapped, arguments: part.arguments?.args ?? {} } : { name: part.name, arguments: part.arguments ?? {} };
 }
 

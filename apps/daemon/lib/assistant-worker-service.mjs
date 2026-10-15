@@ -1056,8 +1056,9 @@ export class AssistantWorkerService {
     }
     if (!best) throw codedError("TASK_REPORT_INVALID", "The worker could not produce a usable task report after one correction.");
     const { report } = best;
+    // A budget stop is unfinished work even when the reviewer liked the write-up.
+    if (stopReason === "budget") best.issues.push("EV stopped this task because it reached its budget.");
     if (best.issues.length && report.outcome === "completed") report.outcome = "partial";
-    if (stopReason === "budget" && best.issues.length) best.issues.push("EV stopped revising because this task reached its budget.");
     report.verification.unresolvedIssues = best.issues;
     report.verification.stopReason = best.issues.length ? stopReason ?? "unfinished" : null;
     report.limitations = [...new Set([...report.limitations, ...(report.verification.qualityGate.caveats ?? []), ...best.issues])].slice(0, 14);

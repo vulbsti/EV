@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ensurePrivateDirectorySync } from "./file-permissions.mjs";
@@ -15,12 +16,23 @@ const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 const workerModel = () => process.env.EV_OPENCLAW_MODEL || "gpt-6-luna";
 const workerApi = () => process.env.EV_OPENCLAW_API || "openai-responses";
 
+// Key-free web search. The ev-openclaw image bakes the DuckDuckGo plugin in;
+// on the host, EV_OPENCLAW_SEARCH_PLUGIN names an npm-installed copy
+// (npm i --prefix <dir> @openclaw/duckduckgo-plugin, then
+// <dir>/node_modules/@openclaw/duckduckgo-plugin).
+const IMAGE_SEARCH_PLUGIN = "/usr/local/lib/node_modules/@openclaw/duckduckgo-plugin";
+export function searchPluginPath(sandbox, env = process.env) {
+  if (sandbox) return IMAGE_SEARCH_PLUGIN;
+  const path = env.EV_OPENCLAW_SEARCH_PLUGIN;
+  return path && existsSync(path) ? path : null;
+}
+
 function stableSessionHeader(taskId) {
   const hex = createHash("sha256").update(taskId).digest("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-export function openClawTaskConfig({ taskId, workspacePath }) {
+export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null }) {
   const model = workerModel();
   const port = 24000 + (createHash("sha256").update(`browser:${taskId}`).digest().readUInt16BE(0) % 18000);
   return {
@@ -28,7 +40,9 @@ export function openClawTaskConfig({ taskId, workspacePath }) {
     browser: { enabled: true, headless: true, noSandbox: true },
     // EV owns child tasks and their lifecycle; nested OpenClaw sessions would
     // bypass the manager's worker limit, cancellation, and durable task state.
-    tools: { deny: ["sessions_spawn"] },
+    tools: { deny: ["sessions_spawn"], ...(searchPlugin ? { web: { search: { provider: "duckduckgo" } } } : {}) },
+    // A plugin loaded by path has no install record; allow names it as trusted.
+    ...(searchPlugin ? { plugins: { load: { paths: [searchPlugin] }, entries: { duckduckgo: { enabled: true } }, allow: ["duckduckgo"] } } : {}),
     agents: {
       defaults: {
         workspace: workspacePath,
@@ -177,7 +191,7 @@ export class OpenClawWorkerAdapter {
     }
     ensurePrivateDirectorySync(this.sessionDir);
     const configPath = join(this.sessionDir, "openclaw-task-config.json");
-    await writeFile(configPath, JSON.stringify(openClawTaskConfig({ taskId: this.taskId, workspacePath: this.workspacePath })), { mode: 0o600 });
+    await writeFile(configPath, JSON.stringify(openClawTaskConfig({ taskId: this.taskId, workspacePath: this.workspacePath, searchPlugin: searchPluginPath(this.sandbox) })), { mode: 0o600 });
     const transcript = (afterSeq) => readTranscript({ homeDir: this.homeDir, sessionId: this.taskId, afterSeq });
     const earlier = transcript(0);
     if (reuseCompleted && earlier.events.length) {

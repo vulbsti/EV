@@ -6,6 +6,6 @@ ARG OPENCLAW_VERSION=2026.10.3
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git python3 chromium fonts-liberation \
  && rm -rf /var/lib/apt/lists/* \
- && npm install -g --allow-scripts=@google/genai,esbuild,koffi,protobufjs,openclaw "openclaw@${OPENCLAW_VERSION}" \
+ && npm install -g --allow-scripts=@google/genai,esbuild,koffi,protobufjs,openclaw "openclaw@${OPENCLAW_VERSION}" "@openclaw/duckduckgo-plugin@${OPENCLAW_VERSION}" \
  && npm cache clean --force
 ENV CHROME_PATH=/usr/bin/chromium

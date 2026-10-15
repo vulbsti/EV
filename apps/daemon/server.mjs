@@ -113,6 +113,7 @@ function publicTask(task) {
     capability: task.input?.capability ?? null,
     title: task.input?.metadata?.title ?? "Background task",
     status: task.status,
+    outcome: task.result?.report?.outcome ?? null,
     run: task.run ? { runId: task.run.runId, startedAt: task.run.startedAt } : null,
     result: task.result,
     artifacts: task.artifacts,
