@@ -35,9 +35,10 @@ export function openClawTaskConfig({ taskId, workspacePath }) {
         // and then cleared (the last three turns are kept whole), and context
         // is checked before each model call inside a turn.
         contextPruning: { mode: "cache-ttl", ttl: "5m" },
-        compaction: { midTurnPrecheck: { enabled: true } }
+        compaction: { midTurnPrecheck: { enabled: true } },
+        model: { primary: `${PROVIDER}/${model}` }
       },
-      list: [{ id: "ev-worker", workspace: workspacePath, model: `${PROVIDER}/${model}` }]
+      entries: { "ev-worker": { workspace: workspacePath, model: { primary: `${PROVIDER}/${model}` } } }
     },
     models: {
       mode: "merge",

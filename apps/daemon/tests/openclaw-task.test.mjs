@@ -15,8 +15,8 @@ test("parallel tasks use distinct OpenCode sessions without storing the API key"
   assert.equal(provider.apiKey, "${OPENCODE_API}");
   assert.equal(provider.api, "openai-responses");
   assert.notEqual(provider.headers["x-opencode-session"], second.models.providers["opencode-go"].headers["x-opencode-session"]);
-  assert.equal(first.agents.list[0].model, "opencode-go/gpt-6-luna");
-  assert.equal(second.agents.list[0].workspace, "/tmp/agent-two");
+  assert.equal(first.agents.entries["ev-worker"].model.primary, "opencode-go/gpt-6-luna");
+  assert.equal(second.agents.entries["ev-worker"].workspace, "/tmp/agent-two");
   assert.deepEqual(first.tools.deny, ["sessions_spawn"]);
 });
 
