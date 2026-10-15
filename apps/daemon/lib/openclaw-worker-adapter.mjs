@@ -29,18 +29,25 @@ export function openClawTaskConfig({ taskId, workspacePath }) {
     // bypass the manager's worker limit, cancellation, and durable task state.
     tools: { deny: ["sessions_spawn"] },
     agents: {
-      defaults: { workspace: workspacePath },
+      defaults: {
+        workspace: workspacePath,
+        // Long tool loops stay affordable: old, large tool results are trimmed
+        // and then cleared (the last three turns are kept whole), and context
+        // is checked before each model call inside a turn.
+        contextPruning: { mode: "cache-ttl", ttl: "5m" },
+        compaction: { midTurnPrecheck: { enabled: true } }
+      },
       list: [{ id: "ev-worker", workspace: workspacePath, model: `${PROVIDER}/${model}` }]
     },
     models: {
       mode: "merge",
       providers: {
         [PROVIDER]: {
-          baseUrl: "https://opencode.ai/zen/go/v1",
+          baseUrl: workerApi() === "anthropic-messages" ? "https://opencode.ai/zen/go" : "https://opencode.ai/zen/go/v1",
           apiKey: "${OPENCODE_API}",
           api: workerApi(),
           headers: { "x-opencode-session": stableSessionHeader(taskId), "User-Agent": "ev-openclaw-prototype/0.1" },
-          models: [{ id: model, name: `${model} (OpenCode Go)`, reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272000, maxTokens: 16000 }]
+          models: [{ id: model, name: `${model} (OpenCode Go)`, reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272000, maxTokens: 16000, ...(workerApi().startsWith("openai") ? { compat: { supportsPromptCacheKey: true } } : {}) }]
         }
       }
     }
