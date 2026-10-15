@@ -7,6 +7,9 @@ import { join, resolve } from "node:path";
 
 export const projectRoot = resolve(import.meta.dirname, "../..");
 export const TERMINAL = new Set(["completed", "failed", "cancelled", "not_executable"]);
+// A task waiting for the person's answer is settled from the harness's point of
+// view: nothing more happens until someone replies.
+export const SETTLED = new Set([...TERMINAL, "waiting"]);
 
 async function freePort() {
   return new Promise((resolvePort, reject) => {
@@ -68,7 +71,7 @@ export async function settle(baseUrl, conversationId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const tasks = await tasksIn(baseUrl, conversationId);
-    if (tasks.every((task) => TERMINAL.has(task.status))) return { tasks, timedOut: false };
+    if (tasks.every((task) => SETTLED.has(task.status))) return { tasks, timedOut: false };
     await new Promise((done) => setTimeout(done, 2_000));
   }
   return { tasks: await tasksIn(baseUrl, conversationId), timedOut: true };

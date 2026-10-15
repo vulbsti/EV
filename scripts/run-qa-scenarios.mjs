@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Drives the real EV assistant through the scripted user timelines in qa/scenarios
-// and writes a transcript plus a scorecard for a human to grade. It does not
-// decide pass/fail on EV's wording; it only checks counts it can observe
-// (tasks started) and records memory so drift is visible between sessions.
+// and writes a transcript plus a scorecard. With --judge a separate model grades
+// the scorecard against intent; otherwise a human does. It records memory after
+// every session so drift is visible between sessions.
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
+import { askModelJson } from "../qa/lib/model.mjs";
 import { TERMINAL, api, memoryOf, memoryView, projectRoot, settle, startServer, tasksIn } from "../qa/lib/ev-harness.mjs";
 
 const scenarioDir = join(projectRoot, "qa", "scenarios");
@@ -21,13 +22,16 @@ const { values: args } = parseArgs({
     run: { type: "string" },
     "base-url": { type: "string" },
     "step-timeout-ms": { type: "string", default: "600000" },
+    judge: { type: "boolean", default: false },
     help: { type: "boolean", default: false }
   }
 });
 
 if (args.help) {
-  console.log(`Usage: npm run qa -- [--list] [--scenario L4-01,L2-02 | --level 4] [--session N --run RUN_ID] [--base-url URL]
+  console.log(`Usage: npm run qa -- [--list] [--scenario L4-01,L2-02 | --level 4] [--session N --run RUN_ID] [--base-url URL] [--judge]
 
+--judge has a separate model (EV_QA_MODEL, default EV_MODEL) grade each
+scenario's Expect / Fail / Memory boxes against the transcript.
 By default each scenario gets its own EV server with an empty data directory, so
 every scenario starts from a person EV has never met. --session N runs only that
 session; pass --run with the earlier run id to continue the same person later.
@@ -82,20 +86,54 @@ async function runAction(baseUrl, step, conversationId, timeoutMs) {
 
 function taskSummary(task) {
   const report = task.result?.report;
+  const reviews = report?.verification?.reviews ?? [];
   return {
     taskId: task.taskId, title: task.title, status: task.status,
     outcome: report?.outcome ?? null,
     answer: report?.answer ?? task.result?.text ?? null,
-    review: report?.verification?.qualityGate ? {
-      pass: report.verification.qualityGate.pass,
-      summary: report.verification.qualityGate.summary,
-      unavailable: Boolean(report.verification.qualityGate.unavailable),
-      unresolvedIssues: report.verification.unresolvedIssues ?? []
-    } : null,
+    question: task.status === "waiting" ? task.history?.findLast((event) => event.type === "input_needed")?.question ?? null : null,
+    reviewRounds: reviews.length,
+    lastReview: reviews.at(-1) ? { verdict: reviews.at(-1).verdict, summary: reviews.at(-1).summary, unavailable: reviews.at(-1).unavailable } : null,
     plan: task.plan ? { goal: task.plan.goal, successCriteria: task.plan.successCriteria, subtasks: task.plan.subtasks?.length ?? 0 } : null,
     error: task.error ?? null,
     contextManifestId: task.contextManifestId
   };
+}
+
+/**
+ * Grades the scorecard's Expect / Fail / Memory boxes against what actually
+ * happened. A separate model reads the transcript; it judges intent, not wording.
+ */
+async function judgeScenario(result) {
+  const boxes = [];
+  const evidence = [];
+  for (const [sessionIndex, session] of result.sessions.entries()) {
+    if (!session) continue;
+    evidence.push(`## Session ${sessionIndex + 1}: ${session.label}`);
+    for (const record of session.steps) {
+      const { step } = record;
+      if (step.say === undefined) { evidence.push(`(action ${step.do}${step.value ? `: ${step.value}` : ""})`); continue; }
+      evidence.push(`User: ${step.say}`, `EV: ${record.reply ?? "(none)"}`, ...(record.laterMessages ?? []).map((text) => `EV (later): ${text}`));
+      for (const task of record.tasksStarted ?? []) evidence.push(`[task "${task.title}" ${task.status}${task.outcome ? `/${task.outcome}` : ""}${task.question ? `, asked: ${task.question}` : ""}]`);
+      const at = `session ${sessionIndex + 1}, after "${step.say.slice(0, 60)}"`;
+      for (const text of step.expect ?? []) boxes.push({ kind: "expect", at, text });
+      for (const text of step.fail ?? []) boxes.push({ kind: "fail", at, text });
+      if (step.memory) boxes.push({ kind: "memory", at, text: step.memory });
+    }
+    evidence.push("Final task results:", ...session.finalTasks.map((task) => `- ${task.title}: ${task.status}${task.outcome ? `/${task.outcome}` : ""}${task.question ? ` (waiting on: ${task.question})` : ""}${task.answer ? `\n  ${String(task.answer).slice(0, 1_200)}` : ""}`));
+    evidence.push("Memory at end of session:", ...(session.memory.length ? session.memory.map((claim) => `- [${claim.scope}] ${claim.value}`) : ["- (empty)"]));
+  }
+  if (!boxes.length) return null;
+  const input = [
+    "You grade a QA scenario for EV, a personal AI assistant. Judge what actually happened against each check's intent, not its exact wording. A check that cannot be judged from the evidence is 'unclear'.",
+    "For expect checks: 'met' if it clearly happened. For fail checks: 'happened' if the failure occurred at all, else 'avoided'. For memory checks: 'met' if the memory snapshot at the end of that session reflects it (a missing claim is 'not_met').",
+    `Scenario ${result.scenario.id}: ${result.scenario.title}. Guards against: ${result.scenario.guards}.`,
+    `Checks:\n${boxes.map((box, index) => `${index + 1}. [${box.kind}] (${box.at}) ${box.text}`).join("\n")}`,
+    `What happened:\n${evidence.join("\n")}`,
+    'Return JSON only: {"checks":[{"n":number,"verdict":"met"|"not_met"|"happened"|"avoided"|"unclear","evidence":string}],"pass":boolean,"summary":string}. pass is true only if every expect and memory check is met and every fail check is avoided.'
+  ].join("\n\n");
+  const verdict = await askModelJson(input, { maxOutputTokens: 4_000, timeoutMs: 180_000, label: "scenario-judge" });
+  return { pass: Boolean(verdict.pass), summary: String(verdict.summary ?? ""), checks: (verdict.checks ?? []).map((check) => ({ ...boxes[check.n - 1], verdict: check.verdict, evidence: check.evidence })) };
 }
 
 async function runSession({ baseUrl, scenario, sessionIndex, runId, timeoutMs }) {
@@ -167,7 +205,7 @@ function scorecard(result) {
         lines.push(`**User:** ${step.say}`, "", "**EV:**", quote(record.reply), "");
         for (const later of record.laterMessages ?? []) lines.push("**EV, later:**", quote(later), "");
         for (const task of record.tasksStarted ?? []) {
-          lines.push(`Task \`${task.taskId}\` (${task.status}${task.outcome ? `, ${task.outcome}` : ""})${task.review ? `, review ${task.review.unavailable ? "UNAVAILABLE" : task.review.pass ? "passed" : "flagged issues"}` : ""}${task.error ? `, error ${task.error.code ?? ""}: ${task.error.message ?? ""}` : ""}`, "");
+          lines.push(`Task \`${task.taskId}\` (${task.status}${task.outcome ? `, ${task.outcome}` : ""})${task.reviewRounds ? `, ${task.reviewRounds} review round(s), last: ${task.lastReview?.unavailable ? "UNAVAILABLE" : task.lastReview?.verdict}` : ""}${task.question ? `, asked: "${task.question}"` : ""}${task.error ? `, error ${task.error.code ?? ""}: ${task.error.message ?? ""}` : ""}`, "");
         }
         if (record.autoCheck) lines.push(`- Auto: ${record.autoCheck.name} → saw ${record.autoCheck.observed} ${record.autoCheck.pass ? "✅" : "❌"}`);
         for (const item of step.expect ?? []) lines.push(`- [ ] Expect: ${item}`);
@@ -190,6 +228,11 @@ function scorecard(result) {
     lines.push("", "**Memory at end of session:**", "");
     lines.push(...(session.memory.length ? session.memory.map((claim) => `- [${claim.scope}] ${claim.value} (rev ${claim.revision}, by ${claim.author})`) : ["- (empty)"]), "");
   }
+  if (result.judge) {
+    lines.push(`## Judge: ${result.judge.pass ? "PASS" : "FAIL"}`, "", result.judge.summary, "");
+    for (const check of result.judge.checks) lines.push(`- **${check.verdict}** [${check.kind}] ${check.text} (${check.at}): ${check.evidence ?? ""}`);
+    lines.push("", "The judge is a model; spot-check it against the transcript above.", "");
+  } else if (result.judgeError) lines.push(`## Judge failed`, "", result.judgeError, "");
   lines.push("## Verdict", "", "- [ ] Pass", "- [ ] Fail", "", "Notes:", "");
   return lines.join("\n");
 }
@@ -235,6 +278,17 @@ for (const scenario of selected) {
       await server.stop();
     }
   }
+  if (args.judge) {
+    try {
+      result.judge = await judgeScenario(result);
+      delete result.judgeError;
+    } catch (error) {
+      result.judgeError = error.message;
+    }
+    console.log(`${scenario.id} judge: ${result.judge ? (result.judge.pass ? "PASS" : "FAIL") : result.judgeError ?? "nothing to judge"}`);
+    await writeFile(resultPath, JSON.stringify(result, null, 2));
+    await writeFile(join(dir, "scorecard.md"), scorecard(result));
+  }
 }
 // One page across every scenario this run has touched, including earlier --session calls.
 const rows = [];
@@ -245,13 +299,14 @@ for (const name of (await readdir(runRoot)).sort()) {
   const sessions = result.sessions.filter(Boolean);
   const checks = sessions.flatMap((session) => session.steps.map((record) => record.autoCheck).filter(Boolean));
   const tasks = sessions.flatMap((session) => session.finalTasks);
-  rows.push(`| ${name} | ${result.scenario.title} | ${sessions.length}/${result.scenario.sessions.length} | ${checks.filter((check) => check.pass).length}/${checks.length} | ${tasks.length} (${tasks.filter((task) => task.status === "failed").length} failed) | ${sessions.map((session) => session.memory.length).join(" → ")} | ${sessions.flatMap((session) => session.steps).filter((record) => record.error).length} |`);
+  const judged = result.judge ? `${result.judge.pass ? "pass" : "FAIL"} (${result.judge.checks.filter((check) => check.verdict === "met" || check.verdict === "avoided").length}/${result.judge.checks.length})` : result.judgeError ? "error" : "-";
+  rows.push(`| ${name} | ${result.scenario.title} | ${judged} | ${sessions.length}/${result.scenario.sessions.length} | ${checks.filter((check) => check.pass).length}/${checks.length} | ${tasks.length} (${tasks.filter((task) => task.status === "failed").length} failed) | ${sessions.map((session) => session.memory.length).join(" → ")} | ${sessions.flatMap((session) => session.steps).filter((record) => record.error).length} |`);
 }
 await writeFile(join(runRoot, "summary.md"), [
   `# QA run ${runId}`, "",
-  "Auto-checks only count tasks started per message; everything else is graded by hand in each scenario's scorecard.md.", "",
-  "| Scenario | Title | Sessions run | Task-count checks passed | Tasks started | Memory claims per session | Step errors |",
-  "| --- | --- | --- | --- | --- | --- | --- |",
+  "Judge is a model's reading of each scorecard's boxes (with --judge); spot-check failures in the scenario's scorecard.md. Task-count checks are the only mechanical check.", "",
+  "| Scenario | Title | Judge | Sessions run | Task-count checks passed | Tasks started | Memory claims per session | Step errors |",
+  "| --- | --- | --- | --- | --- | --- | --- | --- |",
   ...rows, ""
 ].join("\n"));
 console.log(`Scorecards: ${runRoot}/<scenario>/scorecard.md · summary: ${runRoot}/summary.md`);
