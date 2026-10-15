@@ -926,7 +926,11 @@ export class AssistantWorkerService {
   async _inspectDeliverables(report, workspacePath) {
     const checks = [];
     const root = await realpath(workspacePath);
+    // Agents sometimes declare paths from the goal root (tasks/<id>/file.md)
+    // rather than from their own task directory.
+    const fromGoalRoot = `tasks/${basename(workspacePath)}/`;
     for (const item of report.deliverables) {
+      if (item.path.startsWith(fromGoalRoot)) item.path = item.path.slice(fromGoalRoot.length);
       try {
         const path = resolve(workspacePath, item.path);
         const actual = await realpath(path);

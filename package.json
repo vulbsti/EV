@@ -23,6 +23,6 @@
     "openclaw:image": "docker build -t ev-openclaw docker/openclaw"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24.16"
   }
 }

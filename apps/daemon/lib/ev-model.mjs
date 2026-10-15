@@ -70,7 +70,8 @@ export async function callModel({ parse = (text) => text, input, session, code, 
       try { return parse(text); }
       catch (error) { failure = Object.assign(error, { code }); continue; }
     }
-    failure = Object.assign(new Error(`${label} returned HTTP ${response.status}`), { code, status: response.status });
+    const detail = transient(response.status) ? "" : (await response.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 300);
+    failure = Object.assign(new Error(`${label} returned HTTP ${response.status}${detail ? `: ${detail}` : ""}`), { code, status: response.status });
     const retryAfter = Number(response.headers?.get?.("retry-after"));
     if (retryAfter > 0) failure.retryAfterMs = Math.min(retryAfter * 1_000, 30_000);
     if (!transient(response.status)) throw failure;
