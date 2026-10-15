@@ -6,9 +6,37 @@ import { ensurePrivateDirectorySync, secureDatabaseFilesSync } from "./file-perm
 // This store deliberately contains facts, evidence, revisions, and context
 // receipts only. It has no capability or tool-grant columns and cannot grant
 // authority to a worker.
+// A revision's status: active (used), candidate (a hypothesis or single-
+// evidence lesson, shown to EV only as tentative), disputed (contradicted with
+// no sign of a change), retired (no longer true or useful; kept as history).
+const REVISIONS_TABLE = `CREATE TABLE IF NOT EXISTS memory_revisions (
+  revision_id TEXT PRIMARY KEY,
+  claim_id TEXT NOT NULL REFERENCES memory_claims(claim_id),
+  revision_number INTEGER NOT NULL,
+  value_json TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active', 'candidate', 'disputed', 'retired')),
+  author_type TEXT NOT NULL,
+  supersedes_revision_id TEXT,
+  memory_revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  valid_from TEXT,
+  valid_until TEXT,
+  expires_at TEXT,
+  review_after TEXT,
+  UNIQUE (claim_id, revision_number),
+  FOREIGN KEY (supersedes_revision_id) REFERENCES memory_revisions(revision_id)
+);
+CREATE INDEX IF NOT EXISTS memory_revisions_claim_order
+  ON memory_revisions(claim_id, revision_number DESC);`;
+
+export const MEMORY_KINDS = Object.freeze(["fact", "preference", "goal", "agreement", "state", "lesson"]);
+const STATUSES = ["active", "candidate", "disputed", "retired"];
+
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
+PRAGMA secure_delete = ON;
 
 CREATE TABLE IF NOT EXISTS memory_meta (
   key TEXT PRIMARY KEY,
@@ -37,26 +65,12 @@ CREATE TABLE IF NOT EXISTS memory_claims (
   predicate TEXT NOT NULL,
   current_revision_id TEXT,
   created_at TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'agreement',
   FOREIGN KEY (current_revision_id) REFERENCES memory_revisions(revision_id)
 );
 CREATE INDEX IF NOT EXISTS memory_claims_owner_scope ON memory_claims(owner_id, scope);
 
-CREATE TABLE IF NOT EXISTS memory_revisions (
-  revision_id TEXT PRIMARY KEY,
-  claim_id TEXT NOT NULL REFERENCES memory_claims(claim_id),
-  revision_number INTEGER NOT NULL,
-  value_json TEXT NOT NULL,
-  confidence REAL NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('active', 'candidate')),
-  author_type TEXT NOT NULL,
-  supersedes_revision_id TEXT,
-  memory_revision INTEGER NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE (claim_id, revision_number),
-  FOREIGN KEY (supersedes_revision_id) REFERENCES memory_revisions(revision_id)
-);
-CREATE INDEX IF NOT EXISTS memory_revisions_claim_order
-  ON memory_revisions(claim_id, revision_number DESC);
+${REVISIONS_TABLE}
 
 CREATE TABLE IF NOT EXISTS memory_revision_sources (
   revision_id TEXT NOT NULL REFERENCES memory_revisions(revision_id),
@@ -96,6 +110,31 @@ CREATE TABLE IF NOT EXISTS memory_tombstones (
 );
 CREATE INDEX IF NOT EXISTS memory_tombstones_target
   ON memory_tombstones(owner_id, target_type, target_id, action);
+
+CREATE TABLE IF NOT EXISTS memory_links (
+  from_claim_id TEXT NOT NULL REFERENCES memory_claims(claim_id),
+  to_claim_id TEXT NOT NULL REFERENCES memory_claims(claim_id),
+  link_type TEXT NOT NULL CHECK (link_type IN ('contradicts')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (from_claim_id, to_claim_id, link_type)
+);
+
+-- Every turn and settled task, append-only, so memory can be learned (and
+-- re-learned after a crash) from what actually happened. A task event is
+-- the episode record lessons cite.
+CREATE TABLE IF NOT EXISTS memory_events (
+  event_id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  conversation_id TEXT,
+  event_type TEXT NOT NULL CHECK (event_type IN ('turn', 'task')),
+  content_json TEXT NOT NULL,
+  source_id TEXT NOT NULL REFERENCES memory_sources(source_id),
+  created_at TEXT NOT NULL,
+  analysed_at TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS memory_events_pending ON memory_events(owner_id, analysed_at, created_at);
 
 CREATE TABLE IF NOT EXISTS memory_context_manifests (
   manifest_id TEXT PRIMARY KEY,
@@ -190,7 +229,44 @@ function mapRevision(row) {
     authorType: row.author_type,
     supersedesRevisionId: row.supersedes_revision_id,
     memoryRevision: row.memory_revision,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    validFrom: row.valid_from ?? null,
+    validUntil: row.valid_until ?? null,
+    expiresAt: row.expires_at ?? null,
+    reviewAfter: row.review_after ?? null
+  };
+}
+
+function optionalTime(value, name) {
+  if (value === undefined || value === null) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw codedError("INVALID_INPUT", `${name} must be a valid timestamp`);
+  return parsed.toISOString();
+}
+
+function memoryKind(value) {
+  if (!MEMORY_KINDS.includes(value)) throw codedError("INVALID_INPUT", `kind must be one of ${MEMORY_KINDS.join(", ")}`);
+  return value;
+}
+
+function memoryStatus(value) {
+  if (!STATUSES.includes(value)) throw codedError("INVALID_INPUT", `status must be one of ${STATUSES.join(", ")}`);
+  return value;
+}
+
+function mapEvent(row) {
+  if (!row) return null;
+  return {
+    eventId: row.event_id,
+    ownerId: row.owner_id,
+    conversationId: row.conversation_id,
+    type: row.event_type,
+    content: parseJson(row.content_json),
+    sourceId: row.source_id,
+    createdAt: row.created_at,
+    analysedAt: row.analysed_at,
+    attempts: row.attempts,
+    lastError: row.last_error
   };
 }
 
@@ -232,6 +308,38 @@ function mapManifest(row) {
   };
 }
 
+// Databases from before memory kinds have a narrower status CHECK and no
+// time fields. SQLite cannot alter a CHECK, so the table is rebuilt in place
+// with every row kept.
+function migrateRevisions(database) {
+  const { sql } = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_revisions'").get();
+  if (sql.includes("'retired'")) return;
+  const columns = "revision_id, claim_id, revision_number, value_json, confidence, status, author_type, supersedes_revision_id, memory_revision, created_at";
+  database.exec("PRAGMA foreign_keys = OFF");
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    // SQLite's documented rebuild order: copy into a new table, drop the old
+    // one, then rename, so other tables' references keep naming memory_revisions.
+    database.exec(REVISIONS_TABLE.split("CREATE INDEX")[0].replace("IF NOT EXISTS memory_revisions", "memory_revisions_new"));
+    database.exec(`INSERT INTO memory_revisions_new (${columns}) SELECT ${columns} FROM memory_revisions`);
+    database.exec("DROP TABLE memory_revisions");
+    database.exec("ALTER TABLE memory_revisions_new RENAME TO memory_revisions");
+    database.exec(REVISIONS_TABLE);
+    database.exec("COMMIT");
+  } catch (error) {
+    try { database.exec("ROLLBACK"); } catch { /* preserve original */ }
+    throw error;
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+/** The readable text of a memory value: plain strings (manual guidance) or `{ text, ... }` (learned). */
+export function memoryText(value) {
+  if (typeof value === "string") return value;
+  return typeof value?.text === "string" ? value.text : "";
+}
+
 /** Small, auditable SQLite memory boundary for Phase 3. */
 export class AssistantMemoryStore {
   static open({ path = ":memory:", clock = () => new Date() } = {}) {
@@ -244,6 +352,9 @@ export class AssistantMemoryStore {
     if (!tombstoneColumns.includes("expires_at")) database.exec("ALTER TABLE memory_tombstones ADD COLUMN expires_at TEXT");
     const proposalColumns = database.prepare("PRAGMA table_info(memory_proposals)").all().map((column) => column.name);
     if (!proposalColumns.includes("accepted_claim_id")) database.exec("ALTER TABLE memory_proposals ADD COLUMN accepted_claim_id TEXT");
+    const claimColumns = database.prepare("PRAGMA table_info(memory_claims)").all().map((column) => column.name);
+    if (!claimColumns.includes("kind")) database.exec("ALTER TABLE memory_claims ADD COLUMN kind TEXT NOT NULL DEFAULT 'agreement'");
+    migrateRevisions(database);
     return new AssistantMemoryStore({ path, clock, database });
   }
 
@@ -360,6 +471,7 @@ export class AssistantMemoryStore {
       claimId: claim.claim_id,
       ownerId: claim.owner_id,
       scope: claim.scope,
+      kind: claim.kind,
       subject: claim.subject,
       predicate: claim.predicate,
       current: currentView,
@@ -382,23 +494,25 @@ export class AssistantMemoryStore {
     return mapSource(this._source(sourceId));
   }
 
-  _createClaimInTransaction({ claimId = randomUUID(), ownerId, scope = "global", subject, predicate, value, confidence: certainty = 1, sourceIds = [], authorType = "user", inferred = false }) {
+  _createClaimInTransaction({ claimId = randomUUID(), ownerId, scope = "global", kind = "agreement", subject, predicate, value, confidence: certainty = 1, sourceIds = [], authorType = "user", inferred = false, status: requestedStatus = null, validFrom = null, expiresAt = null, reviewAfter = null }) {
     required(ownerId, "ownerId"); required(scope, "scope"); required(subject, "subject"); required(predicate, "predicate");
-    confidence(certainty);
-    const status = inferred ? "candidate" : "active";
+    memoryKind(kind); confidence(certainty);
+    const status = requestedStatus === null ? (inferred ? "candidate" : "active") : memoryStatus(requestedStatus);
+    if (status === "retired") throw codedError("INVALID_INPUT", "A new claim cannot start retired");
     const timestamp = this._now();
     if (this._claim(claimId)) throw codedError("CLAIM_ALREADY_EXISTS", `Claim ${claimId} already exists`);
     const sources = this._assertSources(ownerId, scope, sourceIds);
     this.database.prepare(`
-      INSERT INTO memory_claims (claim_id, owner_id, scope, subject, predicate, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(claimId, ownerId, scope, subject, predicate, timestamp);
+      INSERT INTO memory_claims (claim_id, owner_id, scope, subject, predicate, created_at, kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(claimId, ownerId, scope, subject, predicate, timestamp, kind);
     const memoryRevision = this._nextMemoryRevision();
     const revisionId = randomUUID();
     this.database.prepare(`
-      INSERT INTO memory_revisions (revision_id, claim_id, revision_number, value_json, confidence, status, author_type, memory_revision, created_at)
-      VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
-    `).run(revisionId, claimId, json(value, "claim value"), certainty, status, authorType, memoryRevision, timestamp);
+      INSERT INTO memory_revisions (revision_id, claim_id, revision_number, value_json, confidence, status, author_type, memory_revision, created_at, valid_from, expires_at, review_after)
+      VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(revisionId, claimId, json(value, "claim value"), certainty, status, authorType, memoryRevision, timestamp,
+      optionalTime(validFrom, "validFrom"), optionalTime(expiresAt, "expiresAt"), optionalTime(reviewAfter, "reviewAfter"));
     this.database.prepare("UPDATE memory_claims SET current_revision_id = ? WHERE claim_id = ?").run(revisionId, claimId);
     const link = this.database.prepare("INSERT INTO memory_revision_sources (revision_id, source_id) VALUES (?, ?)");
     for (const sourceId of sources) link.run(revisionId, sourceId);
@@ -474,7 +588,8 @@ export class AssistantMemoryStore {
     return this.getProposal(proposalId);
   }
 
-  correct({ claimId, expectedRevision, value, confidence: certainty = 1, sourceIds = [], authorType = "user" }) {
+  correct({ claimId, expectedRevision, value, confidence: certainty = 1, sourceIds = [], authorType = "user", status = "active", validFrom = null, validUntil = null, expiresAt = null, reviewAfter = null }) {
+    memoryStatus(status);
     const claim = this._requireClaim(claimId);
     if (this._claimTombstoned(claim)) throw codedError("MEMORY_ERASED", "Erased or stopped memory cannot be corrected");
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw codedError("INVALID_INPUT", "expectedRevision must be a positive integer");
@@ -488,9 +603,10 @@ export class AssistantMemoryStore {
       const memoryRevision = this._nextMemoryRevision();
       const revisionId = randomUUID();
       this.database.prepare(`
-        INSERT INTO memory_revisions (revision_id, claim_id, revision_number, value_json, confidence, status, author_type, supersedes_revision_id, memory_revision, created_at)
-        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
-      `).run(revisionId, claimId, expectedRevision + 1, json(value, "claim value"), certainty, authorType, currentRevision.revision_id, memoryRevision, timestamp);
+        INSERT INTO memory_revisions (revision_id, claim_id, revision_number, value_json, confidence, status, author_type, supersedes_revision_id, memory_revision, created_at, valid_from, valid_until, expires_at, review_after)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(revisionId, claimId, expectedRevision + 1, json(value, "claim value"), certainty, status, authorType, currentRevision.revision_id, memoryRevision, timestamp,
+        optionalTime(validFrom, "validFrom"), optionalTime(validUntil, "validUntil"), optionalTime(expiresAt, "expiresAt"), optionalTime(reviewAfter, "reviewAfter"));
       this.database.prepare("UPDATE memory_claims SET current_revision_id = ? WHERE claim_id = ?").run(revisionId, claimId);
       const link = this.database.prepare("INSERT INTO memory_revision_sources (revision_id, source_id) VALUES (?, ?)");
       for (const sourceId of sources) link.run(revisionId, sourceId);
@@ -514,10 +630,29 @@ export class AssistantMemoryStore {
         INSERT INTO memory_tombstones (tombstone_id, owner_id, target_type, target_id, action, scope, expires_at, erase_epoch, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(id, ownerId, targetType, targetId, action, scope, normalizedExpiresAt, epoch, timestamp);
+      if (action === "erase") this._redact(targetType, targetId);
       this._nextMemoryRevision();
       tombstone = { tombstoneId: id, ownerId, targetType, targetId, action, scope, expiresAt: normalizedExpiresAt, eraseEpoch: epoch, createdAt: timestamp };
     });
     return tombstone;
+  }
+
+  /**
+   * Erase removes the words, not just their use: every revision's value, an
+   * accepted proposal's copy, and the recorded events the claim was learned
+   * from (so they cannot be re-learned). Rows stay as non-content receipts.
+   */
+  _redact(targetType, targetId) {
+    const sourceIds = targetType === "source" ? [targetId] : this.database.prepare(`
+      SELECT DISTINCT rs.source_id FROM memory_revision_sources rs
+      JOIN memory_revisions r ON r.revision_id = rs.revision_id WHERE r.claim_id = ?
+    `).all(targetId).map((row) => row.source_id);
+    if (targetType === "claim") {
+      this.database.prepare("UPDATE memory_revisions SET value_json = 'null' WHERE claim_id = ?").run(targetId);
+      this.database.prepare("UPDATE memory_proposals SET value_json = 'null' WHERE accepted_claim_id = ?").run(targetId);
+    }
+    const redactEvent = this.database.prepare("UPDATE memory_events SET content_json = '{\"erased\":true}', analysed_at = COALESCE(analysed_at, ?) WHERE source_id = ?");
+    for (const sourceId of sourceIds) redactEvent.run(this._now(), sourceId);
   }
 
   stopUse({ ownerId, targetType, targetId, scope = null, expiresAt = null }) {
@@ -533,18 +668,114 @@ export class AssistantMemoryStore {
     return row ? this._claimView(row) : null;
   }
 
-  recall({ ownerId, scope = "global", query = null, includeCandidates = false, excludedScopes = [] } = {}) {
+  /**
+   * Claims usable now. Candidates (and disputed claims) only when asked for;
+   * retired claims and expired passing state never. Newest change first, so
+   * a correction to an old claim counts as recent.
+   */
+  recall({ ownerId, scope = "global", query = null, includeCandidates = false, excludedScopes = [], kinds = null } = {}) {
     required(ownerId, "ownerId"); required(scope, "scope");
     const queryText = query === null ? null : String(query).toLowerCase();
-    const rows = this.database.prepare("SELECT * FROM memory_claims WHERE owner_id = ? ORDER BY created_at, claim_id").all(ownerId);
+    const now = this._now();
+    const rows = this.database.prepare(`
+      SELECT c.* FROM memory_claims c JOIN memory_revisions r ON r.revision_id = c.current_revision_id
+      WHERE c.owner_id = ? ORDER BY r.created_at DESC, c.claim_id
+    `).all(ownerId);
     return rows.filter((claim) => {
+      if (kinds && !kinds.includes(claim.kind)) return false;
       if (!allowedScope(scope, claim.scope, excludedScopes)) return false;
       if (this._claimTombstoned(claim, scope)) return false;
       const current = claim.current_revision_id ? this._revision(claim.current_revision_id) : null;
-      if (!current || (!includeCandidates && current.status !== "active")) return false;
+      if (!current || current.status === "retired" || (current.expires_at && current.expires_at <= now)) return false;
+      if (!includeCandidates && current.status !== "active") return false;
       if (!queryText) return true;
       return `${claim.subject} ${claim.predicate} ${current.value_json}`.toLowerCase().includes(queryText);
     }).map((claim) => this._claimView(claim));
+  }
+
+  /** Ends a claim without replacing it ("I left that job", a lesson a later success disproved). History is kept. */
+  retire({ claimId, expectedRevision, sourceIds = [], authorType = "user", reason = null }) {
+    const current = this._revision(this._requireClaim(claimId).current_revision_id);
+    const value = parseJson(current.value_json);
+    const withReason = reason && value && typeof value === "object" ? { ...value, retiredBecause: String(reason).slice(0, 500) } : value;
+    return this.correct({ claimId, expectedRevision, value: withReason, confidence: current.confidence, sourceIds, authorType, status: "retired", validUntil: this._now() });
+  }
+
+  /**
+   * Adds supporting evidence to the current revision. Returns how many
+   * distinct sources now support it; a source counted twice is still one.
+   */
+  addEvidence({ claimId, sourceId }) {
+    const claim = this._requireClaim(claimId);
+    this._transaction(() => {
+      this._assertSources(claim.owner_id, claim.scope, [sourceId]);
+      this.database.prepare("INSERT OR IGNORE INTO memory_revision_sources (revision_id, source_id) VALUES (?, ?)").run(claim.current_revision_id, sourceId);
+      this._nextMemoryRevision();
+    });
+    return this._evidenceSourceIds(claimId).length;
+  }
+
+  /** Distinct sources behind any revision of a claim. */
+  _evidenceSourceIds(claimId) {
+    return this.database.prepare(`
+      SELECT DISTINCT rs.source_id FROM memory_revision_sources rs
+      JOIN memory_revisions r ON r.revision_id = rs.revision_id WHERE r.claim_id = ?
+    `).all(claimId).map((row) => row.source_id);
+  }
+
+  link({ fromClaimId, toClaimId, type = "contradicts" }) {
+    this._requireClaim(fromClaimId); this._requireClaim(toClaimId);
+    this.database.prepare("INSERT OR IGNORE INTO memory_links (from_claim_id, to_claim_id, link_type, created_at) VALUES (?, ?, ?, ?)").run(fromClaimId, toClaimId, type, this._now());
+  }
+
+  links(claimId) {
+    return this.database.prepare("SELECT * FROM memory_links WHERE from_claim_id = ? OR to_claim_id = ?").all(claimId, claimId)
+      .map((row) => ({ fromClaimId: row.from_claim_id, toClaimId: row.to_claim_id, type: row.link_type }));
+  }
+
+  /**
+   * Records one event (a conversation turn or a settled task) with the source
+   * that claims learned from it will cite. Idempotent by eventId.
+   */
+  recordEvent({ eventId, ownerId, conversationId = null, type, content, scope = "global" }) {
+    required(eventId, "eventId"); required(ownerId, "ownerId");
+    if (!["turn", "task"].includes(type)) throw codedError("INVALID_INPUT", "type must be turn or task");
+    const timestamp = this._now();
+    this._transaction(() => {
+      if (this.database.prepare("SELECT 1 FROM memory_events WHERE event_id = ?").get(eventId)) return;
+      const sourceId = randomUUID();
+      this.database.prepare(`
+        INSERT INTO memory_sources (source_id, owner_id, scope, source_type, source_ref, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(sourceId, ownerId, scope, type === "task" ? "episode" : "conversation", `event:${eventId}`, json({ conversationId }, "source metadata"), timestamp);
+      this.database.prepare(`
+        INSERT INTO memory_events (event_id, owner_id, conversation_id, event_type, content_json, source_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(eventId, ownerId, conversationId, type, json(content, "event content"), sourceId, timestamp);
+      this._nextMemoryRevision();
+    });
+    return this.getEvent(eventId);
+  }
+
+  getEvent(eventId) {
+    return mapEvent(this.database.prepare("SELECT * FROM memory_events WHERE event_id = ?").get(eventId));
+  }
+
+  /** Events not yet analysed, oldest first, skipping ones that failed too often. */
+  pendingEvents({ ownerId, limit = 20, maxAttempts = 3 }) {
+    return this.database.prepare("SELECT * FROM memory_events WHERE owner_id = ? AND analysed_at IS NULL AND attempts < ? ORDER BY created_at, rowid LIMIT ?")
+      .all(ownerId, maxAttempts, limit).map(mapEvent);
+  }
+
+  /** Already analysed events of a conversation before `before`, newest last, as context for the next analysis. */
+  priorEvents({ ownerId, conversationId, before, limit = 4 }) {
+    return this.database.prepare("SELECT * FROM memory_events WHERE owner_id = ? AND conversation_id IS ? AND analysed_at IS NOT NULL AND created_at <= ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
+      .all(ownerId, conversationId, before, limit).map(mapEvent).reverse();
+  }
+
+  finishEvent({ eventId, error = null }) {
+    if (error) this.database.prepare("UPDATE memory_events SET attempts = attempts + 1, last_error = ? WHERE event_id = ?").run(String(error).slice(0, 500), eventId);
+    else this.database.prepare("UPDATE memory_events SET attempts = attempts + 1, analysed_at = ?, last_error = NULL WHERE event_id = ?").run(this._now(), eventId);
   }
 
   buildContextManifest({ manifestId = randomUUID(), ownerId, taskId = null, conversationId = null, scope = "global", claimRevisionIds = [], sourceIds = [], excludedScopes = [], tokenBudget = 0 }) {
