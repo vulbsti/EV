@@ -69,7 +69,7 @@ async function nextUserMessage({ phase, earlier, transcript, remaining }) {
     `Messages you have left in this session: ${remaining}.`,
     'Return JSON only: {"message": string, "kind": "chat"|"question"|"request"|"vent"|"decision"|"correction"|"other"}'
   ].filter(Boolean).join("\n\n");
-  const value = await askModelJson(input, { maxOutputTokens: 600, label: "sim-user" });
+  const value = await askModelJson(input, { maxOutputTokens: 3_000, label: "sim-user" });
   if (typeof value.message !== "string" || !value.message.trim()) throw new Error("Simulated user returned no message");
   return { text: value.message.trim().slice(0, 2_000), kind: value.kind ?? "other" };
 }
