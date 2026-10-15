@@ -8,8 +8,10 @@ import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permis
 import { AssistantSupervisor } from "./assistant-supervisor.mjs";
 import { reviewOpenClawReport } from "./ev-quality-gate.mjs";
 import { OpenClawWorkerAdapter } from "./openclaw-worker-adapter.mjs";
+import { readTranscript } from "./openclaw-transcript.mjs";
 import { validateOpenClawTaskReport } from "./openclaw-task-report.mjs";
-import { executionPrompt, normalizeTaskPlan, planManagedTask, revisionPrompt } from "./ev-task-manager.mjs";
+import { continuationPrompt, executionPrompt, normalizeTaskPlan, planManagedTask, revisionPrompt, wrapUpPrompt } from "./ev-task-manager.mjs";
+import { answerFromContext } from "./ev-main-agent.mjs";
 import { PiWorkerAdapter } from "./pi-worker-adapter.mjs";
 import { ScopedWorkspace } from "./scoped-workspace.mjs";
 import { renderBrief, renderReviews, renderTeam, sharedLayout, writeSharedFiles } from "./shared-workspace.mjs";
@@ -17,6 +19,8 @@ import { emptyUsage, exceededBudget, mergeUsage } from "./worker-usage.mjs";
 
 // Worker failures that say nothing about the work itself. Workspace-only
 // profiles have no external side effects, so one fresh attempt is safe.
+// A loop that has gone this many rounds without an accept is treated as stuck.
+const ROUNDS_BEFORE_ASKING = 8;
 const TRANSIENT_WORKER_CODES = new Set(["PI_PROCESS_EXIT", "PI_PROCESS_START", "PI_EMPTY_RESULT", "PI_TIMEOUT"]);
 // Admission order: finish work already under way before starting new work,
 // and let what the user is waiting on go ahead of background preparation.
@@ -38,6 +42,13 @@ async function waitForWorkerExit(run) {
     new Promise((resolve) => run.child.once("close", resolve)),
     new Promise((resolve) => setTimeout(resolve, 3_000))
   ]);
+}
+
+function abortableDelay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+  });
 }
 
 function parseJsonObject(value) {
@@ -223,6 +234,7 @@ export class AssistantWorkerService {
     adapterFactory = null,
     planner = planManagedTask,
     reviewer = reviewOpenClawReport,
+    answerer = answerFromContext,
     maxConcurrentWorkers = Number(process.env.EV_MAX_WORKERS ?? 3),
     onTaskSettled = null,
     executable = process.env.EV_PI_EXECUTABLE ?? "pi",
@@ -231,6 +243,10 @@ export class AssistantWorkerService {
     expectedVersion = process.env.EV_PI_VERSION ?? "0.84.4",
     timeoutMs = Number(process.env.EV_WORKER_TIMEOUT_MS ?? 120_000),
     settlementDelayMs = Number(process.env.EV_WORKER_SETTLEMENT_DELAY_MS ?? 0),
+    reviewHoldMs = (process.env.EV_REVIEW_HOLD_MS ?? "30000,120000").split(",").map(Number).filter((ms) => ms >= 0),
+    // EV_OPENCLAW_SANDBOX=docker runs every OpenClaw turn in a container
+    // (image EV_OPENCLAW_IMAGE, built from docker/openclaw); see openClawCommand.
+    openClawSandbox = process.env.EV_OPENCLAW_SANDBOX === "docker" ? { image: process.env.EV_OPENCLAW_IMAGE || "ev-openclaw" } : null,
   }) {
     if (!supervisor) throw codedError("INVALID_SERVICE", "supervisor is required");
     if (typeof workerRoot !== "string" || !workerRoot) throw codedError("INVALID_SERVICE", "workerRoot is required");
@@ -246,9 +262,14 @@ export class AssistantWorkerService {
     this.expectedVersion = expectedVersion;
     this.timeoutMs = timeoutMs;
     this.settlementDelayMs = Math.max(0, settlementDelayMs);
+    this.reviewHoldMs = reviewHoldMs;
+    this.openClawSandbox = openClawSandbox;
+    // A sandboxed OpenClaw never sees the person's own ~/.openclaw.
+    this.openClawHome = openClawSandbox ? join(this.workerRoot, "openclaw-home") : process.env.HOME ?? "";
     this.activeRuns = new Map();
     this.planner = planner;
     this.reviewer = reviewer;
+    this.answerer = answerer;
     this.maxConcurrentWorkers = Math.max(1, Math.min(8, Number(maxConcurrentWorkers) || 3));
     this.onTaskSettled = typeof onTaskSettled === "function" ? onTaskSettled : null;
     this.runningWorkers = 0;
@@ -257,7 +278,10 @@ export class AssistantWorkerService {
     this.started = false;
     this.stopping = false;
     this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => profile.capability === "openclaw-general-v1"
-      ? new OpenClawWorkerAdapter({ taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs })
+      ? new OpenClawWorkerAdapter({
+        taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs, homeDir: this.openClawHome,
+        sandbox: this.openClawSandbox && { ...this.openClawSandbox, mountRoot: task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath }
+      })
       : new PiWorkerAdapter({
       executable: this.executable,
       sessionDir,
@@ -333,6 +357,46 @@ export class AssistantWorkerService {
     if (active) await active.promise;
     const task = await this.supervisor.getTask(taskId);
     return { ...task, replayed: command.replayed, task };
+  }
+
+  /**
+   * Passes something the person said to unfinished work. A running agent gets
+   * it at its next step in the same session; a waiting one resumes with it.
+   */
+  async instructTask({ taskId, text, source = null }) {
+    if (typeof text !== "string" || !text.trim()) throw codedError("INVALID_INSTRUCTION", "instruction text is required");
+    const task = await this.supervisor.addInstruction({ taskId, text: text.trim().slice(0, 4_000), source });
+    if (task.status === "queued") this._dispatch(taskId);
+    return task;
+  }
+
+  /** Instructions recorded since the agent last saw any, marked as seen. */
+  async _takeInstructions(active) {
+    const task = await this.supervisor.getTask(active.taskId);
+    const through = task.history.findLast((event) => event.type === "instructions_applied")?.through ?? 0;
+    const pending = task.history.filter((event) => event.type === "instruction" && event.sequence > through);
+    if (!pending.length) return [];
+    await this._progress(active, { through: pending.at(-1).sequence, count: pending.length }, "instructions_applied");
+    const texts = pending.map((event) => event.text);
+    await this._addUpdates(active, task, texts);
+    return texts;
+  }
+
+  /**
+   * What the person said after the brief was written becomes part of it, so
+   * the agent, BRIEF.md and the reviewer all judge against the same thing.
+   */
+  async _addUpdates(active, task, texts) {
+    if (!active.plan || !texts.length) return;
+    active.plan.updates = [...(active.plan.updates ?? []), ...texts];
+    const sharedPath = this._sharedPath(task);
+    if (sharedPath) await writeSharedFiles(sharedPath, { "BRIEF.md": renderBrief(active.plan, task.input.metadata?.sourceRequest ?? "") }).catch(() => {});
+  }
+
+  /** Updates already applied in earlier runs of this task (before a restart or a pause). */
+  _appliedUpdates(task) {
+    const through = task.history.findLast((event) => event.type === "instructions_applied")?.through ?? 0;
+    return task.history.filter((event) => event.type === "instruction" && event.sequence <= through).map((event) => event.text);
   }
 
   async _cancelChildren(taskId, reason) {
@@ -466,7 +530,7 @@ export class AssistantWorkerService {
     };
   }
 
-  async _runWorker(active, prompt, { reuseCompleted = true, sessionId = active.runId } = {}) {
+  async _runWorker(active, prompt, { reuseCompleted = true, sessionId = active.runId, budget: budgetOverride = null } = {}) {
     if (active.isGeneral) await this._progress(active, { phase: "waiting", message: "Waiting for an available agent." });
     const release = await new Promise((resolve) => {
       this.workerQueue.push({ active, resolve, priority: this._priority(active), sequence: this.queueSequence++ });
@@ -476,7 +540,7 @@ export class AssistantWorkerService {
     let result;
     try {
       if (active.shutdownRequested || active.cancelRequested) return { status: "cancelled" };
-      const budget = this._remainingBudget(active, active.profile);
+      const budget = budgetOverride ?? this._remainingBudget(active, active.profile);
       active.run = await active.adapter.start({ runId: active.runId, sessionId, prompt, reuseCompleted, budget });
       if (active.shutdownRequested || active.cancelRequested) await active.adapter.cancel(active.run, { reason: "stopped" });
       if (active.isGeneral && !active.shutdownRequested && !active.cancelRequested) await this._progress(active, { phase: "working", message: active.round > 1 ? "The agent is revising its work from EV's review." : "An agent is carrying out the request.", workerPid: active.run.child?.pid ?? null });
@@ -487,7 +551,27 @@ export class AssistantWorkerService {
       throw error;
     } finally { active.run = null; release(); }
     if (result?.usage) mergeUsage(active.usage, result.usage);
+    if (active.isGeneral && result?.status === "budget_exceeded" && !active.wrappingUp && !active.cancelRequested && !active.shutdownRequested) {
+      return { ...result, text: (await this._wrapUp(active)) ?? result.text };
+    }
     return result;
+  }
+
+  /**
+   * An agent stopped at its budget gets one short turn, in the same session,
+   * to say what it finished and what is left, so a stopped run still ends
+   * with something the person can use.
+   */
+  async _wrapUp(active) {
+    active.wrappingUp = true;
+    try {
+      await this._progress(active, { phase: "working", message: "The agent reached its budget; asking it to write up what it finished and what is left." });
+      const request = active.task.input.metadata?.sourceRequest ?? active.task.input.prompt;
+      const total = active.plan?.budget?.maxTotalTokens || 0;
+      const allowance = { maxTotalTokens: Math.max(40_000, Math.round(total * 0.03)), maxCostUsd: 0, maxToolCalls: -1 };
+      const summary = await this._runWorker(active, wrapUpPrompt({ request, plan: active.plan ?? normalizeTaskPlan(null, request) }), { reuseCompleted: false, budget: allowance });
+      return summary.status === "completed" || summary.status === "budget_exceeded" ? summary.text || null : null;
+    } finally { active.wrappingUp = false; }
   }
 
   /** One fresh attempt after a failure that says nothing about the work. */
@@ -517,7 +601,7 @@ export class AssistantWorkerService {
       } finally { active.controller = null; }
       await this._progress(active, { plan }, "manager_plan");
     }
-    active.plan = normalizeTaskPlan(plan, request, understanding);
+    active.plan = { ...normalizeTaskPlan(plan, request, understanding), updates: this._appliedUpdates(task) };
     const sharedPath = this._sharedPath(task);
     if (sharedPath) {
       await writeSharedFiles(sharedPath, {
@@ -579,6 +663,26 @@ export class AssistantWorkerService {
     return this._runWorker(active, executionPrompt({ request, plan: active.plan, children: summaries, sharedPath }), { reuseCompleted: false });
   }
 
+  /**
+   * Carries on a task that waited for the person. The OpenClaw session is keyed
+   * by task id, so the agent resumes with its own context and files.
+   */
+  async _resumeParked(active, task, parked) {
+    const request = task.input.metadata.sourceRequest;
+    const understanding = task.input.metadata.understanding ?? null;
+    mergeUsage(active.usage, parked.state?.usage);
+    active.round = parked.state?.round ?? 1;
+    // The person has just answered, so the stuck check starts over from here.
+    active.reviews = parked.state?.reviews ?? [];
+    active.askedAt = { reviews: active.reviews.length, round: active.round };
+    active.lastUnresolved = null;
+    active.children = parked.state?.children ?? [];
+    active.plan = { ...normalizeTaskPlan(task.history.findLast((event) => event.type === "manager_plan")?.plan ?? null, request, understanding), updates: this._appliedUpdates(task) };
+    const answers = await this._takeInstructions(active);
+    await this._progress(active, { phase: "working", message: answers.length ? "The agent is carrying on with your answer." : "The agent is carrying on where it left off." });
+    return this._runWorker(active, continuationPrompt({ request, plan: active.plan, answers }), { reuseCompleted: false });
+  }
+
   _sharedPath(task) {
     return task.input.sharedWorkspace ? resolve(this.workspaceRoot, relativePath(task.input.sharedWorkspace, "sharedWorkspace")) : null;
   }
@@ -632,9 +736,12 @@ export class AssistantWorkerService {
       const contextPath = profile.requireContext ? join(workspacePath, "CONTEXT.md") : null;
       active.adapter = await this.adapterFactory({ profile, task, workspacePath, sessionDir, contextPath });
       const artifactBefore = await this._artifactDigest(task, workspacePath);
-      let result = active.isGeneral && task.input.metadata?.managerMode
-        ? await this._runManagedTask(active, task)
-        : await this._runWorkerWithRetry(active, task.input.prompt);
+      const parked = active.isGeneral ? task.history.findLast((event) => event.type === "input_needed") : null;
+      let result = parked
+        ? await this._resumeParked(active, task, parked)
+        : active.isGeneral && task.input.metadata?.managerMode
+          ? await this._runManagedTask(active, task)
+          : await this._runWorkerWithRetry(active, task.input.prompt);
       if (active.shutdownRequested) return this.supervisor.getTask(taskId);
       if (result.status === "cancelled") {
         return await this.supervisor.cancelTask({ taskId, reason: result.message ?? "worker-cancelled" });
@@ -677,13 +784,19 @@ export class AssistantWorkerService {
     } catch (error) {
       const current = await this.supervisor.getTask(taskId).catch(() => null);
       if (current?.status === "cancelled" || error?.code === "STALE_FENCING_TOKEN") return current;
+      if (error?.code === "NEEDS_INPUT" && lease && runId) {
+        return await this.supervisor.waitForInput({
+          taskId, runId, fencingToken: lease.fencingToken, question: error.question,
+          state: { usage: active.usage, round: active.round, children: active.children ?? [], reviews: active.reviews ?? [], answerSoFar: String(error.answerSoFar ?? "").slice(0, 4_000) }
+        }).catch(() => this.supervisor.getTask(taskId));
+      }
       if (active.isGeneral) await this._cancelChildren(taskId, "parent-failed");
       if (lease && runId) {
         return await this.supervisor.failTask({
           taskId,
           runId,
           fencingToken: lease.fencingToken,
-          error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed" },
+          error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed", ...(error.heldAnswer ? { heldAnswer: error.heldAnswer } : {}) },
         }).catch(() => this.supervisor.getTask(taskId));
       }
       return current ?? { taskId, status: "failed", error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed" } };
@@ -699,23 +812,36 @@ export class AssistantWorkerService {
     } catch { return null; }
   }
 
-  async _review(active, task, { request, brief, report, workspacePath, hostNotes = [], sessionPath = null }) {
+  async _review(active, task, { request, brief, report, workspacePath, hostNotes = [], sessionEvents = [] }) {
     const round = active.round;
-    const maxRounds = active.maxRounds;
     await this.supervisor.beginVerification({ taskId: task.taskId, runId: active.runId, fencingToken: active.lease.fencingToken, round });
     if (active.isGeneral) await this._progress(active, { phase: "checking", message: round > 1 ? `Reviewing the revised result (round ${round}).` : "Checking the result against the brief." });
+    // Fail closed: an unchecked result is never delivered as done. The
+    // reviewer already retries provider blips; if it stays down, hold the
+    // result and try again later before giving up on delivery.
     let review;
-    try {
-      review = await this.reviewer({
-        taskId: task.taskId, request, brief, report, round, maxRounds, previousReviews: active.reviews, hostNotes,
-        localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionPath, workspacePath
-      });
-      review = { ...normalizeReviewShape(review), round };
-    } catch {
-      review = { verdict: "accept", pass: true, unavailable: true, round, criteria: [], missing: [], feedback: [], issues: [], caveats: ["EV's quality review was unavailable, so this result was not checked against the brief."], summary: "Review unavailable" };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        review = await this.reviewer({
+          taskId: task.taskId, request, brief, report, round, previousReviews: active.reviews, hostNotes,
+          localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionEvents, workspacePath
+        });
+        review = { ...normalizeReviewShape(review), round };
+        break;
+      } catch (error) {
+        if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+        if (attempt >= this.reviewHoldMs.length) {
+          throw codedError("QUALITY_REVIEW_UNAVAILABLE", "The agent finished, but EV's quality check could not run, so the result was held back instead of delivered unchecked.", { heldAnswer: String(report.answer ?? "").slice(0, 6_000), cause: error.message });
+        }
+        await this._progress(active, { phase: "checking", message: "EV's quality check is unavailable; holding the result and trying again.", code: error.code ?? null });
+        active.controller = new AbortController();
+        try { await abortableDelay(this.reviewHoldMs[attempt], active.controller.signal); }
+        catch { throw codedError("STALE_FENCING_TOKEN", "Task was stopped"); }
+        finally { active.controller = null; }
+      }
     }
     active.reviews.push(review);
-    await this._progress(active, { round, verdict: review.verdict, intentMatch: review.intentMatch ?? null, summary: review.summary, missing: review.missing, feedback: review.feedback, unavailable: Boolean(review.unavailable) }, "review");
+    await this._progress(active, { round, verdict: review.verdict, intentMatch: review.intentMatch ?? null, summary: review.summary, missing: review.missing, feedback: review.feedback, progress: review.progress ?? null, askPerson: review.askPerson || null, unavailable: Boolean(review.unavailable) }, "review");
     const sharedPath = this._sharedPath(task);
     if (sharedPath) await writeSharedFiles(sharedPath, { "REVIEW.md": renderReviews(active.reviews) }).catch(() => {});
     else if (workspacePath) await writeArtifact(workspacePath, "REVIEW.md", Buffer.from(renderReviews(active.reviews))).catch(() => {});
@@ -788,10 +914,28 @@ export class AssistantWorkerService {
     return { result, review };
   }
 
+  _transcriptEvents(taskId) {
+    try { return readTranscript({ homeDir: this.openClawHome, sessionId: taskId }).events; }
+    catch { return []; }
+  }
+
+  /** Null means ask the person; so does an answerer that fails. */
+  async _answerFromContext(active, task, question) {
+    if (!this.answerer) return null;
+    active.controller = new AbortController();
+    try { return await this.answerer({ taskId: task.taskId, question, context: task.input.context ?? "", brief: active.plan, signal: active.controller.signal }); }
+    catch { return null; }
+    finally { active.controller = null; }
+  }
+
   async _inspectDeliverables(report, workspacePath) {
     const checks = [];
     const root = await realpath(workspacePath);
+    // Agents sometimes declare paths from the goal root (tasks/<id>/file.md)
+    // rather than from their own task directory.
+    const fromGoalRoot = `tasks/${basename(workspacePath)}/`;
     for (const item of report.deliverables) {
+      if (item.path.startsWith(fromGoalRoot)) item.path = item.path.slice(fromGoalRoot.length);
       try {
         const path = resolve(workspacePath, item.path);
         const actual = await realpath(path);
@@ -812,31 +956,66 @@ export class AssistantWorkerService {
    * The review loop for general agents. EV reviews the agent's report against
    * the brief; when the reviewer asks for changes, its feedback goes back to
    * the same agent session (which keeps its context and files) and the
-   * revised result is reviewed again, up to the brief's review rounds and
-   * token budget. Only an accepted result is delivered as completed. If the
-   * rounds or budget run out first, the best result is delivered as partial
-   * with exactly what is still missing.
+   * revised result is reviewed again, until the reviewer accepts it. Only an
+   * accepted result is delivered as completed. When the loop is stuck (the
+   * reviewer needs the person, or rounds stop making progress), EV asks the
+   * person instead of delivering half-done work, and carries on with their
+   * answer. The token budget is a safety stop: past it, the best result is
+   * delivered as partial with exactly what is still missing.
    */
   async _finishGeneralResult(active, task, initial, workspacePath) {
     const request = task.input.metadata?.sourceRequest ?? "";
     const isChild = Boolean(task.input.metadata?.parentTaskId);
     active.plan ??= normalizeTaskPlan(null, request);
-    active.reviews = [];
-    active.maxRounds = isChild ? 1 : active.plan.budget.maxReviewRounds;
+    active.reviews ??= [];
+    active.autoAnswers ??= 0;
+    active.askedAt ??= { reviews: 0, round: 1 };
     const sharedPath = this._sharedPath(task);
     let result = initial;
     let best = null;
     let formatFixUsed = false;
     let stopReason = initial.stoppedAtBudget ? "budget" : null;
+    // One follow-up run in the same session; a budget stop keeps its text.
+    const followUp = async (prompt) => {
+      const next = await this._runWorker(active, prompt, { reuseCompleted: false });
+      if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+      if (next.status === "budget_exceeded" && next.text) stopReason = "budget";
+      else if (next.status !== "completed") throw codedError(next.code ?? "WORKER_ERROR", next.message ?? "The agent stopped before finishing");
+      return next;
+    };
     for (;;) {
+      // Whatever the person said about this work while it ran goes to the
+      // agent before its result is judged, in the same session.
+      const instructions = stopReason ? [] : await this._takeInstructions(active);
+      if (instructions.length) {
+        await this._progress(active, { phase: "working", message: "The agent is taking your new instructions into account." });
+        result = await followUp(continuationPrompt({ request, plan: active.plan, instructions }));
+        continue;
+      }
       let report = null;
       try { report = validateOpenClawTaskReport(result.text, { ...task.input.metadata?.verification, strictEvidence: false }); }
       catch (error) { if (error.code !== "TASK_REPORT_INVALID") throw error; }
+      if (report?.outcome === "needs_input") {
+        if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+        const answered = active.autoAnswers < 3 ? await this._answerFromContext(active, task, report.question) : null;
+        if (answered) {
+          active.autoAnswers += 1;
+          await this._addUpdates(active, task, [`EV answered the agent's question "${report.question}" from what it knows about the person: ${answered.answer}`]);
+          await this._progress(active, { phase: "working", message: "The agent asked a question; EV answered it from what it knows about you.", question: report.question, answer: answered.answer, basis: answered.basis });
+          result = await followUp(continuationPrompt({ request, plan: active.plan, answers: [answered.answer] }));
+          continue;
+        }
+        // Only a goal's lead agent can stop for the person; a child's open
+        // question goes up with its result.
+        if (!isChild) throw codedError("NEEDS_INPUT", report.question, { question: report.question, answerSoFar: report.answer });
+        report.outcome = "partial";
+        report.limitations.push(`Needs the person's input: ${report.question}`);
+      }
       if (!report) {
         // Format, not quality: one chance to restate the result as a report.
         if (formatFixUsed || stopReason || active.cancelRequested || active.shutdownRequested) break;
         formatFixUsed = true;
-        const repaired = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, formatOnly: true, round: active.round, maxRounds: active.maxRounds, sharedPath }), { reuseCompleted: false });
+        const repaired = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, formatOnly: true, round: active.round, sharedPath }), { reuseCompleted: false });
         if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
         if (repaired.status === "budget_exceeded") stopReason = "budget";
         else if (repaired.status !== "completed") break;
@@ -851,7 +1030,7 @@ export class AssistantWorkerService {
       if (!isChild && report.outcome !== "blocked") {
         review = await this._review(active, task, {
           request, brief: active.plan, report, workspacePath, hostNotes,
-          sessionPath: join(process.env.HOME ?? "", ".openclaw", "agents", "ev-worker", "sessions", `${task.taskId}.jsonl`)
+          sessionEvents: this._transcriptEvents(task.taskId)
         });
       }
       // A file the agent claims but that does not exist can never be
@@ -867,13 +1046,23 @@ export class AssistantWorkerService {
       };
       best = { result, report, issues: unresolved };
       if (!unresolved.length || isChild || report.outcome === "blocked") break;
-      if (stopReason || active.round >= active.maxRounds || this._budgetSpent(active)) {
-        stopReason ??= active.round >= active.maxRounds ? "rounds" : "budget";
+      if (stopReason || this._budgetSpent(active)) {
+        stopReason ??= "budget";
         break;
       }
       if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+      const question = this._stuckQuestion(active, review, unresolved);
+      if (question) {
+        const answered = active.autoAnswers < 3 ? await this._answerFromContext(active, task, question) : null;
+        if (!answered) throw codedError("NEEDS_INPUT", question, { question, answerSoFar: report.answer });
+        active.autoAnswers += 1;
+        active.askedAt = { reviews: active.reviews.length, round: active.round };
+        active.lastUnresolved = null;
+        await this._addUpdates(active, task, [`EV answered "${question}" from what it knows about the person: ${answered.answer}`]);
+        await this._progress(active, { phase: "working", message: "The work was stuck on a question; EV answered it from what it knows about you.", question, answer: answered.answer, basis: answered.basis });
+      }
       await this._sendBack(active, task);
-      const revised = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, review: review ?? { missing: hostNotes }, round: active.round - 1, maxRounds: active.maxRounds, sharedPath }), { reuseCompleted: false });
+      const revised = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, review: review ?? { missing: hostNotes }, round: active.round - 1, sharedPath }), { reuseCompleted: false });
       if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
       if (revised.status === "budget_exceeded" && revised.text) { stopReason = "budget"; result = revised; continue; }
       if (revised.status !== "completed") {
@@ -884,12 +1073,31 @@ export class AssistantWorkerService {
     }
     if (!best) throw codedError("TASK_REPORT_INVALID", "The worker could not produce a usable task report after one correction.");
     const { report } = best;
+    // A budget stop is unfinished work even when the reviewer liked the write-up.
+    if (stopReason === "budget") best.issues.push("EV stopped this task because it reached its budget.");
     if (best.issues.length && report.outcome === "completed") report.outcome = "partial";
-    if (stopReason === "budget" && best.issues.length) best.issues.push("EV stopped revising because this task reached its budget.");
     report.verification.unresolvedIssues = best.issues;
     report.verification.stopReason = best.issues.length ? stopReason ?? "unfinished" : null;
     report.limitations = [...new Set([...report.limitations, ...(report.verification.qualityGate.caveats ?? []), ...best.issues])].slice(0, 14);
     return best;
+  }
+
+  /**
+   * The question to put to the person when the review loop cannot finish on
+   * its own: the reviewer says only they can unblock it, the last two rounds
+   * made no progress, or it has gone on too long. Null while it is improving.
+   */
+  _stuckQuestion(active, review, unresolved) {
+    if (review?.askPerson) return review.askPerson;
+    const since = active.reviews.slice(active.askedAt.reviews);
+    // Stalled: the reviewer says so twice running, or the open points did not change.
+    const key = JSON.stringify(unresolved);
+    const unchanged = active.lastUnresolved === key;
+    active.lastUnresolved = key;
+    const stalled = unchanged || (since.length >= 2 && since.slice(-2).every((item) => item.progress === "stalled"));
+    if (!stalled && active.round - active.askedAt.round < ROUNDS_BEFORE_ASKING) return null;
+    const open = unresolved.slice(0, 3).join("; ").slice(0, 400);
+    return `I've gone back and forth with the agent and it isn't getting closer on: ${open}. Should I deliver it without those, or is there something that would help?`;
   }
 
   async _materializeReportedDeliverables(task, report, workspacePath) {

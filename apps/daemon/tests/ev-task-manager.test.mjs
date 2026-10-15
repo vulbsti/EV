@@ -64,17 +64,34 @@ test("one parent runs independent children concurrently, retries a failed child,
   } finally { await service.shutdown(); await f.close(); }
 });
 
-test("minor concerns and an unavailable reviewer do not discard a useful result", async () => {
-  for (const unavailable of [false, true]) {
-    const f = await fixture(); let starts = 0;
-    const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
-      reviewer: async () => { if (unavailable) throw new Error("Unavailable"); return { pass: true, issues: [], caveats: ["An incidental detail is unconfirmed."], summary: "Useful" }; },
-      adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
+test("minor concerns do not discard a useful result", async () => {
+  const f = await fixture(); let starts = 0;
+  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
+    reviewer: async () => ({ pass: true, issues: [], caveats: ["An incidental detail is unconfirmed."], summary: "Useful" }),
+    adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
+  });
+  try {
+    await submit(service); const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "completed"); assert.equal(starts, 1);
+    assert.match(final.result.report.limitations.join(" "), /incidental detail/);
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("an unavailable reviewer holds the result and retries; it never ships unchecked", async () => {
+  for (const recovers of [false, true]) {
+    const f = await fixture(); let reviews = 0;
+    const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewHoldMs: [0, 0],
+      reviewer: async () => { reviews++; if (!recovers || reviews < 3) throw new Error("Unavailable"); return { verdict: "accept", summary: "Useful" }; },
+      adapterFactory: async () => ({ async start() { return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
     });
     try {
       await submit(service); const final = await service.waitForTask("parent");
-      assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "completed"); assert.equal(starts, 1);
-      assert.match(final.result.report.limitations.join(" "), unavailable ? /review was unavailable/ : /incidental detail/);
+      assert.equal(reviews, 3, JSON.stringify(final.error));
+      if (recovers) assert.equal(final.status, "completed");
+      else {
+        assert.equal(final.status, "failed"); assert.equal(final.error.code, "QUALITY_REVIEW_UNAVAILABLE");
+        assert.match(final.error.heldAnswer, /Useful result/);
+      }
     } finally { await service.shutdown(); await f.close(); }
   }
 });
@@ -98,17 +115,16 @@ test("EV sends review feedback back to the same agent until the result is accept
   } finally { await service.shutdown(); await f.close(); }
 });
 
-test("a result review never accepts is delivered only as partial, with what is still missing", async () => {
+test("a review loop that stops making progress asks the person instead of delivering half-done work", async () => {
   const f = await fixture(); let starts = 0;
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan({ reviewRounds: 3 }, "Do work"),
-    reviewer: async () => ({ verdict: "revise", missing: ["A requested part is missing."], feedback: [], summary: "Incomplete" }),
+  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), answerer: async () => null,
+    reviewer: async ({ round }) => ({ verdict: "revise", missing: [`A requested part is missing (${round}).`], feedback: [], summary: "Incomplete", progress: "stalled" }),
     adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
   });
   try {
     await submit(service); const final = await service.waitForTask("parent");
-    assert.equal(starts, 3); assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "partial");
-    assert.equal(final.result.report.verification.stopReason, "rounds");
-    assert.match(final.result.report.answer, /Useful result/); assert.match(final.result.report.limitations.join(" "), /requested part/);
+    assert.equal(starts, 2); assert.equal(final.status, "waiting");
+    assert.match(final.history.findLast((event) => event.type === "input_needed").question, /requested part/);
   } finally { await service.shutdown(); await f.close(); }
 });
 
@@ -152,7 +168,7 @@ test("EV's settled reading of the ask reaches the agents unchanged, and EV tells
     assert.equal(plannerSaw.intent, understanding.intent);
     const brief = await readFile(join(f.root, "workspaces", "goal", "shared", "BRIEF.md"), "utf8");
     assert.match(brief, /which one should i go with/); assert.match(brief, /better-value quote/); assert.doesNotMatch(brief, /Something else entirely/);
-    assert.match(brief, /Review rounds: up to 2/);
+    assert.match(brief, /Review: until EV accepts/);
     assert.match(prompts[0], /better-value quote/);
     await until(() => settled.length === 1);
     assert.match(taskUpdate(settled[0]), /"Pick a quote" is done\. I compared both quotes and recommend B/);
@@ -228,15 +244,15 @@ test("restart preserves the plan and completed child, then resumes interrupted w
   } finally { await second?.shutdown(); await f.close(); }
 });
 
-test("a claimed file that does not exist cannot be delivered as a completed outcome", async () => {
+test("a claimed file that does not exist is never delivered as done, even when the review accepts", async () => {
   const f = await fixture();
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Create a file"), reviewer: pass,
+  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Create a file"), reviewer: pass, answerer: async () => null,
     adapterFactory: async () => ({ async start() { return { completion: Promise.resolve({ status: "completed", text: report("Created it", { deliverables: [{ path: "missing.md" }] }) }) }; }, async cancel() {} })
   });
   try {
     await submit(service); const final = await service.waitForTask("parent");
-    assert.equal(final.result.report.outcome, "partial"); assert.equal(final.artifacts.length, 0);
-    assert.match(final.result.report.limitations.join(" "), /does not exist/);
+    assert.equal(final.status, "waiting"); assert.equal(final.artifacts.length, 0);
+    assert.match(final.history.findLast((event) => event.type === "input_needed").question, /does not exist/);
   } finally { await service.shutdown(); await f.close(); }
 });
 
@@ -266,5 +282,55 @@ test("an honest blocker is delivered without a forced post link or a correction 
     await service.submitTask({ taskId: "blocked", capability: "openclaw-general-v1", prompt: "Read posts", context: "Read posts", metadata: { sourceRequest: "Read @tibo posts", verification: { needsSources: true, expectedAccount: "tibo" } } });
     const final = await service.waitForTask("blocked");
     assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "blocked"); assert.equal(starts, 1);
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("an agent that needs the person parks without a worker slot, survives a restart, and resumes in its session", async () => {
+  const f = await fixture(); const prompts = []; const reviewedBriefs = []; let asked = 0;
+  const options = { ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewer: async ({ brief }) => { reviewedBriefs.push(brief); return pass(); },
+    answerer: async () => { asked++; return null; },
+    adapterFactory: async () => ({ async start({ prompt }) {
+      prompts.push(prompt);
+      const text = prompts.length === 1 ? report("Drafted both options", { outcome: "needs_input", question: "Which account should I post from?" }) : report("Posted from the work account");
+      return { completion: Promise.resolve({ status: "completed", text }) };
+    }, async cancel() {} })
+  };
+  let service = new AssistantWorkerService(options);
+  try {
+    await submit(service);
+    const parked = await service.waitForTask("parent");
+    assert.equal(parked.status, "waiting"); assert.equal(asked, 1); assert.equal(parked.lease, null);
+    assert.equal(parked.history.findLast((event) => event.type === "input_needed").question, "Which account should I post from?");
+    assert.match(taskUpdate(parked), /Which account should I post from\?/);
+    await service.shutdown();
+    service = new AssistantWorkerService(options);
+    await service.start();
+    assert.equal((await f.supervisor.getTask("parent")).status, "waiting");
+    await service.instructTask({ taskId: "parent", text: "Use the work account." });
+    const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed"); assert.match(final.result.report.answer, /work account/);
+    assert.equal(prompts.length, 2); assert.match(prompts[1], /Use the work account/);
+    assert.match(JSON.stringify(reviewedBriefs.at(-1)), /Use the work account/);
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("an instruction sent while an agent runs reaches it in the same task before review", async () => {
+  const f = await fixture(); const prompts = []; let release;
+  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewer: pass,
+    adapterFactory: async () => ({ async start({ prompt }) {
+      prompts.push(prompt);
+      if (prompts.length === 1) return { completion: new Promise((resolve) => { release = () => resolve({ status: "completed", text: report("Formal draft") }); }) };
+      return { completion: Promise.resolve({ status: "completed", text: report("Casual draft") }) };
+    }, async cancel() {} })
+  });
+  try {
+    await submit(service);
+    await until(() => Boolean(release));
+    await service.instructTask({ taskId: "parent", text: "Make it casual." });
+    release();
+    const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed"); assert.match(final.result.report.answer, /Casual/);
+    assert.equal(prompts.length, 2); assert.match(prompts[1], /Make it casual/);
+    await assert.rejects(service.instructTask({ taskId: "parent", text: "too late" }), (error) => error.code === "TASK_NOT_ACTIVE");
   } finally { await service.shutdown(); await f.close(); }
 });

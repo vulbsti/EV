@@ -27,7 +27,9 @@ export function validateOpenClawTaskReport(text, { needsSources = false, expecte
   const answer = boundedText(value.answer);
   if (!goal || !answer) throw Object.assign(new Error("The task report is missing its interpreted goal or answer"), { code: "TASK_REPORT_INVALID" });
   const outcome = value.outcome ?? "completed";
-  if (!["completed", "partial", "blocked"].includes(outcome)) throw Object.assign(new Error("The task report has an invalid outcome"), { code: "TASK_REPORT_INVALID" });
+  if (!["completed", "partial", "blocked", "needs_input"].includes(outcome)) throw Object.assign(new Error("The task report has an invalid outcome"), { code: "TASK_REPORT_INVALID" });
+  const question = boundedText(value.question, 1_000);
+  if (outcome === "needs_input" && !question) throw Object.assign(new Error("A needs_input report must ask its question"), { code: "TASK_REPORT_INVALID" });
   const issues = [];
   const evidence = (Array.isArray(value.evidence) ? value.evidence : []).slice(0, 24).flatMap((item) => {
     if (!item || typeof item !== "object") return [];
@@ -77,6 +79,7 @@ export function validateOpenClawTaskReport(text, { needsSources = false, expecte
     answer,
     evidence,
     deliverables: (Array.isArray(value.deliverables) ? value.deliverables : []).slice(0, 10).map((item) => ({ path: boundedText(item?.path, 1_000), title: boundedText(item?.title, 200) })).filter((item) => item.path),
+    ...(outcome === "needs_input" ? { question } : {}),
     checks: listOfText(value.checks),
     limitations: listOfText(value.limitations),
     verification: {

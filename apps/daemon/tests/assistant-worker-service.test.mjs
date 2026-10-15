@@ -234,7 +234,8 @@ test("accepts an R1 content package only after a material draft-review-revision 
       supervisor: f.supervisor,
       workerRoot: f.workerRoot,
       workspaceRoot: f.workspaceRoot,
-      adapterFactory: r1AdapterFactory()
+      adapterFactory: r1AdapterFactory(),
+      reviewer: async () => ({ verdict: "accept", summary: "Ready" })
     });
     await service.submitTask({
       taskId: "r1-good",

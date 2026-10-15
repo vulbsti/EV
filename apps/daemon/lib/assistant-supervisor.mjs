@@ -273,7 +273,7 @@ export class AssistantSupervisor {
   }
 
   async recordProgress({ taskId, runId, fencingToken, type = "progress", data = {} }) {
-    if (!["progress", "manager_plan", "worker_retry", "review", "usage"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
+    if (!["progress", "manager_plan", "worker_retry", "review", "usage", "instructions_applied"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
     const safeData = bounded(data, "task progress");
     this._transaction(() => {
       const row = this._requireRow(taskId);
@@ -309,6 +309,42 @@ export class AssistantSupervisor {
       const revision = this._nextRevision();
       const at = this._addEvent(taskId, event, bounded(data, "state change"));
       this.database.prepare("UPDATE tasks SET status = ?, updated_at = ?, revision = ? WHERE task_id = ?").run(to, at, revision, taskId);
+    });
+    return clone(this._task(taskId));
+  }
+
+  /**
+   * running/verifying -> waiting: the agent needs something only the person
+   * can give. The lease is released, so a waiting task holds no worker slot
+   * and survives restarts as is; `state` is what the next run restores.
+   */
+  async waitForInput({ taskId, runId, fencingToken, question, state = {} }) {
+    const data = bounded({ question, state }, "input request");
+    this._transaction(() => {
+      const row = this._requireRow(taskId);
+      this._assertToken(row, fencingToken);
+      if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current run can wait for input");
+      const revision = this._nextRevision();
+      const at = this._addEvent(taskId, "input_needed", data);
+      this.database.prepare("UPDATE tasks SET status = 'waiting', lease_id = NULL, fencing_token = NULL, worker_id = NULL, run_id = NULL, started_at = NULL, updated_at = ?, revision = ? WHERE task_id = ?")
+        .run(at, revision, taskId);
+    });
+    return clone(this._task(taskId));
+  }
+
+  /**
+   * Records something the person said about unfinished work. A running task
+   * picks it up at its next step; a waiting task goes back to the queue.
+   */
+  async addInstruction({ taskId, text, source = null }) {
+    const data = bounded({ text, source }, "instruction");
+    this._transaction(() => {
+      const row = this._requireRow(taskId);
+      if (["completed", "failed", "cancelled"].includes(row.status)) throw codedError("TASK_NOT_ACTIVE", `Task ${taskId} is ${row.status}`);
+      const revision = this._nextRevision();
+      const at = this._addEvent(taskId, "instruction", data);
+      const status = row.status === "waiting" ? "queued" : row.status;
+      this.database.prepare("UPDATE tasks SET status = ?, updated_at = ?, revision = ? WHERE task_id = ?").run(status, at, revision, taskId);
     });
     return clone(this._task(taskId));
   }

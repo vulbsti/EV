@@ -7,6 +7,8 @@ import test from "node:test";
 import { AssistantMemoryStore } from "../lib/assistant-memory.mjs";
 import { AssistantSupervisor } from "../lib/assistant-supervisor.mjs";
 import { assertLoopbackHost, PRIVATE_MODES, securePrivateTreeSync } from "../lib/file-permissions.mjs";
+import { localRequestRejection } from "../lib/local-request-guard.mjs";
+import { openClawCommand } from "../lib/openclaw-worker-adapter.mjs";
 
 async function mode(path) {
   return (await stat(path)).mode & 0o777;
@@ -60,4 +62,33 @@ test("unauthenticated daemon host validation fails closed for non-loopback binds
   assert.throws(() => assertLoopbackHost("0.0.0.0"), { code: "EV_HOST_NOT_LOOPBACK" });
   assert.throws(() => assertLoopbackHost("localhost"), { code: "EV_HOST_NOT_LOOPBACK" });
   assert.throws(() => assertLoopbackHost("192.168.1.10"), { code: "EV_HOST_NOT_LOOPBACK" });
+});
+
+test("local request guard admits only this daemon's loopback Host and Origin", () => {
+  const port = 4317;
+  for (const host of ["127.0.0.1:4317", "localhost:4317", "[::1]:4317"]) assert.equal(localRequestRejection({ host, port }), null, host);
+  assert.equal(localRequestRejection({ host: "127.0.0.1:4317", origin: "http://localhost:4317", port }), null);
+  const rejected = [
+    { host: undefined },
+    { host: "a b" },
+    { host: "attacker.example:4317" },
+    { host: "127.0.0.1" },
+    { host: "127.0.0.1:9999" },
+    { host: "127.0.0.1:4317", origin: "https://evil.example" },
+    { host: "127.0.0.1:4317", origin: "null" },
+    { host: "127.0.0.1:4317", origin: "http://127.0.0.1:5000" }
+  ];
+  for (const request of rejected) assert.ok(localRequestRejection({ ...request, port }), JSON.stringify(request));
+});
+
+test("a sandboxed OpenClaw worker mounts only its goal, its config and an EV-owned home", () => {
+  const { command, args } = openClawCommand({
+    executable: "openclaw", args: ["agent"], sandbox: { image: "ev-openclaw", mountRoot: "/ev/workspaces/goal" },
+    workspacePath: "/ev/workspaces/goal/tasks/t1", sessionDir: "/ev/sessions/t1", homeDir: "/ev/openclaw-home", runId: "run-1234567890ab", taskId: "t1"
+  });
+  assert.equal(command, "docker");
+  const mounts = args.flatMap((arg, index) => args[index - 1] === "-v" ? [arg] : []);
+  assert.deepEqual(mounts, ["/ev/workspaces/goal:/ev/workspaces/goal", "/ev/openclaw-home:/ev/openclaw-home", "/ev/sessions/t1:/ev/sessions/t1:ro"]);
+  for (const flag of ["--cap-drop", "--memory", "--pids-limit", "--cpus"]) assert.ok(args.includes(flag), flag);
+  assert.ok(!args.includes("--privileged") && !args.some((arg) => arg.includes("docker.sock")));
 });

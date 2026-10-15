@@ -14,3 +14,15 @@ test("EV asks at most one round of questions, then works with what it assumed", 
   assert.deepEqual(second.questions, []);
   assert.match(second.assumptions.join(" "), /Live-action edit or fully animated/);
 });
+
+test("model calls retry provider blips and unreadable replies, but not client errors", async () => {
+  const replies = [new Response("busy", { status: 503 }), { ok: true, json: async () => ({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "not json" }] }] }) }];
+  let calls = 0;
+  const flaky = async (...args) => (calls++ < replies.length ? replies[calls - 1] : answering({ action: "reply", message: "Hi" })(...args));
+  const understood = await understandMessage({ message: "hi", apiKey: "test", fetchImpl: flaky, retryDelaysMs: [0, 0] });
+  assert.equal(calls, 3);
+  assert.equal(understood.action, "reply");
+  calls = 0;
+  await assert.rejects(understandMessage({ message: "hi", apiKey: "test", fetchImpl: async () => { calls++; return new Response("bad", { status: 400 }); }, retryDelaysMs: [0, 0] }), (error) => error.code === "MAIN_AGENT_UNAVAILABLE");
+  assert.equal(calls, 1);
+});

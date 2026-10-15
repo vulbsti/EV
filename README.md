@@ -2,7 +2,13 @@
 
 EV's current proof of concept is one conversation with a working task manager: it turns a request into a goal, runs one OpenClaw executor or up to three independent child assignments, combines their results, and returns completed, partial, or blocked outcomes inline. OpenClaw and the manager use OpenCode Go `gpt-6-luna`. See the [prototype architecture and limits](docs/assistant/OPENCLAW_POC.md).
 
-Run it with Node.js 22+, OpenClaw installed, and `OPENCODE_API` set in the local `.env`:
+Run it with Node.js 24.16+, OpenClaw 2026.10 or newer installed, and `OPENCODE_API` set in the local `.env`. Optional settings in `.env`:
+
+- `EV_MODEL` and `EV_MODEL_API` (`responses`, `chat` or `messages`): the model EV itself thinks and reviews with.
+- `EV_OPENCLAW_MODEL` and `EV_OPENCLAW_API` (`openai-responses` or `anthropic-messages`): the model OpenClaw workers use.
+- `EV_OPENCLAW_SANDBOX=docker` runs each worker in the `ev-openclaw` container (`npm run openclaw:image`; `EV_OPENCLAW_IMAGE` overrides the name), seeing only its goal workspace.
+- Web search uses DuckDuckGo (no key). The `ev-openclaw` image includes its plugin; rebuild the image after upgrading. On the host, install it with `npm i --prefix ~/.local/share/openclaw-plugins @openclaw/duckduckgo-plugin` and set `EV_OPENCLAW_SEARCH_PLUGIN=~/.local/share/openclaw-plugins/node_modules/@openclaw/duckduckgo-plugin` (an absolute path). Without it, workers can fetch pages but not search.
+- `EV_REVIEW_HOLD_MS` (default `30000,120000`): how long EV waits before retrying an unavailable reviewer. A result is never delivered unchecked.
 
 ```bash
 npm run prototype
@@ -42,7 +48,7 @@ The voice companion can observe fleet state, terminal tails, task state, files, 
 
 ## Run the lab
 
-No third-party packages are required. Node.js 22 or newer and tmux are sufficient for local experiments.
+No third-party packages are required. Node.js 24.16 or newer and tmux are sufficient for local experiments.
 
 ```bash
 npm test
