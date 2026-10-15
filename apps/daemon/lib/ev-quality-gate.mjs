@@ -4,6 +4,7 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { callModel, parseModelJson, sessionHeader } from "./ev-model.mjs";
 import { redactEvidence } from "./evidence.mjs";
 
 const FETCHABLE_HOSTS = new Set(["x.com", "www.x.com", "twitter.com", "www.twitter.com", "opencode.ai", "www.opencode.ai", "github.com", "www.github.com"]);
@@ -144,11 +145,6 @@ async function observeExecution(sessionPath) {
   return [...receipts.values()].slice(-20);
 }
 
-function stableReviewSession(taskId) {
-  const hex = createHash("sha256").update(`review:${taskId}`).digest("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-}
-
 function cleanHtml(value) {
   return String(value).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
@@ -200,11 +196,6 @@ async function observeSource(source, request, answer, fetchImpl, localRoots) {
       .slice(0, 4).map(([tag]) => cleanHtml(/\bcontent=(["'])(.*?)\1/i.exec(tag)?.[2] ?? "")).filter(Boolean);
     return { url: url.href, state: "fetched", httpStatus: response.status, meta, excerpts: excerpts.map((item) => item.slice(0, 600)), postFullText, missingExactLinks };
   } catch { return { url: url.href, state: "unavailable", reason: "fetch failed" }; }
-}
-
-function responseText(body) {
-  return body?.output?.filter((item) => item.type === "message" && item.role === "assistant")
-    .flatMap((item) => item.content ?? []).filter((part) => part.type === "output_text").map((part) => part.text).join("\n").trim() ?? "";
 }
 
 function list(value, max = 8, itemMax = 600) {
@@ -294,18 +285,11 @@ export async function reviewOpenClawReport({
     `Independent source observations:\n${JSON.stringify(sources)}`,
     `Execution observations:\n${JSON.stringify(execution)}`
   ].filter(Boolean).join("\n\n");
-  const response = await fetchImpl("https://opencode.ai/zen/go/v1/responses", {
-    method: "POST",
-    signal: AbortSignal.timeout(60_000),
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "x-opencode-session": stableReviewSession(taskId), "User-Agent": "ev-quality-gate/0.2" },
-    body: JSON.stringify({ model: "gpt-6-luna", input: instruction, max_output_tokens: 4_000 })
+  const verdict = await callModel({
+    input: instruction, session: sessionHeader(`review:${taskId}`), code: "QUALITY_REVIEW_UNAVAILABLE", label: "quality-gate",
+    timeoutMs: 60_000, apiKey, fetchImpl,
+    parse: (raw) => parseModelJson(raw, "Quality review returned invalid JSON")
   });
-  if (!response.ok) throw Object.assign(new Error(`Quality review returned HTTP ${response.status}`), { code: "QUALITY_REVIEW_UNAVAILABLE" });
-  const body = await response.json();
-  const raw = responseText(body);
-  let verdict;
-  try { verdict = JSON.parse(raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)); }
-  catch { throw Object.assign(new Error("Quality review returned invalid JSON"), { code: "QUALITY_REVIEW_UNAVAILABLE" }); }
   return {
     ...normalizeReview(verdict),
     round,

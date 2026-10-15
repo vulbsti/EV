@@ -127,6 +127,7 @@ function renderTask(task) {
     ${task.artifacts?.length ? `<ul class="task-deliverables">${task.artifacts.map((file) => `<li><a href="/api/assistant/artifacts/${encodeURIComponent(file.artifactId)}" download>${escapeHtml(file.title || file.relativePath.split("/").at(-1))}</a></li>`).join("")}</ul>` : ""}
     <small>${report.verification?.qualityGate?.unavailable ? "Separate review unavailable." : report.verification?.qualityGate?.skipped ? "Agent outcome and file checks recorded." : "EV reviewed the result against its brief."} ${report.verification?.deliverables?.filter((item) => item.verified).length ?? 0} files checked.${reviewSummary(report.verification)}</small>
   </div>` : "";
+  const heldMarkup = task.status === "failed" && task.error?.heldAnswer ? `<details class="task-report"><summary>Unchecked result</summary><p class="task-answer">${renderAnswer(task.error.heldAnswer)}</p></details>` : "";
   return `<section class="task-card ${escapeHtml(report?.outcome ?? task.status)}" data-task-id="${escapeHtml(task.taskId)}" aria-label="Background task">
     <div class="task-card-head"><span class="task-status ${escapeHtml(report?.outcome ?? task.status)}">${escapeHtml(displayStatus)}</span><span class="task-time">${escapeHtml(task.updatedAt ? new Date(task.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "")}</span></div>
     <h3>${escapeHtml(task.title ?? "Background task")}</h3>
@@ -135,7 +136,7 @@ function renderTask(task) {
     ${task.brief?.successCriteria?.length ? `<details class="task-brief"><summary>Success criteria and boundaries</summary><ul>${task.brief.successCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul><p><strong>Authority:</strong> prepare only</p><p><strong>Memory:</strong> reviewed EV guidance; derived memory providers are disabled</p>${task.contextManifestId ? `<p><strong>Context manifest:</strong> <code>${escapeHtml(task.contextManifestId)}</code></p>` : ""}</details>` : ""}
     <p>${escapeHtml(detail)}</p>
     ${children.length ? `<details class="task-children"><summary>Workers · ${children.filter((child) => ["completed", "failed", "cancelled"].includes(child.status)).length}/${children.length} finished</summary><ul>${children.map((child) => `<li><strong>${escapeHtml(child.title)}</strong>${child.retryOf ? " (retry)" : ""} · ${escapeHtml(child.result?.report?.outcome ?? taskLabel(child.status))}${child.error ? ` · ${escapeHtml(child.error.message)}` : ""}</li>`).join("")}</ul></details>` : ""}
-    ${reportMarkup}
+    ${reportMarkup}${heldMarkup}
     <div class="task-actions">
       ${artifact && !isOpenClaw ? isR1
         ? `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(artifact.artifactId)}?preview=1" target="_blank" rel="noopener">Open reviewed content package</a>`

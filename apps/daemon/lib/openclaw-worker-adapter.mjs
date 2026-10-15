@@ -8,7 +8,11 @@ import { TailBuffer, addCallUsage, emptyUsage, exceededBudget, writeDiagnosticsL
 
 const PROVIDER = "opencode-go";
 const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
-const MODEL = "gpt-6-luna";
+// EV_OPENCLAW_MODEL / EV_OPENCLAW_API choose the worker model and the API
+// OpenClaw speaks to it with (openai-responses, openai-completions or
+// anthropic-messages), matching what OpenCode Go serves for that model.
+const workerModel = () => process.env.EV_OPENCLAW_MODEL || "gpt-6-luna";
+const workerApi = () => process.env.EV_OPENCLAW_API || "openai-responses";
 
 function stableSessionHeader(taskId) {
   const hex = createHash("sha256").update(taskId).digest("hex");
@@ -16,6 +20,7 @@ function stableSessionHeader(taskId) {
 }
 
 export function openClawTaskConfig({ taskId, workspacePath }) {
+  const model = workerModel();
   const port = 24000 + (createHash("sha256").update(`browser:${taskId}`).digest().readUInt16BE(0) % 18000);
   return {
     gateway: { port },
@@ -25,7 +30,7 @@ export function openClawTaskConfig({ taskId, workspacePath }) {
     tools: { deny: ["sessions_spawn"] },
     agents: {
       defaults: { workspace: workspacePath },
-      list: [{ id: "ev-worker", workspace: workspacePath, model: `${PROVIDER}/${MODEL}` }]
+      list: [{ id: "ev-worker", workspace: workspacePath, model: `${PROVIDER}/${model}` }]
     },
     models: {
       mode: "merge",
@@ -33,9 +38,9 @@ export function openClawTaskConfig({ taskId, workspacePath }) {
         [PROVIDER]: {
           baseUrl: "https://opencode.ai/zen/go/v1",
           apiKey: "${OPENCODE_API}",
-          api: "openai-responses",
+          api: workerApi(),
           headers: { "x-opencode-session": stableSessionHeader(taskId), "User-Agent": "ev-openclaw-prototype/0.1" },
-          models: [{ id: MODEL, name: "GPT 6 Luna (OpenCode Go)", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272000, maxTokens: 16000 }]
+          models: [{ id: model, name: `${model} (OpenCode Go)`, reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272000, maxTokens: 16000 }]
         }
       }
     }
@@ -54,7 +59,7 @@ export function parseOpenClawOutput(stdout) {
     return { status: "failed", code: "OPENCLAW_PROVIDER_ERROR", message: text.slice(0, 500) };
   }
   const actual = envelope.meta?.agentMeta ?? {};
-  if (actual.provider !== PROVIDER || actual.model !== MODEL) {
+  if (actual.provider !== PROVIDER || actual.model !== workerModel()) {
     return { status: "failed", code: "OPENCLAW_MODEL_MISMATCH", message: "OpenClaw did not use the selected OpenCode Go model" };
   }
   return { status: "completed", text, usage: actual.usage ?? null, events: [] };

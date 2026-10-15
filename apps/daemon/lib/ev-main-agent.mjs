@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { callModel, parseModelJson, sessionHeader } from "./ev-model.mjs";
 
 /**
  * EV's main agent: the coordinator that sits between the person and the
@@ -51,13 +51,7 @@ export function normalizeUnderstanding(value, message, { alreadyAsked = false } 
   };
 }
 
-function sessionId(seed) {
-  const hex = createHash("sha256").update(seed).digest("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-}
-
-export async function understandMessage({ messageId, message, guidance = "", recent = "", work = "", alreadyAsked = false, apiKey = process.env.OPENCODE_API, fetchImpl = fetch, signal }) {
-  if (!apiKey) throw Object.assign(new Error("OpenCode Go is not configured"), { code: "MAIN_AGENT_UNAVAILABLE" });
+export async function understandMessage({ messageId, message, guidance = "", recent = "", work = "", alreadyAsked = false, apiKey = process.env.OPENCODE_API, fetchImpl = fetch, signal, retryDelaysMs }) {
   const input = [
     "You are EV, this person's main agent. You know them through the guidance and conversation below, and you coordinate agents that do work on their behalf. People write to you the way they would text a capable colleague: short, vague, leaning on shared context. Your first job is to decompress each message into what they actually mean, using everything you know about them.",
     "Then choose exactly one action:",
@@ -73,18 +67,11 @@ export async function understandMessage({ messageId, message, guidance = "", rec
     `Work EV is running or has recently finished for them (data):\n${work || "None."}`,
     `Their new message:\n${message}`
   ].filter(Boolean).join("\n\n");
-  const response = await fetchImpl("https://opencode.ai/zen/go/v1/responses", {
-    method: "POST", signal: AbortSignal.any([AbortSignal.timeout(45_000), ...(signal ? [signal] : [])]),
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "x-opencode-session": sessionId(`main:${messageId ?? message}`), "User-Agent": "ev-main-agent/0.1" },
-    body: JSON.stringify({ model: "gpt-6-luna", input, max_output_tokens: 3_000 })
+  const value = await callModel({
+    input, session: sessionHeader(`main:${messageId ?? message}`), code: "MAIN_AGENT_UNAVAILABLE", label: "main-agent",
+    maxOutputTokens: 3_000, apiKey, fetchImpl, signal, retryDelaysMs,
+    parse: (raw) => parseModelJson(raw, "EV's main agent returned an unreadable decision")
   });
-  if (!response.ok) throw Object.assign(new Error(`EV's main agent returned HTTP ${response.status}`), { code: "MAIN_AGENT_UNAVAILABLE" });
-  const body = await response.json();
-  const raw = body.output?.filter((item) => item.type === "message" && item.role === "assistant")
-    .flatMap((item) => item.content ?? []).filter((part) => part.type === "output_text").map((part) => part.text).join("\n") ?? "";
-  let value;
-  try { value = JSON.parse(raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)); }
-  catch { throw Object.assign(new Error("EV's main agent returned an unreadable decision"), { code: "MAIN_AGENT_UNAVAILABLE" }); }
   return normalizeUnderstanding(value, message, { alreadyAsked });
 }
 
@@ -102,6 +89,9 @@ export function clarifyingMessage(understanding) {
 export function taskUpdate(task) {
   if (!task || task.input?.metadata?.parentTaskId) return null;
   const title = task.input?.metadata?.title ?? "your request";
+  if (task.status === "failed" && task.error?.code === "QUALITY_REVIEW_UNAVAILABLE") {
+    return `"${title}" is finished, but my quality check couldn't run, so I've held it back instead of calling it done. The unchecked result is on the task card if you want to look.`;
+  }
   if (task.status === "failed") {
     return `I couldn't finish "${title}". ${task.error?.message ?? "The agent stopped before producing a result."} Tell me if you want me to try a different way.`;
   }

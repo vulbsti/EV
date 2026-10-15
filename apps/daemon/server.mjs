@@ -116,7 +116,7 @@ function publicTask(task) {
     run: task.run ? { runId: task.run.runId, startedAt: task.run.startedAt } : null,
     result: task.result,
     artifacts: task.artifacts,
-    error: task.error ? { code: task.error.code, message: task.error.message } : null,
+    error: task.error ? { code: task.error.code, message: task.error.message, heldAnswer: task.error.heldAnswer ?? null } : null,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     revision: task.revision,
@@ -412,8 +412,7 @@ async function workInProgress(conversationId) {
 
 /**
  * EV's main agent reads the message before anything runs. Returns null when
- * it is unavailable; the caller then hands the message straight to the
- * planner as before.
+ * it is unavailable even after retries; the caller then starts nothing.
  */
 async function understandTurn({ clientMessageId, conversationId, text }) {
   try {
@@ -520,15 +519,23 @@ async function createAssistantTurn({ clientMessageId, conversationId, text }) {
       planned = { classification: "conversation", route: "companion", response: understanding.message };
     } else if (understanding?.action === "clarify") {
       planned = { classification: "clarify", route: "companion", understanding, response: clarifyingMessage(understanding) };
-    } else {
+    } else if (understanding) {
       planned = {
         classification: "action",
         route: "worker",
         capability: "openclaw-general-v1",
-        understanding: understanding?.action === "work" ? understanding : null,
-        response: understanding?.action === "work" && understanding.message
-          ? understanding.message
-          : "I’m working on this now. I’ll check the result before showing it here. You can send another request while this runs."
+        understanding,
+        response: understanding.message || "I’m working on this now. I’ll check the result before showing it here. You can send another request while this runs."
+      };
+    } else {
+      // Fail closed: work started without understanding the message is the
+      // half-baked work EV exists to avoid.
+      planned = {
+        classification: "unavailable",
+        route: "companion",
+        response: process.env.OPENCODE_API
+          ? "I couldn’t think this through just now because my model didn’t answer, so I haven’t started anything. Send it again in a moment."
+          : "My model isn’t configured (OPENCODE_API is not set), so I can’t work on anything yet."
       };
     }
   }

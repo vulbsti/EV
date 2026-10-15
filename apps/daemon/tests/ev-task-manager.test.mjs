@@ -64,17 +64,34 @@ test("one parent runs independent children concurrently, retries a failed child,
   } finally { await service.shutdown(); await f.close(); }
 });
 
-test("minor concerns and an unavailable reviewer do not discard a useful result", async () => {
-  for (const unavailable of [false, true]) {
-    const f = await fixture(); let starts = 0;
-    const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
-      reviewer: async () => { if (unavailable) throw new Error("Unavailable"); return { pass: true, issues: [], caveats: ["An incidental detail is unconfirmed."], summary: "Useful" }; },
-      adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
+test("minor concerns do not discard a useful result", async () => {
+  const f = await fixture(); let starts = 0;
+  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
+    reviewer: async () => ({ pass: true, issues: [], caveats: ["An incidental detail is unconfirmed."], summary: "Useful" }),
+    adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
+  });
+  try {
+    await submit(service); const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "completed"); assert.equal(starts, 1);
+    assert.match(final.result.report.limitations.join(" "), /incidental detail/);
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("an unavailable reviewer holds the result and retries; it never ships unchecked", async () => {
+  for (const recovers of [false, true]) {
+    const f = await fixture(); let reviews = 0;
+    const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewHoldMs: [0, 0],
+      reviewer: async () => { reviews++; if (!recovers || reviews < 3) throw new Error("Unavailable"); return { verdict: "accept", summary: "Useful" }; },
+      adapterFactory: async () => ({ async start() { return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
     });
     try {
       await submit(service); const final = await service.waitForTask("parent");
-      assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "completed"); assert.equal(starts, 1);
-      assert.match(final.result.report.limitations.join(" "), unavailable ? /review was unavailable/ : /incidental detail/);
+      assert.equal(reviews, 3, JSON.stringify(final.error));
+      if (recovers) assert.equal(final.status, "completed");
+      else {
+        assert.equal(final.status, "failed"); assert.equal(final.error.code, "QUALITY_REVIEW_UNAVAILABLE");
+        assert.match(final.error.heldAnswer, /Useful result/);
+      }
     } finally { await service.shutdown(); await f.close(); }
   }
 });

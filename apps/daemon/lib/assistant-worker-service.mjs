@@ -40,6 +40,13 @@ async function waitForWorkerExit(run) {
   ]);
 }
 
+function abortableDelay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+  });
+}
+
 function parseJsonObject(value) {
   const source = String(value ?? "").trim();
   const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
@@ -231,6 +238,7 @@ export class AssistantWorkerService {
     expectedVersion = process.env.EV_PI_VERSION ?? "0.84.4",
     timeoutMs = Number(process.env.EV_WORKER_TIMEOUT_MS ?? 120_000),
     settlementDelayMs = Number(process.env.EV_WORKER_SETTLEMENT_DELAY_MS ?? 0),
+    reviewHoldMs = (process.env.EV_REVIEW_HOLD_MS ?? "30000,120000").split(",").map(Number).filter((ms) => ms >= 0),
   }) {
     if (!supervisor) throw codedError("INVALID_SERVICE", "supervisor is required");
     if (typeof workerRoot !== "string" || !workerRoot) throw codedError("INVALID_SERVICE", "workerRoot is required");
@@ -246,6 +254,7 @@ export class AssistantWorkerService {
     this.expectedVersion = expectedVersion;
     this.timeoutMs = timeoutMs;
     this.settlementDelayMs = Math.max(0, settlementDelayMs);
+    this.reviewHoldMs = reviewHoldMs;
     this.activeRuns = new Map();
     this.planner = planner;
     this.reviewer = reviewer;
@@ -683,7 +692,7 @@ export class AssistantWorkerService {
           taskId,
           runId,
           fencingToken: lease.fencingToken,
-          error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed" },
+          error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed", ...(error.heldAnswer ? { heldAnswer: error.heldAnswer } : {}) },
         }).catch(() => this.supervisor.getTask(taskId));
       }
       return current ?? { taskId, status: "failed", error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed" } };
@@ -704,15 +713,29 @@ export class AssistantWorkerService {
     const maxRounds = active.maxRounds;
     await this.supervisor.beginVerification({ taskId: task.taskId, runId: active.runId, fencingToken: active.lease.fencingToken, round });
     if (active.isGeneral) await this._progress(active, { phase: "checking", message: round > 1 ? `Reviewing the revised result (round ${round}).` : "Checking the result against the brief." });
+    // Fail closed: an unchecked result is never delivered as done. The
+    // reviewer already retries provider blips; if it stays down, hold the
+    // result and try again later before giving up on delivery.
     let review;
-    try {
-      review = await this.reviewer({
-        taskId: task.taskId, request, brief, report, round, maxRounds, previousReviews: active.reviews, hostNotes,
-        localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionPath, workspacePath
-      });
-      review = { ...normalizeReviewShape(review), round };
-    } catch {
-      review = { verdict: "accept", pass: true, unavailable: true, round, criteria: [], missing: [], feedback: [], issues: [], caveats: ["EV's quality review was unavailable, so this result was not checked against the brief."], summary: "Review unavailable" };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        review = await this.reviewer({
+          taskId: task.taskId, request, brief, report, round, maxRounds, previousReviews: active.reviews, hostNotes,
+          localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionPath, workspacePath
+        });
+        review = { ...normalizeReviewShape(review), round };
+        break;
+      } catch (error) {
+        if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+        if (attempt >= this.reviewHoldMs.length) {
+          throw codedError("QUALITY_REVIEW_UNAVAILABLE", "The agent finished, but EV's quality check could not run, so the result was held back instead of delivered unchecked.", { heldAnswer: String(report.answer ?? "").slice(0, 6_000), cause: error.message });
+        }
+        await this._progress(active, { phase: "checking", message: "EV's quality check is unavailable; holding the result and trying again.", code: error.code ?? null });
+        active.controller = new AbortController();
+        try { await abortableDelay(this.reviewHoldMs[attempt], active.controller.signal); }
+        catch { throw codedError("STALE_FENCING_TOKEN", "Task was stopped"); }
+        finally { active.controller = null; }
+      }
     }
     active.reviews.push(review);
     await this._progress(active, { round, verdict: review.verdict, intentMatch: review.intentMatch ?? null, summary: review.summary, missing: review.missing, feedback: review.feedback, unavailable: Boolean(review.unavailable) }, "review");
