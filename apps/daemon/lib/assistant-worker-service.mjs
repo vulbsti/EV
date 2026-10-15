@@ -19,6 +19,8 @@ import { emptyUsage, exceededBudget, mergeUsage } from "./worker-usage.mjs";
 
 // Worker failures that say nothing about the work itself. Workspace-only
 // profiles have no external side effects, so one fresh attempt is safe.
+// A loop that has gone this many rounds without an accept is treated as stuck.
+const ROUNDS_BEFORE_ASKING = 8;
 const TRANSIENT_WORKER_CODES = new Set(["PI_PROCESS_EXIT", "PI_PROCESS_START", "PI_EMPTY_RESULT", "PI_TIMEOUT"]);
 // Admission order: finish work already under way before starting new work,
 // and let what the user is waiting on go ahead of background preparation.
@@ -670,6 +672,10 @@ export class AssistantWorkerService {
     const understanding = task.input.metadata.understanding ?? null;
     mergeUsage(active.usage, parked.state?.usage);
     active.round = parked.state?.round ?? 1;
+    // The person has just answered, so the stuck check starts over from here.
+    active.reviews = parked.state?.reviews ?? [];
+    active.askedAt = { reviews: active.reviews.length, round: active.round };
+    active.lastUnresolved = null;
     active.children = parked.state?.children ?? [];
     active.plan = { ...normalizeTaskPlan(task.history.findLast((event) => event.type === "manager_plan")?.plan ?? null, request, understanding), updates: this._appliedUpdates(task) };
     const answers = await this._takeInstructions(active);
@@ -781,7 +787,7 @@ export class AssistantWorkerService {
       if (error?.code === "NEEDS_INPUT" && lease && runId) {
         return await this.supervisor.waitForInput({
           taskId, runId, fencingToken: lease.fencingToken, question: error.question,
-          state: { usage: active.usage, round: active.round, children: active.children ?? [], answerSoFar: String(error.answerSoFar ?? "").slice(0, 4_000) }
+          state: { usage: active.usage, round: active.round, children: active.children ?? [], reviews: active.reviews ?? [], answerSoFar: String(error.answerSoFar ?? "").slice(0, 4_000) }
         }).catch(() => this.supervisor.getTask(taskId));
       }
       if (active.isGeneral) await this._cancelChildren(taskId, "parent-failed");
@@ -808,7 +814,6 @@ export class AssistantWorkerService {
 
   async _review(active, task, { request, brief, report, workspacePath, hostNotes = [], sessionEvents = [] }) {
     const round = active.round;
-    const maxRounds = active.maxRounds;
     await this.supervisor.beginVerification({ taskId: task.taskId, runId: active.runId, fencingToken: active.lease.fencingToken, round });
     if (active.isGeneral) await this._progress(active, { phase: "checking", message: round > 1 ? `Reviewing the revised result (round ${round}).` : "Checking the result against the brief." });
     // Fail closed: an unchecked result is never delivered as done. The
@@ -818,7 +823,7 @@ export class AssistantWorkerService {
     for (let attempt = 0; ; attempt++) {
       try {
         review = await this.reviewer({
-          taskId: task.taskId, request, brief, report, round, maxRounds, previousReviews: active.reviews, hostNotes,
+          taskId: task.taskId, request, brief, report, round, previousReviews: active.reviews, hostNotes,
           localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionEvents, workspacePath
         });
         review = { ...normalizeReviewShape(review), round };
@@ -836,7 +841,7 @@ export class AssistantWorkerService {
       }
     }
     active.reviews.push(review);
-    await this._progress(active, { round, verdict: review.verdict, intentMatch: review.intentMatch ?? null, summary: review.summary, missing: review.missing, feedback: review.feedback, unavailable: Boolean(review.unavailable) }, "review");
+    await this._progress(active, { round, verdict: review.verdict, intentMatch: review.intentMatch ?? null, summary: review.summary, missing: review.missing, feedback: review.feedback, progress: review.progress ?? null, askPerson: review.askPerson || null, unavailable: Boolean(review.unavailable) }, "review");
     const sharedPath = this._sharedPath(task);
     if (sharedPath) await writeSharedFiles(sharedPath, { "REVIEW.md": renderReviews(active.reviews) }).catch(() => {});
     else if (workspacePath) await writeArtifact(workspacePath, "REVIEW.md", Buffer.from(renderReviews(active.reviews))).catch(() => {});
@@ -951,10 +956,12 @@ export class AssistantWorkerService {
    * The review loop for general agents. EV reviews the agent's report against
    * the brief; when the reviewer asks for changes, its feedback goes back to
    * the same agent session (which keeps its context and files) and the
-   * revised result is reviewed again, up to the brief's review rounds and
-   * token budget. Only an accepted result is delivered as completed. If the
-   * rounds or budget run out first, the best result is delivered as partial
-   * with exactly what is still missing.
+   * revised result is reviewed again, until the reviewer accepts it. Only an
+   * accepted result is delivered as completed. When the loop is stuck (the
+   * reviewer needs the person, or rounds stop making progress), EV asks the
+   * person instead of delivering half-done work, and carries on with their
+   * answer. The token budget is a safety stop: past it, the best result is
+   * delivered as partial with exactly what is still missing.
    */
   async _finishGeneralResult(active, task, initial, workspacePath) {
     const request = task.input.metadata?.sourceRequest ?? "";
@@ -962,7 +969,7 @@ export class AssistantWorkerService {
     active.plan ??= normalizeTaskPlan(null, request);
     active.reviews ??= [];
     active.autoAnswers ??= 0;
-    active.maxRounds = isChild ? 1 : active.plan.budget.maxReviewRounds;
+    active.askedAt ??= { reviews: 0, round: 1 };
     const sharedPath = this._sharedPath(task);
     let result = initial;
     let best = null;
@@ -1008,7 +1015,7 @@ export class AssistantWorkerService {
         // Format, not quality: one chance to restate the result as a report.
         if (formatFixUsed || stopReason || active.cancelRequested || active.shutdownRequested) break;
         formatFixUsed = true;
-        const repaired = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, formatOnly: true, round: active.round, maxRounds: active.maxRounds, sharedPath }), { reuseCompleted: false });
+        const repaired = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, formatOnly: true, round: active.round, sharedPath }), { reuseCompleted: false });
         if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
         if (repaired.status === "budget_exceeded") stopReason = "budget";
         else if (repaired.status !== "completed") break;
@@ -1039,13 +1046,23 @@ export class AssistantWorkerService {
       };
       best = { result, report, issues: unresolved };
       if (!unresolved.length || isChild || report.outcome === "blocked") break;
-      if (stopReason || active.round >= active.maxRounds || this._budgetSpent(active)) {
-        stopReason ??= active.round >= active.maxRounds ? "rounds" : "budget";
+      if (stopReason || this._budgetSpent(active)) {
+        stopReason ??= "budget";
         break;
       }
       if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+      const question = this._stuckQuestion(active, review, unresolved);
+      if (question) {
+        const answered = active.autoAnswers < 3 ? await this._answerFromContext(active, task, question) : null;
+        if (!answered) throw codedError("NEEDS_INPUT", question, { question, answerSoFar: report.answer });
+        active.autoAnswers += 1;
+        active.askedAt = { reviews: active.reviews.length, round: active.round };
+        active.lastUnresolved = null;
+        await this._addUpdates(active, task, [`EV answered "${question}" from what it knows about the person: ${answered.answer}`]);
+        await this._progress(active, { phase: "working", message: "The work was stuck on a question; EV answered it from what it knows about you.", question, answer: answered.answer, basis: answered.basis });
+      }
       await this._sendBack(active, task);
-      const revised = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, review: review ?? { missing: hostNotes }, round: active.round - 1, maxRounds: active.maxRounds, sharedPath }), { reuseCompleted: false });
+      const revised = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, review: review ?? { missing: hostNotes }, round: active.round - 1, sharedPath }), { reuseCompleted: false });
       if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
       if (revised.status === "budget_exceeded" && revised.text) { stopReason = "budget"; result = revised; continue; }
       if (revised.status !== "completed") {
@@ -1063,6 +1080,24 @@ export class AssistantWorkerService {
     report.verification.stopReason = best.issues.length ? stopReason ?? "unfinished" : null;
     report.limitations = [...new Set([...report.limitations, ...(report.verification.qualityGate.caveats ?? []), ...best.issues])].slice(0, 14);
     return best;
+  }
+
+  /**
+   * The question to put to the person when the review loop cannot finish on
+   * its own: the reviewer says only they can unblock it, the last two rounds
+   * made no progress, or it has gone on too long. Null while it is improving.
+   */
+  _stuckQuestion(active, review, unresolved) {
+    if (review?.askPerson) return review.askPerson;
+    const since = active.reviews.slice(active.askedAt.reviews);
+    // Stalled: the reviewer says so twice running, or the open points did not change.
+    const key = JSON.stringify(unresolved);
+    const unchanged = active.lastUnresolved === key;
+    active.lastUnresolved = key;
+    const stalled = unchanged || (since.length >= 2 && since.slice(-2).every((item) => item.progress === "stalled"));
+    if (!stalled && active.round - active.askedAt.round < ROUNDS_BEFORE_ASKING) return null;
+    const open = unresolved.slice(0, 3).join("; ").slice(0, 400);
+    return `I've gone back and forth with the agent and it isn't getting closer on: ${open}. Should I deliver it without those, or is there something that would help?`;
   }
 
   async _materializeReportedDeliverables(task, report, workspacePath) {
