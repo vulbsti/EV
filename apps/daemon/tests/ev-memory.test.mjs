@@ -127,3 +127,18 @@ test("a memory database from before kinds keeps its claims and accepts the new s
     } finally { memory.close(); }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("forgetting an earlier version keeps what is true now and removes the old words", async () => {
+  await withMemory(async (memory) => {
+    const first = turn(memory, "1", "I work at Acme");
+    applyLearning(memory, { ownerId, events: [first], seen: new Map(), ops: [{ op: "add", event: 1, kind: "fact", text: "Works at Acme.", explicit: true }] });
+    const second = turn(memory, "2", "I quit Acme, freelancing now");
+    applyLearning(memory, { ownerId, events: [second], seen: seenNow(memory), ops: [{ op: "update", event: 1, id: "m1", text: "Freelances; left Acme.", explicit: true, change: "changed" }] });
+    const third = turn(memory, "3", "forget where I used to work");
+    applyLearning(memory, { ownerId, events: [third], seen: seenNow(memory), ops: [{ op: "forget", event: 1, id: "m1", part: "history", text: "Freelances." }] });
+    const [claim] = memory.recall({ ownerId });
+    assert.equal(claim.current.value.text, "Freelances.");
+    assert.equal(JSON.stringify(claim.revisions).includes("Acme"), false);
+    assert.deepEqual(memory.getEvent("turn:2").content, { erased: true });
+  });
+});

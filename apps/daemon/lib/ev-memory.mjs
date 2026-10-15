@@ -43,7 +43,8 @@ function describe({ id, claim }) {
     value?.cause ? `cause: ${value.cause}` : "",
     value?.appliesTo ? `applies to: ${value.appliesTo}` : ""
   ].filter(Boolean).join(", ");
-  return `${id} [${claim.kind}${extra ? `, ${extra}` : ""}] ${text(memoryText(value), 400)} (since ${day(claim.current.createdAt)})`;
+  const earlier = claim.revisions.slice(0, -1).map((revision) => text(memoryText(revision.value), 200)).filter(Boolean).slice(-3);
+  return `${id} [${claim.kind}${extra ? `, ${extra}` : ""}] ${text(memoryText(value), 400)} (since ${day(claim.current.createdAt)})${earlier.length ? ` [earlier versions: ${earlier.map((item) => `"${item}"`).join("; ")}]` : ""}`;
 }
 
 function describeEvent(event, index) {
@@ -76,9 +77,9 @@ const INSTRUCTIONS = [
   "- explicit is true only when the person directly stated it. Anything you inferred is explicit false; it stays tentative until confirmed.",
   "- If an event supports something already in memory, use confirm rather than adding a duplicate. If a later task succeeded doing what a lesson warned against, retire or narrow that lesson.",
   "- If they say they always said or wanted something that memory shows differently, do not rewrite history: update with change \"changed\" from now on. If a new statement contradicts memory with no sign that anything changed, use dispute.",
-  "- If they clearly ask EV to forget something, use forget on it: it is deleted, not kept as history. Never store passwords, keys, codes or other secrets.",
+  "- If they ask EV to forget something (\"forget X\", \"don't remember that\", \"delete that\"), always use forget, never update or retire: forget deletes the words, while update and retire keep them as history. part \"history\" deletes only the earlier versions of that memory and keeps what is true now (\"forget where I used to work\" after a job change); part \"all\" deletes the whole memory. With part \"history\", give text when what is true now still mentions the forgotten detail, restated without it. Never store passwords, keys, codes or other secrets.",
   "- Write text as one short, self-contained sentence in the third person (\"Prefers ...\", \"Works as ...\"), with any scope or exception in the sentence.",
-  'Return JSON only: {"ops":[{"op":"add","event":number,"kind":string,"text":string,"explicit":boolean,"state"?:string,"cause"?:string,"appliesTo"?:string,"expiresInHours"?:number,"validFrom"?:"YYYY-MM-DD"}|{"op":"update","event":number,"id":string,"text":string,"explicit":boolean,"change":"changed"|"narrowed"|"corrected","state"?:string}|{"op":"confirm","event":number,"id":string}|{"op":"dispute","event":number,"id":string,"text":string}|{"op":"retire","event":number,"id":string,"reason":string}|{"op":"forget","event":number,"id":string}]}. event is the E number the operation is based on; id is an m number from current memory.'
+  'Return JSON only: {"ops":[{"op":"add","event":number,"kind":string,"text":string,"explicit":boolean,"state"?:string,"cause"?:string,"appliesTo"?:string,"expiresInHours"?:number,"validFrom"?:"YYYY-MM-DD"}|{"op":"update","event":number,"id":string,"text":string,"explicit":boolean,"change":"changed"|"narrowed"|"corrected","state"?:string}|{"op":"confirm","event":number,"id":string}|{"op":"dispute","event":number,"id":string,"text":string}|{"op":"retire","event":number,"id":string,"reason":string}|{"op":"forget","event":number,"id":string,"part":"all"|"history","text"?:string}]}. event is the E number the operation is based on; id is an m number from current memory.'
 ].join("\n");
 
 /** One model call over a batch of new events. Returns the raw operations. */
@@ -183,8 +184,13 @@ export function applyLearning(memory, { ownerId, events, ops, seen, now = Date.n
       } else if (op.op === "forget") {
         // Erasing is the person's call alone: only from their own words.
         if (fromTask) { skip(op, "only the person can ask EV to forget"); continue; }
-        memory.erase({ ownerId, targetType: "claim", targetId: target.claimId });
-        applied.push({ op: "forget", claimId: target.claimId, kind });
+        if (op.part === "history") {
+          // If what is true now still names the forgotten detail, it is restated first.
+          if (text(op.text)) memory.correct({ claimId: target.claimId, expectedRevision, value: learnedValue(kind, op, typeof target.current.value === "object" && target.current.value ? target.current.value : {}), authorType: "user", status: target.current.status, reviewAfter: target.current.reviewAfter, expiresAt: target.current.expiresAt });
+          memory.eraseHistory({ ownerId, claimId: target.claimId });
+        }
+        else memory.erase({ ownerId, targetType: "claim", targetId: target.claimId });
+        applied.push({ op: "forget", claimId: target.claimId, kind, part: op.part === "history" ? "history" : "all" });
       } else if (op.op === "retire") {
         memory.retire({ claimId: target.claimId, expectedRevision, sourceIds: [event.sourceId], authorType: author, reason: text(op.reason, 300) || null });
         applied.push({ op: "retire", claimId: target.claimId, kind });

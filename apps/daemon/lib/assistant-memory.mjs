@@ -655,6 +655,27 @@ export class AssistantMemoryStore {
     for (const sourceId of sourceIds) redactEvent.run(this._now(), sourceId);
   }
 
+  /**
+   * Forgets the earlier versions of a claim and keeps the current one ("forget
+   * where I used to work"): their words, and the recorded events behind the claim.
+   */
+  eraseHistory({ ownerId, claimId }) {
+    const claim = this._requireClaim(claimId);
+    if (claim.owner_id !== ownerId) throw codedError("MEMORY_SCOPE_DENIED", "Memory belongs to another owner");
+    this._transaction(() => {
+      const current = claim.current_revision_id;
+      // The message that changed the claim usually names the old value too, so
+      // every event behind the claim is redacted; the current text stays.
+      const sourceIds = this._evidenceSourceIds(claimId);
+      this.database.prepare("UPDATE memory_revisions SET value_json = 'null' WHERE claim_id = ? AND revision_id != ?").run(claimId, current);
+      const redactEvent = this.database.prepare("UPDATE memory_events SET content_json = '{\"erased\":true}', analysed_at = COALESCE(analysed_at, ?) WHERE source_id = ?");
+      for (const sourceId of sourceIds) redactEvent.run(this._now(), sourceId);
+      this._bumpEraseEpoch();
+      this._nextMemoryRevision();
+    });
+    return this._claimView(this._requireClaim(claimId));
+  }
+
   stopUse({ ownerId, targetType, targetId, scope = null, expiresAt = null }) {
     return this._tombstone({ ownerId, targetType, targetId, scope, expiresAt, action: "stop_use" });
   }
