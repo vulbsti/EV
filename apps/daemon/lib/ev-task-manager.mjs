@@ -73,7 +73,8 @@ export async function planManagedTask({ taskId, request, context, understanding 
 function briefSummary(plan) {
   return JSON.stringify({
     intent: plan.intent, goal: plan.goal, successCriteria: plan.successCriteria,
-    qualityBar: plan.qualityBar ?? [], assumptions: plan.assumptions ?? []
+    qualityBar: plan.qualityBar ?? [], assumptions: plan.assumptions ?? [],
+    ...(plan.updates?.length ? { laterFromThePerson: plan.updates } : {})
   });
 }
 

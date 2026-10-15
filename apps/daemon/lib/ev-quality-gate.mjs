@@ -278,6 +278,7 @@ export async function reviewOpenClawReport({
     "2. Criteria: for each success criterion, is it met, partial, or missing, with a short note grounded in what you can see.",
     "3. Quality: does it meet the quality bar this person expects (depth, format, tone, length, rigor)? A technically complete but shallow, generic, or sloppy result is not ready.",
     "4. Truth: no material factual error, no claimed action or file that the observations contradict, no invented sources.",
+    "laterFromThePerson, when present, is what the person said after the brief was written (answers to the agent's questions, changes). It overrides the request and brief wherever they differ; judge against it.",
     "Return verdict \"accept\" only when intent is met, every criterion is met or honestly disclosed as unachievable, and the quality bar is reached. Otherwise return \"revise\" with missing (what the result lacks) and feedback (specific, actionable instructions the agent can carry out with its tools). Do not ask for things outside the user's request, exhaustive audit trails, or changes with no practical value to this person.",
     "An honest partial result is acceptable only when the missing part genuinely cannot be achieved with the access the agent has; then accept it and put the limit in caveats.",
     lastRound ? "This is the last review round. Still give an honest verdict; EV will show the user what remains unresolved." : `This is review round ${round} of at most ${maxRounds}.`,
@@ -287,7 +288,8 @@ export async function reviewOpenClawReport({
     `User request:\n${request}`,
     `EV's brief:\n${JSON.stringify(brief ? {
       intent: brief.intent, servesGoal: brief.servesGoal, goal: brief.goal, successCriteria: brief.successCriteria,
-      qualityBar: brief.qualityBar, assumptions: brief.assumptions
+      qualityBar: brief.qualityBar, assumptions: brief.assumptions,
+      ...(brief.updates?.length ? { laterFromThePerson: brief.updates } : {})
     } : { goal: request })}`,
     previousReviews.length ? `Earlier review rounds (the agent was asked to address these):\n${JSON.stringify(previousReviews.map(({ verdict, missing, feedback, summary }) => ({ verdict, missing, feedback, summary })))}` : "",
     `Worker report:\n${redactEvidence(JSON.stringify(reviewReport))}`,

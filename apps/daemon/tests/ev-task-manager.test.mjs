@@ -287,8 +287,8 @@ test("an honest blocker is delivered without a forced post link or a correction 
 });
 
 test("an agent that needs the person parks without a worker slot, survives a restart, and resumes in its session", async () => {
-  const f = await fixture(); const prompts = []; let asked = 0;
-  const options = { ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewer: pass,
+  const f = await fixture(); const prompts = []; const reviewedBriefs = []; let asked = 0;
+  const options = { ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewer: async ({ brief }) => { reviewedBriefs.push(brief); return pass(); },
     answerer: async () => { asked++; return null; },
     adapterFactory: async () => ({ async start({ prompt }) {
       prompts.push(prompt);
@@ -311,6 +311,7 @@ test("an agent that needs the person parks without a worker slot, survives a res
     const final = await service.waitForTask("parent");
     assert.equal(final.status, "completed"); assert.match(final.result.report.answer, /work account/);
     assert.equal(prompts.length, 2); assert.match(prompts[1], /Use the work account/);
+    assert.match(JSON.stringify(reviewedBriefs.at(-1)), /Use the work account/);
   } finally { await service.shutdown(); await f.close(); }
 });
 

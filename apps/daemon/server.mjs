@@ -413,8 +413,8 @@ async function workInProgress(conversationId) {
 }
 
 /**
- * EV's main agent reads the message before anything runs. Returns null when
- * it is unavailable even after retries; the caller then starts nothing.
+ * EV's main agent reads the message before anything runs. When it is
+ * unavailable even after retries, the caller starts nothing.
  */
 async function understandTurn({ clientMessageId, conversationId, text }) {
   try {
@@ -434,8 +434,9 @@ async function understandTurn({ clientMessageId, conversationId, text }) {
     });
     if (understanding.action === "revise") understanding.taskId = work.taskIds[understanding.target - 1] ?? null;
     return understanding;
-  } catch {
-    return null;
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] EV's main agent is unavailable: ${error.message}`);
+    return { action: "unavailable", status: error.status ?? null };
   }
 }
 
@@ -542,7 +543,7 @@ async function createAssistantTurn({ clientMessageId, conversationId, text }) {
       planned = { classification: "revise", route: "companion", understanding, response: understanding.message || (understanding.stop ? "Stopped." : "Passed on.") };
     } else if (understanding?.action === "clarify") {
       planned = { classification: "clarify", route: "companion", understanding, response: clarifyingMessage(understanding) };
-    } else if (understanding) {
+    } else if (understanding.action !== "unavailable") {
       planned = {
         classification: "action",
         route: "worker",
@@ -556,9 +557,11 @@ async function createAssistantTurn({ clientMessageId, conversationId, text }) {
       planned = {
         classification: "unavailable",
         route: "companion",
-        response: process.env.OPENCODE_API
-          ? "I couldn’t think this through just now because my model didn’t answer, so I haven’t started anything. Send it again in a moment."
-          : "My model isn’t configured (OPENCODE_API is not set), so I can’t work on anything yet."
+        response: !process.env.OPENCODE_API
+          ? "My model isn’t configured (OPENCODE_API is not set), so I can’t work on anything yet."
+          : understanding.status >= 400 && understanding.status < 500 && understanding.status !== 429
+            ? `My model is rejecting requests (HTTP ${understanding.status}), which looks like a setup problem rather than a blip, so I haven’t started anything. The daemon log has the details.`
+            : "I couldn’t think this through just now because my model didn’t answer, so I haven’t started anything. Send it again in a moment."
       };
     }
   }

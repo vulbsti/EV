@@ -375,7 +375,26 @@ export class AssistantWorkerService {
     const pending = task.history.filter((event) => event.type === "instruction" && event.sequence > through);
     if (!pending.length) return [];
     await this._progress(active, { through: pending.at(-1).sequence, count: pending.length }, "instructions_applied");
-    return pending.map((event) => event.text);
+    const texts = pending.map((event) => event.text);
+    await this._addUpdates(active, task, texts);
+    return texts;
+  }
+
+  /**
+   * What the person said after the brief was written becomes part of it, so
+   * the agent, BRIEF.md and the reviewer all judge against the same thing.
+   */
+  async _addUpdates(active, task, texts) {
+    if (!active.plan || !texts.length) return;
+    active.plan.updates = [...(active.plan.updates ?? []), ...texts];
+    const sharedPath = this._sharedPath(task);
+    if (sharedPath) await writeSharedFiles(sharedPath, { "BRIEF.md": renderBrief(active.plan, task.input.metadata?.sourceRequest ?? "") }).catch(() => {});
+  }
+
+  /** Updates already applied in earlier runs of this task (before a restart or a pause). */
+  _appliedUpdates(task) {
+    const through = task.history.findLast((event) => event.type === "instructions_applied")?.through ?? 0;
+    return task.history.filter((event) => event.type === "instruction" && event.sequence <= through).map((event) => event.text);
   }
 
   async _cancelChildren(taskId, reason) {
@@ -580,7 +599,7 @@ export class AssistantWorkerService {
       } finally { active.controller = null; }
       await this._progress(active, { plan }, "manager_plan");
     }
-    active.plan = normalizeTaskPlan(plan, request, understanding);
+    active.plan = { ...normalizeTaskPlan(plan, request, understanding), updates: this._appliedUpdates(task) };
     const sharedPath = this._sharedPath(task);
     if (sharedPath) {
       await writeSharedFiles(sharedPath, {
@@ -652,7 +671,7 @@ export class AssistantWorkerService {
     mergeUsage(active.usage, parked.state?.usage);
     active.round = parked.state?.round ?? 1;
     active.children = parked.state?.children ?? [];
-    active.plan = normalizeTaskPlan(task.history.findLast((event) => event.type === "manager_plan")?.plan ?? null, request, understanding);
+    active.plan = { ...normalizeTaskPlan(task.history.findLast((event) => event.type === "manager_plan")?.plan ?? null, request, understanding), updates: this._appliedUpdates(task) };
     const answers = await this._takeInstructions(active);
     await this._progress(active, { phase: "working", message: answers.length ? "The agent is carrying on with your answer." : "The agent is carrying on where it left off." });
     return this._runWorker(active, continuationPrompt({ request, plan: active.plan, answers }), { reuseCompleted: false });
@@ -970,6 +989,7 @@ export class AssistantWorkerService {
         const answered = active.autoAnswers < 3 ? await this._answerFromContext(active, task, report.question) : null;
         if (answered) {
           active.autoAnswers += 1;
+          await this._addUpdates(active, task, [`EV answered the agent's question "${report.question}" from what it knows about the person: ${answered.answer}`]);
           await this._progress(active, { phase: "working", message: "The agent asked a question; EV answered it from what it knows about you.", question: report.question, answer: answered.answer, basis: answered.basis });
           result = await followUp(continuationPrompt({ request, plan: active.plan, answers: [answered.answer] }));
           continue;

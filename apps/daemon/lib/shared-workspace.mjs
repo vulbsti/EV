@@ -126,6 +126,7 @@ export function renderBrief(brief, request) {
     "",
     bullet(brief.unknowns),
     "",
+    ...(brief.updates?.length ? ["## Later from the user (overrides the above where they differ)", "", bullet(brief.updates), ""] : []),
     "## Budget",
     "",
     `- Review rounds: up to ${brief.budget?.maxReviewRounds ?? 1}`,
