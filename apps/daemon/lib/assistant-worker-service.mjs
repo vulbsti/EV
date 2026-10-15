@@ -7,7 +7,7 @@ import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permis
 
 import { AssistantSupervisor } from "./assistant-supervisor.mjs";
 import { reviewOpenClawReport } from "./ev-quality-gate.mjs";
-import { OpenClawWorkerAdapter } from "./openclaw-worker-adapter.mjs";
+import { OpenClawWorkerAdapter, openClawSessionPath } from "./openclaw-worker-adapter.mjs";
 import { validateOpenClawTaskReport } from "./openclaw-task-report.mjs";
 import { continuationPrompt, executionPrompt, normalizeTaskPlan, planManagedTask, revisionPrompt, wrapUpPrompt } from "./ev-task-manager.mjs";
 import { answerFromContext } from "./ev-main-agent.mjs";
@@ -241,6 +241,9 @@ export class AssistantWorkerService {
     timeoutMs = Number(process.env.EV_WORKER_TIMEOUT_MS ?? 120_000),
     settlementDelayMs = Number(process.env.EV_WORKER_SETTLEMENT_DELAY_MS ?? 0),
     reviewHoldMs = (process.env.EV_REVIEW_HOLD_MS ?? "30000,120000").split(",").map(Number).filter((ms) => ms >= 0),
+    // EV_OPENCLAW_SANDBOX=docker runs every OpenClaw turn in a container
+    // (image EV_OPENCLAW_IMAGE, built from docker/openclaw); see openClawCommand.
+    openClawSandbox = process.env.EV_OPENCLAW_SANDBOX === "docker" ? { image: process.env.EV_OPENCLAW_IMAGE || "ev-openclaw" } : null,
   }) {
     if (!supervisor) throw codedError("INVALID_SERVICE", "supervisor is required");
     if (typeof workerRoot !== "string" || !workerRoot) throw codedError("INVALID_SERVICE", "workerRoot is required");
@@ -257,6 +260,9 @@ export class AssistantWorkerService {
     this.timeoutMs = timeoutMs;
     this.settlementDelayMs = Math.max(0, settlementDelayMs);
     this.reviewHoldMs = reviewHoldMs;
+    this.openClawSandbox = openClawSandbox;
+    // A sandboxed OpenClaw never sees the person's own ~/.openclaw.
+    this.openClawHome = openClawSandbox ? join(this.workerRoot, "openclaw-home") : process.env.HOME ?? "";
     this.activeRuns = new Map();
     this.planner = planner;
     this.reviewer = reviewer;
@@ -269,7 +275,10 @@ export class AssistantWorkerService {
     this.started = false;
     this.stopping = false;
     this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => profile.capability === "openclaw-general-v1"
-      ? new OpenClawWorkerAdapter({ taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs })
+      ? new OpenClawWorkerAdapter({
+        taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs, homeDir: this.openClawHome,
+        sandbox: this.openClawSandbox && { ...this.openClawSandbox, mountRoot: task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath }
+      })
       : new PiWorkerAdapter({
       executable: this.executable,
       sessionDir,
@@ -984,7 +993,7 @@ export class AssistantWorkerService {
       if (!isChild && report.outcome !== "blocked") {
         review = await this._review(active, task, {
           request, brief: active.plan, report, workspacePath, hostNotes,
-          sessionPath: join(process.env.HOME ?? "", ".openclaw", "agents", "ev-worker", "sessions", `${task.taskId}.jsonl`)
+          sessionPath: openClawSessionPath(this.openClawHome, task.taskId)
         });
       }
       // A file the agent claims but that does not exist can never be
