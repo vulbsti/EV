@@ -1,0 +1,83 @@
+{
+  "level": 1,
+  "name": "Conversational reflexes",
+  "summary": "One conversation, no history needed. EV must tell talk from work, answer questions as questions, and resolve vague references to what just happened.",
+  "scenarios": [
+    {
+      "id": "L1-01",
+      "title": "Small talk is not a task",
+      "guards": "Every message becoming an execution task",
+      "components": ["controller"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "hey", "tasks": 0, "expect": ["A short, natural greeting back."], "fail": ["A background task is created.", "A canned 'I'm working on this now' reply."] },
+            { "say": "long day honestly, my brain is fried", "tasks": 0, "expect": ["A brief human acknowledgement.", "No unsolicited plan or productivity advice dump."], "fail": ["A task is created to 'help with fatigue'."] },
+            { "say": "anyway what can you actually do for me?", "tasks": 0, "expect": ["A direct answer about what EV can do, in plain words."], "fail": ["A task is created to research EV's own capabilities."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L1-02",
+      "title": "A question about work is answered, not re-executed",
+      "guards": "Follow-up questions spawning duplicate tasks",
+      "components": ["controller", "task-manager"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Write me a 5 item checklist for launching a small mobile app on the Play Store. Save it as a markdown file.", "tasks": 1, "expect": ["One task; a checklist file is delivered after review."] },
+            { "say": "why did you put the privacy policy item first?", "tasks": 0, "expect": ["An answer that refers to the actual checklist just produced."], "fail": ["A new task that writes another checklist.", "An answer that does not know a checklist exists."] },
+            { "say": "ok fine", "tasks": 0, "expect": ["A minimal acknowledgement or nothing substantive."], "fail": ["Any new task."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L1-03",
+      "title": "Vague follow-up resolves to the last artifact",
+      "guards": "Losing the referent of 'it', 'that', 'the second one'",
+      "components": ["controller", "context-builder", "task-manager"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Give me three name ideas for a habit tracking app, one line each with a tagline.", "tasks": "any", "expect": ["Three names with taglines."] },
+            { "say": "the second one is close but make it less cringe", "tasks": "any", "expect": ["Revises only the second name/tagline.", "Keeps the other two unchanged or explicitly says it left them."], "fail": ["Produces three brand-new names.", "Asks which list the user means."] },
+            { "say": "perfect. that's the one.", "tasks": 0, "expect": ["Acknowledges the chosen name by name."], "fail": ["A new task."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L1-04",
+      "title": "Underspecified request with no context",
+      "guards": "Guessing wildly or interrogating the user",
+      "components": ["controller", "intent-brief"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "make me a website", "tasks": "any", "expect": ["Either one consequential question (what is it for?) with a sensible default offered, or a clearly stated reversible assumption and a quick draft.", "States what it assumed."], "fail": ["A list of 5+ questions before doing anything.", "A finished site about an invented business presented as what the user wanted, with no stated assumption."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L1-05",
+      "title": "Contradiction inside one message",
+      "guards": "Silently picking one half of a self-contradicting request",
+      "components": ["controller", "intent-brief"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Write a super detailed but really short bio for me, I'm a backend engineer who builds side projects. Like 2 lines but cover everything.", "tasks": "any", "expect": ["Resolves the tension sensibly (dense 2 lines) and says so, or offers a 2-line and a longer variant."], "fail": ["A 300-word bio.", "Refuses because the request is contradictory."] }
+          ]
+        }
+      ]
+    }
+  ]
+}
