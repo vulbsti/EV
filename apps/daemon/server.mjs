@@ -398,16 +398,18 @@ function reviewedGuidance() {
   return assistantMemory.recall({ ownerId: assistantOwnerId, scope: "global" }).slice(-8);
 }
 
-/** Root tasks in this conversation that are running or recently settled. */
+/** Root tasks in this conversation that are running or recently settled, numbered for `revise`. */
 async function workInProgress(conversationId) {
   const tasks = (await assistantSupervisor.listTasks())
     .filter((task) => task.input?.metadata?.conversationId === conversationId && !task.input?.metadata?.parentTaskId && task.input?.capability === "openclaw-general-v1")
     .slice(-6);
-  return tasks.map((task) => {
+  const text = tasks.map((task, index) => {
     const report = task.result?.report;
-    const state = report ? report.outcome : task.status;
-    return `- ${task.input.metadata.title ?? "Task"}: ${state}${report?.answer ? `. Result: ${String(report.answer).slice(0, 300)}` : ""}`;
+    const question = task.status === "waiting" ? task.history.findLast((event) => event.type === "input_needed")?.question : null;
+    const state = report ? `finished, ${report.outcome}` : question ? `waiting for their answer to: ${question}` : ["failed", "cancelled"].includes(task.status) ? task.status : "running";
+    return `[${index + 1}] ${task.input.metadata.title ?? "Task"}: ${state}${report?.answer ? `. Result: ${String(report.answer).slice(0, 300)}` : ""}`;
   }).join("\n");
+  return { text, taskIds: tasks.map((task) => task.taskId) };
 }
 
 /**
@@ -421,16 +423,35 @@ async function understandTurn({ clientMessageId, conversationId, text }) {
     const updates = assistantLedger.listUpdates(conversationId);
     // An update EV posted after its question means the question is no longer the last word.
     const alreadyAsked = last?.intent?.kind === "clarify" && !(updates.at(-1)?.sequence > last.assistantMessage.sequence);
-    return await understandMessage({
+    const work = await workInProgress(conversationId);
+    const understanding = await understandMessage({
       messageId: clientMessageId,
       message: text,
       guidance: reviewedGuidance().map((claim) => `- ${String(claim.current.value).slice(0, 600)}`).join("\n"),
       recent: await recentConversation(conversationId, clientMessageId),
-      work: await workInProgress(conversationId),
+      work: work.text,
       alreadyAsked
     });
+    if (understanding.action === "revise") understanding.taskId = work.taskIds[understanding.target - 1] ?? null;
+    return understanding;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Passes the person's message to work that is still running or waiting for
+ * them. Returns false when that work has already finished, so the message
+ * is handled as new work instead.
+ */
+async function reviseTask(understanding, clientMessageId) {
+  try {
+    if (understanding.stop) await assistantWorkers.cancelTask({ taskId: understanding.taskId, reason: "user-requested" });
+    else await assistantWorkers.instructTask({ taskId: understanding.taskId, text: understanding.instruction, source: clientMessageId });
+    return true;
+  } catch (error) {
+    if (error.code === "TASK_NOT_ACTIVE") return false;
+    throw error;
   }
 }
 
@@ -517,6 +538,8 @@ async function createAssistantTurn({ clientMessageId, conversationId, text }) {
     const understanding = await understandTurn({ clientMessageId, conversationId, text });
     if (understanding?.action === "reply" && understanding.message) {
       planned = { classification: "conversation", route: "companion", response: understanding.message };
+    } else if (understanding?.action === "revise" && understanding.taskId && await reviseTask(understanding, clientMessageId)) {
+      planned = { classification: "revise", route: "companion", understanding, response: understanding.message || (understanding.stop ? "Stopped." : "Passed on.") };
     } else if (understanding?.action === "clarify") {
       planned = { classification: "clarify", route: "companion", understanding, response: clarifyingMessage(understanding) };
     } else if (understanding) {

@@ -285,3 +285,52 @@ test("an honest blocker is delivered without a forced post link or a correction 
     assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "blocked"); assert.equal(starts, 1);
   } finally { await service.shutdown(); await f.close(); }
 });
+
+test("an agent that needs the person parks without a worker slot, survives a restart, and resumes in its session", async () => {
+  const f = await fixture(); const prompts = []; let asked = 0;
+  const options = { ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewer: pass,
+    answerer: async () => { asked++; return null; },
+    adapterFactory: async () => ({ async start({ prompt }) {
+      prompts.push(prompt);
+      const text = prompts.length === 1 ? report("Drafted both options", { outcome: "needs_input", question: "Which account should I post from?" }) : report("Posted from the work account");
+      return { completion: Promise.resolve({ status: "completed", text }) };
+    }, async cancel() {} })
+  };
+  let service = new AssistantWorkerService(options);
+  try {
+    await submit(service);
+    const parked = await service.waitForTask("parent");
+    assert.equal(parked.status, "waiting"); assert.equal(asked, 1); assert.equal(parked.lease, null);
+    assert.equal(parked.history.findLast((event) => event.type === "input_needed").question, "Which account should I post from?");
+    assert.match(taskUpdate(parked), /Which account should I post from\?/);
+    await service.shutdown();
+    service = new AssistantWorkerService(options);
+    await service.start();
+    assert.equal((await f.supervisor.getTask("parent")).status, "waiting");
+    await service.instructTask({ taskId: "parent", text: "Use the work account." });
+    const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed"); assert.match(final.result.report.answer, /work account/);
+    assert.equal(prompts.length, 2); assert.match(prompts[1], /Use the work account/);
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("an instruction sent while an agent runs reaches it in the same task before review", async () => {
+  const f = await fixture(); const prompts = []; let release;
+  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewer: pass,
+    adapterFactory: async () => ({ async start({ prompt }) {
+      prompts.push(prompt);
+      if (prompts.length === 1) return { completion: new Promise((resolve) => { release = () => resolve({ status: "completed", text: report("Formal draft") }); }) };
+      return { completion: Promise.resolve({ status: "completed", text: report("Casual draft") }) };
+    }, async cancel() {} })
+  });
+  try {
+    await submit(service);
+    await until(() => Boolean(release));
+    await service.instructTask({ taskId: "parent", text: "Make it casual." });
+    release();
+    const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed"); assert.match(final.result.report.answer, /Casual/);
+    assert.equal(prompts.length, 2); assert.match(prompts[1], /Make it casual/);
+    await assert.rejects(service.instructTask({ taskId: "parent", text: "too late" }), (error) => error.code === "TASK_NOT_ACTIVE");
+  } finally { await service.shutdown(); await f.close(); }
+});

@@ -94,6 +94,7 @@ function mergeTasks(incoming) {
 function taskLabel(status) {
   if (status === "leased" || status === "running") return "working";
   if (status === "verifying") return "checking quality";
+  if (status === "waiting") return "needs your answer";
   return status?.replaceAll("_", " ") ?? "queued";
 }
 
@@ -117,7 +118,8 @@ function renderTask(task) {
   const detail = task.status === "failed" ? task.error?.message ?? "The worker could not complete this task." :
     task.status === "cancelled" ? "Stopped. No late worker result can replace this state." :
     task.status === "completed" ? task.result?.summary ?? (isOpenClaw ? report?.outcome === "blocked" ? "The agent could not achieve the requested outcome. The reason is below." : report?.outcome === "partial" ? "Useful work is ready, with unfinished parts or material concerns listed below." : "The requested work is ready." : isR1 ? "Finished with a draft, review receipt, and materially different final." : "Finished and verified.") :
-    task.status === "queued" ? "Saved and waiting for its agent." : task.progress?.message ?? (isOpenClaw ? "OpenClaw is working in this task’s workspace." : "The reviewed worker is using its task workspace.");
+    task.status === "queued" ? "Saved and waiting for its agent." :
+    task.status === "waiting" ? `Paused until you answer: ${task.history?.findLast((event) => event.type === "input_needed")?.question ?? "see the conversation."}` : task.progress?.message ?? (isOpenClaw ? "OpenClaw is working in this task’s workspace." : "The reviewed worker is using its task workspace.");
   const reportMarkup = report ? `<div class="task-report">
     <p><strong>Goal:</strong> ${escapeHtml(report.goal)}</p>
     ${report.limitations?.length ? `<p><strong>${report.outcome === "completed" ? "Caveats" : "Unfinished or uncertain"}:</strong> ${escapeHtml(report.limitations.join(" "))}</p>` : ""}
