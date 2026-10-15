@@ -193,7 +193,14 @@ export class OpenClawWorkerAdapter {
     const configPath = join(this.sessionDir, "openclaw-task-config.json");
     await writeFile(configPath, JSON.stringify(openClawTaskConfig({ taskId: this.taskId, workspacePath: this.workspacePath, searchPlugin: searchPluginPath(this.sandbox) })), { mode: 0o600 });
     const transcript = (afterSeq) => readTranscript({ homeDir: this.homeDir, sessionId: this.taskId, afterSeq });
-    const earlier = transcript(0);
+    // A run that was just stopped can still hold the store. Reading it as
+    // empty would count the earlier runs' usage against this one.
+    let earlier = transcript(0);
+    for (let wait = 0; earlier.busy && wait < 20; wait++) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      earlier = transcript(0);
+    }
+    if (earlier.busy) return { runId, completion: Promise.resolve({ status: "failed", code: "OPENCLAW_STORE_BUSY", message: "OpenClaw's session store stayed locked by an earlier run" }) };
     if (reuseCompleted && earlier.events.length) {
       const prior = completedResult(earlier.events);
       if (prior?.status === "completed") return { runId, completion: Promise.resolve(prior) };

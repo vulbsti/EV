@@ -98,6 +98,39 @@ async function observeLocalSource(source, localRoots) {
 
 const WEB_TOOLS = new Set(["web_fetch", "web_search"]);
 
+/** Parses JSON, or returns null. */
+function json(text) {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+/**
+ * What a web search or fetch actually returned, in a few lines. OpenClaw wraps
+ * web results in an untrusted-content banner and a JSON envelope, so the raw
+ * first lines say nothing about the page.
+ */
+function webExcerpt(output) {
+  const lines = output.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === "---");
+  let body = (start >= 0 && lines.slice(0, start).some((line) => line.includes("EXTERNAL_UNTRUSTED_CONTENT")) ? lines.slice(start + 1) : lines)
+    .filter((line) => !line.includes("END_EXTERNAL_UNTRUSTED_CONTENT")).join("\n").trim();
+  let value = json(body);
+  for (let depth = 0; depth < 3 && value && typeof value === "object"; depth++) {
+    const inner = value.result?.content?.find?.((part) => typeof part?.text === "string")?.text ?? (typeof value.result === "string" ? value.result : null);
+    if (inner === null) break;
+    body = inner;
+    value = json(inner);
+  }
+  if (Array.isArray(value?.results)) {
+    return value.results.slice(0, 6).map((item) => [item.title, item.url, item.snippet ?? item.description].filter(Boolean).join(" — "));
+  }
+  if (value && typeof value === "object") {
+    const head = [value.status, value.finalUrl ?? value.url, value.title].filter(Boolean).join(" · ");
+    const text = String(value.text ?? value.content ?? "").replace(/\s+/g, " ").trim();
+    return [head, text.slice(0, 600)].filter(Boolean);
+  }
+  return body.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 6);
+}
+
 /** A tool call as the agent made it; OpenClaw may wrap tools found through tool_search in `tool_call`. */
 function unwrapCall(part) {
   const wrapped = part.name === "tool_call" ? /(?:^|:)([a-z_]+)$/.exec(String(part.arguments?.id ?? ""))?.[1] : null;
@@ -143,7 +176,7 @@ function observeExecution(sessionEvents = []) {
       const output = (message.content ?? []).filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n");
       if (target) receipts.set(`${call.name}\n${target}`, {
         tool: call.name, command: redactEvidence(target), isError: Boolean(message.isError), outputSha256: createHash("sha256").update(output).digest("hex"),
-        summaryLines: output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 4).map((line) => redactEvidence(line.slice(0, 280)))
+        summaryLines: webExcerpt(output).map((line) => redactEvidence(String(line).slice(0, 600)))
       });
     } else if (message.toolName === "exec" && call?.name === "exec") {
       if (message.details?.status === "running" && message.details.sessionId) sessions.set(message.details.sessionId, call.arguments);

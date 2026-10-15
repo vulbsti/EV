@@ -35,7 +35,9 @@ export function readTranscript({ homeDir, sessionId, afterSeq = 0 }) {
     return { events, lastSeq: rows.at(-1)?.seq ?? afterSeq };
   } catch (error) {
     // Not created yet, or mid-migration: nothing to read this time.
-    if (/no such table|unable to open|SQLITE_BUSY|database is locked/i.test(error.message)) return { events: [], lastSeq: afterSeq };
+    if (/no such table|unable to open/i.test(error.message)) return { events: [], lastSeq: afterSeq };
+    // Still held by a run that is shutting down: the caller decides whether to wait.
+    if (/SQLITE_BUSY|database is locked/i.test(error.message)) return { events: [], lastSeq: afterSeq, busy: true };
     throw error;
   } finally { database?.close(); }
 }

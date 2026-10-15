@@ -9,7 +9,8 @@ export const DEFAULT_TASK_TOKEN_BUDGET = Number(process.env.EV_AGENT_TOKEN_BUDGE
 
 function reviewRounds(value) {
   const rounds = Number.parseInt(value, 10);
-  return Number.isInteger(rounds) ? Math.max(1, Math.min(MAX_REVIEW_ROUNDS, rounds)) : DEFAULT_REVIEW_ROUNDS;
+  // At least two, so a fixable gap the reviewer finds gets one round to fix it.
+  return Number.isInteger(rounds) ? Math.max(2, Math.min(MAX_REVIEW_ROUNDS, rounds)) : DEFAULT_REVIEW_ROUNDS;
 }
 
 /**
@@ -43,7 +44,7 @@ export function normalizeTaskPlan(value, request, understanding = null) {
 
 export async function planManagedTask({ taskId, request, context, understanding = null, apiKey = process.env.OPENCODE_API, fetchImpl = fetch, signal }) {
   const breakdown = [
-    "reviewRounds is how many review-and-revise rounds the work deserves: 1 for a quick lookup, 2-3 for ordinary deliverables, up to 5 for substantial work where quality matters a lot. Preserve the user's scope and authority.",
+    "reviewRounds is how many review-and-revise rounds the work deserves: 2 for a quick lookup, 2-3 for ordinary deliverables, up to 5 for substantial work where quality matters a lot. Preserve the user's scope and authority.",
     "Use one executor for ordinary requests. Use 2-3 parallel subtasks only when they are genuinely independent and combining their outputs helps achieve this goal. Dependent steps and edits to the same files belong to one executor. Do not split a simple lookup merely to use more agents.",
     "Subtasks must be complete tool-using assignments, each with a useful output. They may inspect an unfamiliar system, create files, install task dependencies, research, or run checks when authorized by the user. Do not invent access, results, or extra user goals."
   ];
