@@ -7,7 +7,8 @@ import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permis
 
 import { AssistantSupervisor } from "./assistant-supervisor.mjs";
 import { reviewOpenClawReport } from "./ev-quality-gate.mjs";
-import { OpenClawWorkerAdapter, openClawSessionPath } from "./openclaw-worker-adapter.mjs";
+import { OpenClawWorkerAdapter } from "./openclaw-worker-adapter.mjs";
+import { readTranscript } from "./openclaw-transcript.mjs";
 import { validateOpenClawTaskReport } from "./openclaw-task-report.mjs";
 import { continuationPrompt, executionPrompt, normalizeTaskPlan, planManagedTask, revisionPrompt, wrapUpPrompt } from "./ev-task-manager.mjs";
 import { answerFromContext } from "./ev-main-agent.mjs";
@@ -786,7 +787,7 @@ export class AssistantWorkerService {
     } catch { return null; }
   }
 
-  async _review(active, task, { request, brief, report, workspacePath, hostNotes = [], sessionPath = null }) {
+  async _review(active, task, { request, brief, report, workspacePath, hostNotes = [], sessionEvents = [] }) {
     const round = active.round;
     const maxRounds = active.maxRounds;
     await this.supervisor.beginVerification({ taskId: task.taskId, runId: active.runId, fencingToken: active.lease.fencingToken, round });
@@ -799,7 +800,7 @@ export class AssistantWorkerService {
       try {
         review = await this.reviewer({
           taskId: task.taskId, request, brief, report, round, maxRounds, previousReviews: active.reviews, hostNotes,
-          localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionPath, workspacePath
+          localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionEvents, workspacePath
         });
         review = { ...normalizeReviewShape(review), round };
         break;
@@ -887,6 +888,11 @@ export class AssistantWorkerService {
       if (result.status !== "completed") throw codedError(result.code ?? "WORKER_ERROR", result.message ?? "The revision run failed");
     }
     return { result, review };
+  }
+
+  _transcriptEvents(taskId) {
+    try { return readTranscript({ homeDir: this.openClawHome, sessionId: taskId }).events; }
+    catch { return []; }
   }
 
   /** Null means ask the person; so does an answerer that fails. */
@@ -993,7 +999,7 @@ export class AssistantWorkerService {
       if (!isChild && report.outcome !== "blocked") {
         review = await this._review(active, task, {
           request, brief: active.plan, report, workspacePath, hostNotes,
-          sessionPath: openClawSessionPath(this.openClawHome, task.taskId)
+          sessionEvents: this._transcriptEvents(task.taskId)
         });
       }
       // A file the agent claims but that does not exist can never be

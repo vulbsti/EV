@@ -96,13 +96,8 @@ async function observeLocalSource(source, localRoots) {
   } catch { return { url: source.url, state: "unavailable", reason: "local source could not be inspected" }; }
 }
 
-async function observeExecution(sessionPath) {
-  if (!sessionPath) return [];
-  let contents;
-  try {
-    contents = await readFile(sessionPath, "utf8");
-    if (contents.length > 8_000_000) return [];
-  } catch { return []; }
+/** Completed commands from the agent's own transcript events (newest 20). */
+function observeExecution(sessionEvents = []) {
   const calls = new Map();
   const sessions = new Map();
   const receipts = new Map();
@@ -122,9 +117,7 @@ async function observeExecution(sessionPath) {
     };
     receipts.set(`${receipt.cwd}\n${receipt.command}`, receipt);
   };
-  for (const line of contents.split("\n")) {
-    let event;
-    try { event = JSON.parse(line); } catch { continue; }
+  for (const event of sessionEvents) {
     const message = event?.message;
     if (event?.type !== "message" || !message) continue;
     if (message.role === "assistant") {
@@ -243,7 +236,7 @@ export function normalizeReview(value) {
  */
 export async function reviewOpenClawReport({
   taskId, request, report, brief = null, round = 1, maxRounds = 1, previousReviews = [], hostNotes = [],
-  apiKey = process.env.OPENCODE_API, fetchImpl = fetch, localRoots = [], sessionPath = null, workspacePath = null
+  apiKey = process.env.OPENCODE_API, fetchImpl = fetch, localRoots = [], sessionEvents = [], workspacePath = null
 }) {
   if (!apiKey) throw Object.assign(new Error("OpenCode Go review key is unavailable"), { code: "QUALITY_REVIEW_UNAVAILABLE" });
   const evidence = Array.isArray(report.evidence) ? report.evidence : [];
@@ -253,7 +246,7 @@ export async function reviewOpenClawReport({
   }
   const [sources, execution] = await Promise.all([
     Promise.all(selected.map((source) => observeSource(source, request, report.answer, fetchImpl, localRoots))),
-    observeExecution(sessionPath)
+    observeExecution(sessionEvents)
   ]);
   const reviewReport = { ...report, evidence: evidence.map(({ quotes, jsonPointers, ...source }) => source) };
   const notes = [

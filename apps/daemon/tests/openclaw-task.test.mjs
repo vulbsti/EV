@@ -143,18 +143,17 @@ test("unverified local quotes do not become reviewer observations", async () => 
 test("review sees executed test results from the OpenClaw session without raw output", async () => {
   const root = await mkdtemp(join(tmpdir(), "ev-session-review-"));
   try {
-    const sessionPath = join(root, "session.jsonl");
-    await writeFile(sessionPath, [
+    const sessionEvents = [
       { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "exec", arguments: { command: "npm test", workdir: root } }] } },
       { type: "message", message: { role: "toolResult", toolName: "exec", toolCallId: "call-1", isError: false, details: { exitCode: 0 }, content: [{ type: "text", text: "api_key=SHOULD_NOT_LEAK\nℹ tests 139\nℹ pass 139\nℹ fail 0\n" }] } },
       { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-2", name: "exec", arguments: { command: "npm run check && npm run build", workdir: root } }] } },
       { type: "message", message: { role: "toolResult", toolName: "exec", toolCallId: "call-2", details: { status: "running", sessionId: "build-1" }, content: [{ type: "text", text: "Command still running" }] } },
       { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-3", name: "process", arguments: { action: "poll", sessionId: "build-1" } }] } },
       { type: "message", message: { role: "toolResult", toolName: "process", toolCallId: "call-3", isError: false, details: { status: "completed", sessionId: "build-1", exitCode: 0, aggregated: "built in 2s\nProcess exited with code 0" }, content: [{ type: "text", text: "Process exited with code 0" }] } }
-    ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+    ];
     let reviewedInput = "";
     const result = await reviewOpenClawReport({
-      taskId: "executed-tests", request: "Which tests work?", sessionPath, apiKey: "test-only",
+      taskId: "executed-tests", request: "Which tests work?", sessionEvents, apiKey: "test-only",
       report: { goal: "Check tests", answer: "139 tests passed", evidence: [] },
       fetchImpl: async (url, options) => {
         reviewedInput = JSON.parse(options.body).input;
