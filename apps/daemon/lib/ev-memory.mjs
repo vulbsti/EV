@@ -68,16 +68,16 @@ const INSTRUCTIONS = [
   "Kinds, and how each changes:",
   "- fact: who they are and their situation (job, projects, people, places). When something really changed (\"I quit my job\"), update the old fact or retire it; never invent a date. Then check goals and preferences that depended on it (a career goal at the old job) and update or retire them too.",
   "- preference: how they like things (format, length, tools, taste). A seeming contradiction is usually scope (\"short in chat\" vs \"detailed for architecture docs\"): add a narrower preference before replacing a broad one. A one-off reaction on a bad day is state, not a preference.",
-  "- goal: something they want to achieve, with state considering | decided | in_progress | done | dropped. Brainstorming or musing is considering, never decided. A flip-flop, or picking between options already in memory, is an update of the same goal (state and text), not a new goal. When a goal becomes done or dropped, update it with that state and the reason they gave; never retire a goal, because they may come back to it.",
+  "- goal: something they want to achieve, with state considering | decided | in_progress | done | dropped. Brainstorming or musing is considering, never decided. A flip-flop, or picking between options already in memory, is an update of the same goal (state and text), not a new goal. When a goal becomes done or dropped, update it with that state and the reason they gave; never retire a goal, because they may come back to it. A first-person \"I'm dropping / quitting / done with X\" is a decision even when said in frustration: update the goal to dropped with their reason, and add the mood as state alongside.",
   "- agreement: an instruction about how EV itself should behave with them (\"ask fewer questions\", \"be blunt\"). Only from their own words.",
   "- state: passing mood, energy, time available, venting. Give expiresInHours (default 24, at most 168). Venting about someone is state, not a decision.",
   "- lesson: what a task that went wrong teaches EV, with cause: brief (EV's brief or understanding left out something this person needed), approach (the agent used a wrong method or tool), environment (a tool, site or service failed; say which in appliesTo), review (EV's reviewer accepted something the person then rejected). If EV misunderstood the person, that is a preference or goal update, not a lesson. If the person simply changed their mind after delivery, that is not a failure: update the goal or preference. A lesson is about the work and never a trait of the person: \"needed four review rounds\" is not evidence the person is demanding. appliesTo names the task type, project or tool it is for.",
   "Rules:",
   "- Only the person's own words are evidence about the person. EV's replies are context for what they were answering, not evidence. Task episodes come from agents and web pages: from them you may only add, confirm or retire lessons.",
-  "- explicit is true only when the person directly stated it. Anything you inferred is explicit false; it stays tentative until confirmed.",
+  "- explicit is true only when the person directly stated that very thing. Anything you inferred is explicit false (\"I hate long meetings\" does not state a preference for async summaries); it stays tentative until confirmed.",
   "- Before returning, go through every goal and preference in memory and ask whether the new events make it obsolete or settled (\"I quit my job to do music full time\" ends a goal of becoming a staff engineer there: update it to dropped with the reason). Do this even when nothing in the message names that goal.",
   "- If an event supports something already in memory, use confirm rather than adding a duplicate; if it changes it, update it. Never add a second memory that means nearly the same as one already there. If a later task succeeded doing what a lesson warned against, retire or narrow that lesson.",
-  "- If they say they always said or wanted something that memory shows differently, do not rewrite history: update with change \"changed\" from now on. Use dispute only when two facts about the world conflict and nothing says which is current; never for what they say they said before, and never when they ask to change something.",
+  "- If they say they always said or wanted something that memory shows differently, do not rewrite history: update with change \"changed\" from now on. Use dispute only when two facts about the world conflict and nothing says which is current, and write its text as just the new statement (\"The launch is on May 1st.\"); never for what they say they said before, and never when they ask to change something.",
   "- If they ask EV to forget something (\"forget X\", \"don't remember that\", \"delete that\"), always use forget, never update or retire: forget deletes the words, while update and retire keep them as history. part \"history\" deletes only the earlier versions of that memory and keeps what is true now (\"forget where I used to work\" after a job change); part \"all\" deletes the whole memory. With part \"history\", give text when what is true now still mentions the forgotten detail, restated without it. Never store passwords, keys, codes or other secrets.",
   "- Write text as one short, self-contained sentence in the third person (\"Prefers ...\", \"Works as ...\"), with any scope or exception in the sentence. Never use gendered pronouns: write without pronouns.",
   'Return JSON only: {"ops":[{"op":"add","event":number,"kind":string,"text":string,"explicit":boolean,"state"?:string,"cause"?:string,"appliesTo"?:string,"expiresInHours"?:number,"validFrom"?:"YYYY-MM-DD"}|{"op":"update","event":number,"id":string,"text":string,"explicit":boolean,"change":"changed"|"narrowed"|"corrected","state"?:string,"reason"?:string}|{"op":"confirm","event":number,"id":string}|{"op":"dispute","event":number,"id":string,"text":string}|{"op":"retire","event":number,"id":string,"reason":string}|{"op":"forget","event":number,"id":string,"part":"all"|"history","text"?:string}]}. event is the E number the operation is based on; id is an m number from current memory.'
@@ -190,10 +190,14 @@ export function applyLearning(memory, { ownerId, events, ops, seen, now = Date.n
         if (!text(op.text)) { skip(op, "no text"); continue; }
         const explicit = op.explicit === true && !fromTask;
         // An inference never overrides something the person said.
-        if (!explicit && target.current.status === "active" && kind !== "lesson") { skip(op, "inference cannot override an active claim"); continue; }
+        // The one exception: closing a goal that the person's news made obsolete
+        // (a goal can always be reopened, and is marked as inferred).
+        const closesGoal = kind === "goal" && !fromTask && ["dropped", "done"].includes(op.state);
+        if (!explicit && target.current.status === "active" && kind !== "lesson" && !closesGoal) { skip(op, "inference cannot override an active claim"); continue; }
         const value = learnedValue(kind, op, typeof target.current.value === "object" && target.current.value ? target.current.value : {});
         if (op.change) value.change = ["changed", "narrowed", "corrected"].includes(op.change) ? op.change : "changed";
-        const status = kind === "state" || explicit ? "active" : target.current.status === "disputed" ? "candidate" : target.current.status;
+        if (closesGoal && !explicit) value.inferred = true;
+        const status = kind === "state" || explicit || closesGoal ? "active" : target.current.status === "disputed" ? "candidate" : target.current.status;
         memory.correct({ claimId: target.claimId, expectedRevision, value, sourceIds: [event.sourceId], authorType: explicit ? "user" : author, status, confidence: status === "active" ? 1 : 0.5, ...timing(kind, op, now, value) });
         if (target.current.status === "disputed" && status === "active") settle(memory, target.claimId);
         applied.push({ op: "update", claimId: target.claimId, kind, status });
@@ -243,14 +247,25 @@ function overlap(left, right) {
 
 const FORGET = /\b(forget|erase|delete)\b(?!\s+(it|about it)\b)|\bdon'?t (remember|store|keep)\b/i;
 
-/** Once one side of a dispute is settled, the other side is retired (kept as history). */
-function settle(memory, claimId) {
-  for (const link of memory.links(claimId)) {
-    const otherId = link.fromClaimId === claimId ? link.toClaimId : link.fromClaimId;
+/**
+ * Once one side of a dispute is settled the pair becomes one memory again: if
+ * the newer statement won, it becomes the next revision of the original claim
+ * (so "June 1st -> May 1st" reads as one history); the loser is retired.
+ */
+function settle(memory, winnerId) {
+  for (const link of memory.links(winnerId)) {
+    const otherId = link.fromClaimId === winnerId ? link.toClaimId : link.fromClaimId;
     const other = memory.getClaim(otherId);
     if (other?.current?.status !== "disputed") continue;
-    try { memory.retire({ claimId: otherId, expectedRevision: other.current.revision, authorType: "ev-learned", reason: "superseded when the dispute was settled" }); }
-    catch { /* changed or erased meanwhile; leave it */ }
+    try {
+      if (link.fromClaimId === winnerId) {
+        const winner = memory.getClaim(winnerId);
+        memory.correct({ claimId: otherId, expectedRevision: other.current.revision, value: { ...winner.current.value, change: "changed" }, authorType: "user", status: "active", reviewAfter: winner.current.reviewAfter });
+        memory.retire({ claimId: winnerId, expectedRevision: winner.current.revision, authorType: "ev-learned", reason: "merged into the original memory when the dispute was settled" });
+      } else {
+        memory.retire({ claimId: otherId, expectedRevision: other.current.revision, authorType: "ev-learned", reason: "superseded when the dispute was settled" });
+      }
+    } catch { /* changed or erased meanwhile; leave it */ }
   }
 }
 
@@ -377,13 +392,16 @@ function line(claim, now, { history = false } = {}) {
   const details = [
     value?.state ? `${value.state.replace("_", " ")}${value.reason ? `: ${text(value.reason, 200)}` : ""}` : "",
     value?.appliesTo ? `for ${value.appliesTo}` : "",
+    value?.inferred ? "inferred from what they said, not stated" : "",
     `since ${day(claim.current.validFrom ?? claim.current.createdAt)}`,
     claim.current.reviewAfter && claim.current.reviewAfter < now ? "not confirmed in a while, may be out of date" : ""
   ].filter(Boolean).join("; ");
   // Only a real change is history worth showing; a correction or narrowing
   // replaced something that was wrong or too broad.
   const previous = history && claim.revisions.length > 1 && value?.change === "changed" ? claim.revisions.at(-2) : null;
-  const earlier = previous && memoryText(previous.value) && memoryText(previous.value) !== memoryText(value) ? ` Earlier: "${text(memoryText(previous.value), 200)}".` : "";
+  const was = previous ? memoryText(previous.value) : "";
+  const recorded = was ? claim.revisions.find((revision) => memoryText(revision.value) === was)?.createdAt : null;
+  const earlier = was && was !== memoryText(value) ? ` Earlier (recorded ${day(recorded)}): "${text(was, 200)}".` : "";
   return `- ${text(memoryText(value), 600)} (${details}).${earlier}`;
 }
 

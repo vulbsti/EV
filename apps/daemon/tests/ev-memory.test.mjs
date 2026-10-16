@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AssistantMemoryStore } from "../lib/assistant-memory.mjs";
+import { AssistantMemoryStore, memoryText } from "../lib/assistant-memory.mjs";
 import { applyLearning } from "../lib/ev-memory.mjs";
 
 const ownerId = "person-1";
@@ -165,5 +165,22 @@ test("a dropped goal stays known with its reason instead of disappearing", async
     const [goal] = memory.recall({ ownerId });
     assert.equal(goal.current.value.state, "dropped");
     assert.equal(goal.current.value.reason, "Nobody needs another habit app.");
+  });
+});
+
+test("a settled dispute becomes one memory with the old value as its history", async () => {
+  await withMemory(async (memory) => {
+    const first = turn(memory, "1", "launch is June 1st");
+    applyLearning(memory, { ownerId, events: [first], seen: new Map(), ops: [{ op: "add", event: 1, kind: "fact", text: "The launch is on June 1st.", explicit: true }] });
+    const second = turn(memory, "2", "no I definitely said May 1st");
+    applyLearning(memory, { ownerId, events: [second], seen: seenNow(memory), ops: [{ op: "dispute", event: 1, id: "m1", text: "The launch is on May 1st." }] });
+    const third = turn(memory, "3", "move it to May 1st");
+    const seen = seenNow(memory);
+    const disputeId = [...seen.entries()].find(([, claim]) => memoryText(claim.current.value).includes("May"))[0];
+    applyLearning(memory, { ownerId, events: [third], seen, ops: [{ op: "update", event: 1, id: disputeId, text: "The launch is on May 1st.", explicit: true, change: "changed" }] });
+    const live = memory.recall({ ownerId, includeCandidates: true });
+    assert.equal(live.length, 1);
+    assert.equal(live[0].current.value.text, "The launch is on May 1st.");
+    assert.equal(memoryText(live[0].revisions[0].value), "The launch is on June 1st.");
   });
 });
