@@ -823,7 +823,7 @@ export class AssistantWorkerService {
     for (let attempt = 0; ; attempt++) {
       try {
         review = await this.reviewer({
-          taskId: task.taskId, request, brief, report, round, previousReviews: active.reviews, hostNotes,
+          taskId: task.taskId, request, brief, report, round, previousReviews: active.reviews, hostNotes, personal: task.input.metadata?.reviewerMemory ?? "",
           localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionEvents, workspacePath
         });
         review = { ...normalizeReviewShape(review), round };
