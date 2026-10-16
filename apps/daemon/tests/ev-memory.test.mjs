@@ -142,3 +142,16 @@ test("forgetting an earlier version keeps what is true now and removes the old w
     assert.deepEqual(memory.getEvent("turn:2").content, { erased: true });
   });
 });
+
+test("an update answering a request to forget still removes the old words", async () => {
+  await withMemory(async (memory) => {
+    const first = turn(memory, "1", "I work at Acme");
+    applyLearning(memory, { ownerId, events: [first], seen: new Map(), ops: [{ op: "add", event: 1, kind: "fact", text: "Works at Acme.", explicit: true }] });
+    const ask = turn(memory, "2", "forget where I work, Acme is private");
+    applyLearning(memory, { ownerId, events: [ask], seen: seenNow(memory), ops: [{ op: "update", event: 1, id: "m1", text: "Has a job.", explicit: true, change: "corrected" }] });
+    const claim = memory.recall({ ownerId })[0];
+    assert.equal(claim.current.value.text, "Has a job.");
+    assert.equal(JSON.stringify(claim.revisions).includes("Acme"), false);
+    assert.deepEqual(memory.getEvent("turn:2").content, { erased: true });
+  });
+});

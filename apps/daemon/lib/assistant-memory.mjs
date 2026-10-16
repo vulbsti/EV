@@ -676,6 +676,11 @@ export class AssistantMemoryStore {
     return this._claimView(this._requireClaim(claimId));
   }
 
+  /** Removes one recorded event's words (for instance a "forget ..." request that repeats them). */
+  redactEvent(eventId) {
+    this.database.prepare("UPDATE memory_events SET content_json = '{\"erased\":true}' WHERE event_id = ?").run(eventId);
+  }
+
   stopUse({ ownerId, targetType, targetId, scope = null, expiresAt = null }) {
     return this._tombstone({ ownerId, targetType, targetId, scope, expiresAt, action: "stop_use" });
   }
