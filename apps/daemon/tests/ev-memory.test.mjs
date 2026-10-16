@@ -155,3 +155,15 @@ test("an update answering a request to forget still removes the old words", asyn
     assert.deepEqual(memory.getEvent("turn:2").content, { erased: true });
   });
 });
+
+test("a dropped goal stays known with its reason instead of disappearing", async () => {
+  await withMemory(async (memory) => {
+    const first = turn(memory, "1", "I'm building Tidepool");
+    applyLearning(memory, { ownerId, events: [first], seen: new Map(), ops: [{ op: "add", event: 1, kind: "goal", text: "Building Tidepool.", explicit: true, state: "decided" }] });
+    const second = turn(memory, "2", "dropping Tidepool, nobody needs another habit app");
+    applyLearning(memory, { ownerId, events: [second], seen: seenNow(memory), ops: [{ op: "retire", event: 1, id: "m1", reason: "Nobody needs another habit app." }] });
+    const [goal] = memory.recall({ ownerId });
+    assert.equal(goal.current.value.state, "dropped");
+    assert.equal(goal.current.value.reason, "Nobody needs another habit app.");
+  });
+});
