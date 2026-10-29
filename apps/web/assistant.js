@@ -35,6 +35,8 @@ let taskRevision = 0;
 let retrying = false;
 let synchronizing = false;
 let memoryClaims = [];
+const KIND_LABELS = { fact: "About you", preference: "Preference", goal: "Goal", agreement: "How EV works with you", state: "Right now", lesson: "Lesson from earlier work" };
+const claimText = (claim) => typeof claim.current.value === "string" ? claim.current.value : claim.current.value?.text ?? "";
 let editingClaimId = null;
 let responsibilities = [];
 let verifiedSource = null;
@@ -135,7 +137,7 @@ function renderTask(task) {
     <h3>${escapeHtml(task.title ?? "Background task")}</h3>
     ${task.brief?.objective ? `<p><strong>Interpreted as:</strong> ${escapeHtml(task.brief.objective)}</p>` : ""}
     ${!task.brief && task.plan?.intent ? `<p><strong>Interpreted as:</strong> ${escapeHtml(task.plan.intent)}</p><details class="task-brief"><summary>EV's brief</summary><p><strong>Success criteria</strong></p><ul>${(task.plan.successCriteria ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>${task.plan.qualityBar?.length ? `<p><strong>Quality bar</strong></p><ul>${task.plan.qualityBar.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}${task.plan.assumptions?.length ? `<p><strong>Assumptions</strong></p><ul>${task.plan.assumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}
-    ${task.brief?.successCriteria?.length ? `<details class="task-brief"><summary>Success criteria and boundaries</summary><ul>${task.brief.successCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul><p><strong>Authority:</strong> prepare only</p><p><strong>Memory:</strong> reviewed EV guidance; derived memory providers are disabled</p>${task.contextManifestId ? `<p><strong>Context manifest:</strong> <code>${escapeHtml(task.contextManifestId)}</code></p>` : ""}</details>` : ""}
+    ${task.brief?.successCriteria?.length ? `<details class="task-brief"><summary>Success criteria and boundaries</summary><ul>${task.brief.successCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul><p><strong>Authority:</strong> prepare only</p><p><strong>Memory:</strong> what EV has learned about you that applies to this task</p>${task.contextManifestId ? `<p><strong>Context manifest:</strong> <code>${escapeHtml(task.contextManifestId)}</code></p>` : ""}</details>` : ""}
     <p>${escapeHtml(detail)}</p>
     ${children.length ? `<details class="task-children"><summary>Workers · ${children.filter((child) => ["completed", "failed", "cancelled"].includes(child.status)).length}/${children.length} finished</summary><ul>${children.map((child) => `<li><strong>${escapeHtml(child.title)}</strong>${child.retryOf ? " (retry)" : ""} · ${escapeHtml(child.result?.report?.outcome ?? taskLabel(child.status))}${child.error ? ` · ${escapeHtml(child.error.message)}` : ""}</li>`).join("")}</ul></details>` : ""}
     ${reportMarkup}${heldMarkup}
@@ -151,17 +153,17 @@ function renderTask(task) {
 function renderMemory() {
   elements.memoryList.innerHTML = memoryClaims.length ? memoryClaims.map((claim) => `
     <article class="memory-item" data-claim-id="${escapeHtml(claim.claimId)}">
-      <p>${escapeHtml(claim.current.value)}</p>
-      <div class="memory-meta">Scope: ${escapeHtml(claim.scope)} · revision ${escapeHtml(claim.current.revision)}</div>
+      <p>${escapeHtml(claimText(claim))}</p>
+      <div class="memory-meta">${escapeHtml(KIND_LABELS[claim.kind] ?? claim.kind)}${claim.current.status === "active" ? "" : ` · ${escapeHtml(claim.current.status === "candidate" ? "tentative" : claim.current.status)}`}${claim.current.value?.state ? ` · ${escapeHtml(claim.current.value.state.replace("_", " "))}` : ""} · revision ${escapeHtml(claim.current.revision)}</div>
       <div class="memory-actions">
         <button type="button" data-memory-action="explain">Why I remember this</button>
         <button type="button" data-memory-action="correct">Correct</button>
         <button type="button" data-memory-action="stop_use">Stop using</button>
         <button type="button" data-memory-action="erase">Erase</button>
       </div>
-      ${editingClaimId === claim.claimId ? `<form class="memory-correction"><input name="value" maxlength="2000" value="${escapeHtml(claim.current.value)}" aria-label="Correct remembered guidance" required><button type="submit">Save</button></form>` : ""}
+      ${editingClaimId === claim.claimId ? `<form class="memory-correction"><input name="value" maxlength="2000" value="${escapeHtml(claimText(claim))}" aria-label="Correct remembered guidance" required><button type="submit">Save</button></form>` : ""}
       <div class="memory-note" aria-live="polite"></div>
-    </article>`).join("") : `<p class="memory-note">No active guidance yet.</p>`;
+    </article>`).join("") : `<p class="memory-note">Nothing learned yet. EV learns from your conversations and finished work.</p>`;
 }
 
 function renderResponsibilities() {

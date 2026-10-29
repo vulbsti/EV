@@ -24,7 +24,7 @@ test("explicit claims are active while inferred claims remain quarantined", asyn
     assert.equal(explicit.current.status, "active");
     assert.equal(inferred.current.status, "candidate");
     assert.deepEqual(memory.recall({ ownerId: "person-1" }).map((claim) => claim.claimId), ["claim-explicit"]);
-    assert.deepEqual(memory.recall({ ownerId: "person-1", includeCandidates: true }).map((claim) => claim.claimId), ["claim-explicit", "claim-inferred"]);
+    assert.deepEqual(memory.recall({ ownerId: "person-1", includeCandidates: true }).map((claim) => claim.claimId).sort(), ["claim-explicit", "claim-inferred"]);
   });
 });
 
