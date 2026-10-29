@@ -143,31 +143,6 @@ test("forgetting an earlier version keeps what is true now and removes the old w
   });
 });
 
-test("an update answering a request to forget still removes the old words", async () => {
-  await withMemory(async (memory) => {
-    const first = turn(memory, "1", "I work at Acme");
-    applyLearning(memory, { ownerId, events: [first], seen: new Map(), ops: [{ op: "add", event: 1, kind: "fact", text: "Works at Acme.", explicit: true }] });
-    const ask = turn(memory, "2", "forget where I work, Acme is private");
-    applyLearning(memory, { ownerId, events: [ask], seen: seenNow(memory), ops: [{ op: "update", event: 1, id: "m1", text: "Has a job.", explicit: true, change: "corrected" }] });
-    const claim = memory.recall({ ownerId })[0];
-    assert.equal(claim.current.value.text, "Has a job.");
-    assert.equal(JSON.stringify(claim.revisions).includes("Acme"), false);
-    assert.deepEqual(memory.getEvent("turn:2").content, { erased: true });
-  });
-});
-
-test("a dropped goal stays known with its reason instead of disappearing", async () => {
-  await withMemory(async (memory) => {
-    const first = turn(memory, "1", "I'm building Tidepool");
-    applyLearning(memory, { ownerId, events: [first], seen: new Map(), ops: [{ op: "add", event: 1, kind: "goal", text: "Building Tidepool.", explicit: true, state: "decided" }] });
-    const second = turn(memory, "2", "dropping Tidepool, nobody needs another habit app");
-    applyLearning(memory, { ownerId, events: [second], seen: seenNow(memory), ops: [{ op: "retire", event: 1, id: "m1", reason: "Nobody needs another habit app." }] });
-    const [goal] = memory.recall({ ownerId });
-    assert.equal(goal.current.value.state, "dropped");
-    assert.equal(goal.current.value.reason, "Nobody needs another habit app.");
-  });
-});
-
 test("a settled dispute becomes one memory with the old value as its history", async () => {
   await withMemory(async (memory) => {
     const first = turn(memory, "1", "launch is June 1st");

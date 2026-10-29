@@ -66,19 +66,18 @@ function describeEvent(event, index) {
 const INSTRUCTIONS = [
   "You maintain EV's memory of one person. EV is their assistant: it understands what they mean, coordinates agents that work for them, and must get better at helping them over time. Read the new events below and decide what, if anything, should change in memory. Most turns change nothing; return no operations for them.",
   "Kinds, and how each changes:",
-  "- fact: who they are and their situation (job, projects, people, places). When something really changed (\"I quit my job\"), update the old fact or retire it; never invent a date. Then check goals and preferences that depended on it (a career goal at the old job) and update or retire them too.",
+  "- fact: who they are and their situation (job, projects, people, places). When something really changed (\"I quit my job\"), update the old fact or retire it; never invent a date. Then update goals and preferences that depended on it.",
   "- preference: how they like things (format, length, tools, taste). A seeming contradiction is usually scope (\"short in chat\" vs \"detailed for architecture docs\"): add a narrower preference before replacing a broad one. A one-off reaction on a bad day is state, not a preference.",
-  "- goal: something they want to achieve, with state considering | decided | in_progress | done | dropped. Brainstorming or musing is considering, never decided. A flip-flop, or picking between options already in memory, is an update of the same goal (state and text), not a new goal. When a goal becomes done or dropped, update it with that state and the reason they gave; never retire a goal, because they may come back to it. A first-person \"I'm dropping / quitting / done with X\" is a decision even when said in frustration: update the goal to dropped with their reason, and add the mood as state alongside.",
+  "- goal: something they want to achieve, with state considering | decided | in_progress | done | dropped. Brainstorming or musing is considering, never decided. A flip-flop, or picking between options already in memory, is an update of the same goal (state and text), not a new goal. When a goal becomes done or dropped, update it with that state and the reason they gave rather than retiring it, so it can be picked up again.",
   "- agreement: an instruction about how EV itself should behave with them (\"ask fewer questions\", \"be blunt\"). Only from their own words.",
   "- state: passing mood, energy, time available, venting. Give expiresInHours (default 24, at most 168). Venting about someone is state, not a decision.",
   "- lesson: what a task that went wrong teaches EV, with cause: brief (EV's brief or understanding left out something this person needed), approach (the agent used a wrong method or tool), environment (a tool, site or service failed; say which in appliesTo), review (EV's reviewer accepted something the person then rejected). If EV misunderstood the person, that is a preference or goal update, not a lesson. If the person simply changed their mind after delivery, that is not a failure: update the goal or preference. A lesson is about the work and never a trait of the person: \"needed four review rounds\" is not evidence the person is demanding. appliesTo names the task type, project or tool it is for.",
   "Rules:",
   "- Only the person's own words are evidence about the person. EV's replies are context for what they were answering, not evidence. Task episodes come from agents and web pages: from them you may only add, confirm or retire lessons.",
-  "- explicit is true only when the person directly stated that very thing. Anything you inferred is explicit false (\"I hate long meetings\" does not state a preference for async summaries); it stays tentative until confirmed.",
-  "- Before returning, go through every goal and preference in memory and ask whether the new events make it obsolete or settled (\"I quit my job to do music full time\" ends a goal of becoming a staff engineer there: update it to dropped with the reason). Do this even when nothing in the message names that goal.",
-  "- If an event supports something already in memory, use confirm rather than adding a duplicate; if it changes it, update it. Never add a second memory that means nearly the same as one already there. If a later task succeeded doing what a lesson warned against, retire or narrow that lesson.",
-  "- If they say they always said or wanted something that memory shows differently, do not rewrite history: update with change \"changed\" from now on. Use dispute only when two facts about the world conflict and nothing says which is current, and write its text as just the new statement (\"The launch is on May 1st.\"); never for what they say they said before, and never when they ask to change something.",
-  "- If they ask EV to forget something (\"forget X\", \"don't remember that\", \"delete that\"), always use forget, never update or retire: forget deletes the words, while update and retire keep them as history. part \"history\" deletes only the earlier versions of that memory and keeps what is true now (\"forget where I used to work\" after a job change); part \"all\" deletes the whole memory. With part \"history\", give text when what is true now still mentions the forgotten detail, restated without it. Never store passwords, keys, codes or other secrets.",
+  "- explicit is true only when the person directly stated that very thing. Anything you inferred is explicit false; it stays tentative until confirmed.",
+  "- If an event supports something already in memory, use confirm rather than adding a duplicate; if it changes it, update it. If a later task succeeded doing what a lesson warned against, retire or narrow that lesson.",
+  "- If they say they always said or wanted something that memory shows differently, do not rewrite history: update with change \"changed\" from now on. Use dispute only when two facts about the world conflict and nothing says which is current; never for what they say they said before.",
+  "- If they ask EV to forget something, use forget (update and retire keep the words as history). part \"history\" deletes only earlier versions and keeps what is true now, with text restating it if it still mentions the forgotten detail; part \"all\" deletes the whole memory. Never store passwords, keys, codes or other secrets.",
   "- Write text as one short, self-contained sentence in the third person (\"Prefers ...\", \"Works as ...\"), with any scope or exception in the sentence. Never use gendered pronouns: write without pronouns.",
   'Return JSON only: {"ops":[{"op":"add","event":number,"kind":string,"text":string,"explicit":boolean,"state"?:string,"cause"?:string,"appliesTo"?:string,"expiresInHours"?:number,"validFrom"?:"YYYY-MM-DD"}|{"op":"update","event":number,"id":string,"text":string,"explicit":boolean,"change":"changed"|"narrowed"|"corrected","state"?:string,"reason"?:string}|{"op":"confirm","event":number,"id":string}|{"op":"dispute","event":number,"id":string,"text":string}|{"op":"retire","event":number,"id":string,"reason":string}|{"op":"forget","event":number,"id":string,"part":"all"|"history","text"?:string}]}. event is the E number the operation is based on; id is an m number from current memory.'
 ].join("\n");
@@ -132,24 +131,11 @@ export function applyLearning(memory, { ownerId, events, ops, seen, now = Date.n
   const applied = [];
   const skipped = [];
   const skip = (op, reason) => skipped.push({ op: op?.op ?? null, id: op?.id ?? null, reason });
-  for (let op of Array.isArray(ops) ? ops : []) {
+  for (const op of Array.isArray(ops) ? ops : []) {
     const event = events[Number(op?.event) - 1];
     if (!event) { skip(op, "no such event"); continue; }
     const fromTask = event.type === "task";
     const author = fromTask ? "ev-episode" : "ev-learned";
-    // Some models answer "forget where I used to work" with an update, which
-    // keeps the old words as history. When they asked to forget, it is a forget.
-    if (!fromTask && op?.op === "update" && FORGET.test(event.content?.userText ?? "")) op = { ...op, op: "forget", part: "history" };
-    // A dropped goal stays known (state dropped, with the reason) so it can be picked up again.
-    if (op?.op === "retire" && seen.get(op.id)?.kind === "goal" && !fromTask) {
-      const goal = seen.get(op.id);
-      op = { ...op, op: "update", text: memoryText(goal.current.value), state: "dropped", explicit: true, change: "changed" };
-    }
-    // An add that restates an existing memory of the same kind changes that memory instead.
-    if (op?.op === "add" && ["fact", "preference", "goal"].includes(op.kind)) {
-      const twin = [...seen.entries()].find(([, claim]) => claim.kind === op.kind && claim.current.status !== "retired" && overlap(memoryText(claim.current.value), op.text) >= 0.5);
-      if (twin) op = { ...op, op: "update", id: twin[0], change: op.change ?? "changed" };
-    }
     try {
       if (op.op === "add") {
         const kind = op.kind;
@@ -232,20 +218,6 @@ export function applyLearning(memory, { ownerId, events, ops, seen, now = Date.n
   }
   return { applied, skipped };
 }
-
-function words(value) {
-  return new Set(String(value ?? "").toLowerCase().match(/[a-z0-9][a-z0-9'-]{3,}/g) ?? []);
-}
-
-/** Share of distinct words two sentences have in common (Jaccard). */
-function overlap(left, right) {
-  const a = words(left), b = words(right);
-  if (!a.size || !b.size) return 0;
-  const shared = [...a].filter((word) => b.has(word)).length;
-  return shared / (a.size + b.size - shared);
-}
-
-const FORGET = /\b(forget|erase|delete)\b(?!\s+(it|about it)\b)|\bdon'?t (remember|store|keep)\b/i;
 
 /**
  * Once one side of a dispute is settled the pair becomes one memory again: if
