@@ -8,6 +8,7 @@
     "test": "node --test apps/daemon/tests/*.test.mjs",
     "start": "node apps/daemon/server.mjs",
     "openclaw:image": "docker build -t ev-openclaw docker/openclaw",
+    "verify": "node verify/run.mjs",
     "qa": "node scripts/run-qa-scenarios.mjs",
     "qa:arc": "node scripts/run-qa-arc.mjs"
   },
