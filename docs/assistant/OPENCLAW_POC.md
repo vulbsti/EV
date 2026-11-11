@@ -1,4 +1,4 @@
-# EV manager + OpenClaw proof of concept
+# How EV runs work: EV1, the manager and OpenClaw
 
 ## Execution flow
 
@@ -8,7 +8,9 @@ Every user message goes to EV's **main agent** first (`ev-main-agent.mjs`, GPT-6
 - **clarify**: something only the person can settle would change the outcome substantially. EV asks at most two short questions and waits. It asks one round at most: the next message is combined with the original ask, and anything still open becomes a stated assumption.
 - **work**: EV settles its understanding (a self-contained request with references resolved, intent, the goal it serves, success criteria, the quality bar this person expects, assumptions and unknowns) and starts one durable parent task with it.
 
-The planner then only decides how agents carry the work out (one executor or 2-3 parallel assignments, and how many review rounds it deserves); it cannot redefine the understanding. The resulting **brief** keeps the person's own words, EV's reading of them, and the plan. It is stored in the task history and written to the goal's shared `BRIEF.md`. If the main agent is unavailable, the message goes straight to the planner, which writes the whole brief as before.
+The planner then only decides how agents carry the work out (one executor or 2-3 parallel assignments, and how many review rounds it deserves); it cannot redefine the understanding. The resulting **brief** keeps the person's own words, EV's reading of them, and the plan. It is stored in the task history and written to the goal's shared `BRIEF.md`. If the main agent is unavailable, nothing is started: EV says its model did not answer, because work started without understanding the message is the half-baked work EV exists to avoid.
+
+Messages in one conversation are handled one at a time, in arrival order, so a quick follow-up is read with the first message and any work it started already in view.
 
 When the work settles, EV posts an update to the conversation in its own voice: what was done (the reviewer's hand-off note), or what is still missing, or why it could not finish. The full result stays on the task card.
 
@@ -42,36 +44,39 @@ The manager persists its plan in the task event history and reuses it on restart
 
 Workers return a structured report: goal, outcome, answer, sources, deliverables, checks and limitations. An unreadable report gets one request to restate it in the required format; that is a format repair, not a quality judgement.
 
-EV then **reviews** the result against the brief. The task moves to `verifying` while this happens. The reviewer judges intent (did it deliver what the person most likely wanted), each success criterion (met, partial or missing), the quality bar this person expects, and truth against the evidence EV gathers itself: bounded local file excerpts, exact quotes or JSON values, directory and Git state, completed command receipts from the agent's own log, and a few public web sources. Host findings such as a declared file that does not exist, or an exact quote that drops a link from its source, are given to the reviewer as observations rather than applied as fixed rules.
+EV then **reviews** the result against the brief. The task moves to `verifying` while this happens. The reviewer judges intent (did it deliver what the person most likely wanted), each success criterion (met, partial or missing), the quality bar this person expects, and truth against the evidence EV gathers itself: bounded excerpts of files in the agent's own goal folder, exact quotes or JSON values, directory listings of that folder, completed command receipts from the agent's own log, and a few public web sources. Host findings such as a declared file that does not exist, or an exact quote that drops a link from its source, are given to the reviewer as observations rather than applied as fixed rules.
 
-If the reviewer asks for changes, its "missing" and "feedback" lists go back to **the same agent session**, which keeps its context and files, and the task moves back to `running` for the next round. This repeats until the reviewer accepts, the brief's review rounds run out (one to five, default three), or the task's budget is spent. Every round is recorded in the task history and in `REVIEW.md`. Only an accepted result is delivered as completed. Otherwise the best result is delivered as a clearly labelled partial result listing exactly what is still missing and why EV stopped. A declared file that does not exist is never delivered, whatever the review says.
+If the reviewer asks for changes, its "missing" and "feedback" lists go back to **the same agent session**, which keeps its context and files, and the task moves back to `running` for the next round. Rounds are not capped: this repeats until the reviewer accepts. When the loop stops making progress, or the reviewer says only the person can unblock it, EV asks the person (or answers from what it knows about them) instead of delivering half-done work. The task's token budget is the safety stop; past it, the best result is delivered as a clearly labelled partial result listing exactly what is still missing. Every round is recorded in the task history and in `REVIEW.md`, and a restart carries on the same loop: round, earlier reviews and spend are rebuilt from those records. Something the person says while a review runs reaches the agent before the result is delivered, even if the review passed. Only an accepted result is delivered as completed. A declared file that does not exist is never delivered, whatever the review says.
 
-Fixed Pi profiles (the launch brief, standing-responsibility drafts and the R1 content package) no longer check headings or tool receipts. EV reviews the produced file against the task's brief and sends it back with the reviewer's feedback the same way; a file that is never accepted is not delivered and the task fails with `QUALITY_NOT_REACHED`.
+Standing-responsibility drafts still run on a fixed Pi profile. EV reviews the produced file against the task's brief and sends it back with the reviewer's feedback the same way; a file that is never accepted is not delivered and the task fails with `QUALITY_NOT_REACHED`.
 
-Child agents are not reviewed one by one; their work is reviewed together as the lead agent's combined result. Blocked reports are delivered as reported. If the review service is unavailable, the result is shown with a visible "not reviewed" caveat rather than discarded.
+Child agents are not reviewed one by one; their work is reviewed together as the lead agent's combined result. Blocked reports are delivered as reported. If the review service is unavailable, the result is held back and the review retried (`EV_REVIEW_HOLD_MS`); it is never delivered unchecked.
 
 Worker stderr can carry credentials, so it never enters task state, the UI or a prompt. A redacted tail is written to a private `diagnostics-<run>.log` beside the task's session, and the failed task's error points to it.
 
 ## Context and authority
 
-EV selects up to eight active, explicit global guidance claims from its revisioned memory store and records their exact revisions in a context manifest. It writes the request, time and guidance to CONTEXT.md. The worker uses that context and direct inspection; automatic taste learning and a personal understanding model are not implemented.
+EV learns memory from every turn and settled task (see [memory types](MEMORY_TYPES.md)). Agents get the parts that apply to their work, the reviewer gets what this person has rejected before, and the exact memory revisions each task saw are recorded in a context manifest. CONTEXT.md holds the request, time, that memory and the recent conversation.
 
-OpenClaw uses `opencode-go/gpt-6-luna` at `https://opencode.ai/zen/go/v1`, with `OPENCODE_API` from the repo-local .env. Keys pass through the child environment, not task configuration. Every task receives a separate provider session header and workspace.
+EV's own calls and OpenClaw use OpenCode Go (`EV_MODEL`, `EV_OPENCLAW_MODEL`), with `OPENCODE_API` from the repo-local .env. Keys pass through the child environment, not task configuration, so an agent with network access can still reach the key. Every task receives a separate provider session header and workspace. Each of EV's own model calls writes one `[model]` log line with its role, attempts, duration and tokens.
 
-A task workspace is a directory, not an OS sandbox. The worker acts with the daemon user's host permissions and the authority in the user's request. Source review is bounded and web fetching covers a small allowlist. Token budgets are enforced live but their defaults are not yet calibrated against real runs; OpenCode Go reports zero cost, so only tokens bind for OpenClaw. The current fan-out is one level of independent assignments; dynamic delegation, dependency graphs, external-action reconciliation and a personal assistant conversation policy remain beyond this proof of concept.
+By default every OpenClaw run is a docker container (`npm run openclaw:image`) that mounts only its goal folder and a shared OpenClaw home; the home folder is shared by all tasks, so one task's transcripts are readable by the next. `EV_OPENCLAW_SANDBOX=host` runs agents uncontained as the daemon user and should only be used when asked for.
+
+The daemon listens on loopback only, rejects foreign Host and Origin headers, and requires a per-start token on every API call except `/api/health`. The browser gets it from the link the daemon prints at start; local tools send it as a bearer token from `data/api-token` (`EV_API_TOKEN` pins it).
+
+Token budgets are enforced live but their defaults are not yet calibrated against real runs; OpenCode Go reports zero cost, so only tokens bind for OpenClaw. The current fan-out is one level of independent assignments.
 
 ## Run and verify
 
 ```bash
-npm run prototype
+npm start
 npm test
-npm run assistant:manager-check -- --interrupt-child
+npm run qa        # scripted scenarios, see qa/README.md
+npm run qa:arc    # simulated person over weeks, scored for drift
 ```
 
-Open http://127.0.0.1:4317. The last command submits three real requests through EV: fix an unfamiliar Python fixture, implement two CSV reporters in parallel and combine their outputs, and research the public @tibo timeline. It interrupts only its own retry-safe acceptance child. It records requests, task histories, results and an independent local test rerun under ignored data/manager-check/.
-
-The deterministic manager tests cover parallel overlap and capacity, one child failure/retry, minor and unavailable review, feedback reaching the same agent until acceptance, partial delivery when review rounds run out, the shared goal layout, admission order, parent cancellation including workers waiting for capacity, restart with a completed child, and a falsely claimed missing file. These are manager contract checks; live results and manual use establish the broader product evidence.
+`npm test` covers the manager contract with deterministic fakes: parallel overlap and capacity, child retry, unavailable review, feedback reaching the same agent until acceptance, instructions during work and during review, restart of the review loop, the shared goal layout, admission order, cancellation, and a falsely claimed missing file. Whether EV understands the person is measured by the QA suite, not unit tests.
 
 ## Priority
 
-The focus is now reliable goal execution and orchestration in unfamiliar environments. Keep the existing supervisor and simple parent/child flow, then build the assistant's conversation continuity, personal understanding, goals and taste on top of a manager the owner can use. Provider breadth, fine-grained process-status auditing, and the older terminal/workstation subsystems are lower priority.
+The focus is now reliable goal execution and orchestration in unfamiliar environments. Keep the existing supervisor and simple parent/child flow, then build the assistant's conversation continuity, personal understanding, goals and taste on top of a manager the owner can use. Provider breadth and fine-grained process-status auditing are lower priority.

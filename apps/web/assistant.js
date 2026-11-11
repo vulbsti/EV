@@ -23,6 +23,14 @@ const elements = {
   memoryList: document.getElementById("memory-list")
 };
 
+// Every API call needs the session the daemon's printed link hands out.
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  const response = await nativeFetch(...args);
+  if (response.status === 401) elements.status.textContent = "Open EV from the link the daemon printed";
+  return response;
+};
+
 const conversationId = new URLSearchParams(location.search).get("conversation") ?? "default";
 if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) location.replace("/");
 

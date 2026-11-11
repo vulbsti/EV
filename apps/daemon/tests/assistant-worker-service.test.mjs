@@ -167,15 +167,6 @@ test("rejects capabilities outside the fixed profile registry", async () => {
   } finally { await f.close(); }
 });
 
-test("keeps the R1 content profile no-tools and host-materialized", () => {
-  const profile = createFixedCapabilityProfiles({ projectRoot: process.cwd() })["r1-content-package-v1"];
-  assert.deepEqual(profile.tools, []);
-  assert.deepEqual(profile.extensionPaths, []);
-  assert.deepEqual(profile.skillPaths, []);
-  assert.equal(profile.structuredOutput, "r1-content-package-json");
-  assert.equal(profile.budget.maxToolCalls, 0);
-});
-
 test("fails closed when a completed model response exceeds its reviewed budget", async () => {
   const f = await fixture();
   try {
@@ -200,78 +191,6 @@ test("fails closed when a completed model response exceeds its reviewed budget",
     const failed = await service.waitForTask("budget-1");
     assert.equal(failed.status, "failed");
     assert.equal(failed.error.code, "WORKER_BUDGET_EXCEEDED");
-    assert.deepEqual(failed.artifacts, []);
-  } finally { await f.close(); }
-});
-
-function r1AdapterFactory({ unchanged = false, omitReview = false } = {}) {
-  return async () => ({
-    async start() {
-      const draft = `${"Draft content with concrete product detail. ".repeat(12)}\n`;
-      const final = unchanged ? draft : [
-        "## Interpreted brief\nPrepare an honest progress update without inventing outcomes.",
-        `## Build-in-public post\n${"A concrete account of the prototype and what remains incomplete. ".repeat(7)}`,
-        `## Short reel outline\n${"Scene, evidence, and a restrained closing beat. ".repeat(5)}`,
-        "## Review and revision receipt\nTightened the opening, removed an unsupported claim, and clarified the remaining limitation.",
-        "## Assumptions\nPrepare only. Nothing is published."
-      ].join("\n\n");
-      const review = omitReview ? "" : `## Issues found\n${"The opening was vague and one claim lacked support. ".repeat(4)}\n\n## Revision decisions\nMake the opening concrete and remove the claim.`;
-      return { completion: Promise.resolve({
-        status: "completed",
-        text: JSON.stringify({ draft: unchanged ? final : draft, review, final }),
-        usage: { totalTokens: 2_000, cost: { total: 0.001 } },
-        events: []
-      }) };
-    },
-    async cancel() { return { status: "already_stopped" }; }
-  });
-}
-
-test("accepts an R1 content package only after a material draft-review-revision cycle", async () => {
-  const f = await fixture();
-  try {
-    const service = new AssistantWorkerService({
-      supervisor: f.supervisor,
-      workerRoot: f.workerRoot,
-      workspaceRoot: f.workspaceRoot,
-      adapterFactory: r1AdapterFactory(),
-      reviewer: async () => ({ verdict: "accept", summary: "Ready" })
-    });
-    await service.submitTask({
-      taskId: "r1-good",
-      capability: "r1-content-package-v1",
-      prompt: "prepare and review",
-      workspace: "r1-good",
-      context: "# Bounded task context",
-      artifact: { sourcePath: "output/content-package.md", relativePath: "content-package.md" }
-    });
-    const completed = await service.waitForTask("r1-good");
-    assert.equal(completed.status, "completed");
-    assert.equal(completed.result.profile, "r1-content-package-v1");
-    assert.equal(completed.artifacts.length, 1);
-  } finally { await f.close(); }
-});
-
-test("rejects an R1 content package whose structured output is unreadable", async () => {
-  const f = await fixture();
-  try {
-    const service = new AssistantWorkerService({
-      supervisor: f.supervisor,
-      workerRoot: f.workerRoot,
-      workspaceRoot: f.workspaceRoot,
-      adapterFactory: r1AdapterFactory({ omitReview: true })
-    });
-    await service.submitTask({
-      taskId: "r1-missing-review",
-      capability: "r1-content-package-v1",
-      prompt: "prepare and review",
-      workspace: "r1-missing-review",
-      context: "# Bounded task context",
-      artifact: { sourcePath: "output/content-package.md", relativePath: "content-package.md" }
-    });
-    const failed = await service.waitForTask("r1-missing-review");
-    assert.equal(failed.status, "failed");
-    assert.equal(failed.error.code, "R1_OUTPUT_INVALID");
     assert.deepEqual(failed.artifacts, []);
   } finally { await f.close(); }
 });
