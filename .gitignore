@@ -8,9 +8,9 @@ data/ev-openclaw-workspace/
 data/assistant-coordinator/
 data/assistant-standing-local/
 data/assistant-standing-github/
-data/manager-check/
 .env
 *.pcm
 *.wav
 *.mp3
 *.webm
+data/qa-runs/
