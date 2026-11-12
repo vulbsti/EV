@@ -1,4 +1,5 @@
 const elements = {
+  conversation: document.getElementById("conversation"),
   messages: document.getElementById("messages"),
   empty: document.getElementById("empty-state"),
   composer: document.getElementById("composer"),
@@ -42,6 +43,11 @@ let revision = 0;
 let taskRevision = 0;
 let retrying = false;
 let synchronizing = false;
+// True while something waits in this conversation's inbox for EV.
+let thinking = false;
+// Follow new messages unless the person has scrolled up to read.
+let following = true;
+let pollTimer = null;
 let memoryClaims = [];
 const KIND_LABELS = { fact: "About you", preference: "Preference", goal: "Goal", agreement: "How EV works with you", state: "Right now", lesson: "Lesson from earlier work" };
 const claimText = (claim) => typeof claim.current.value === "string" ? claim.current.value : claim.current.value?.text ?? "";
@@ -334,6 +340,7 @@ function render() {
     failed: item.failed
   }))].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   elements.empty.hidden = visible.length > 0;
+  const busy = thinking || [...pending.values()].some((item) => !item.failed);
   // A piece of work's card sits under the latest message about it.
   const cardAt = new Map(visible.filter((message) => message.taskId).map((message) => [message.taskId, message.messageId]));
   elements.messages.innerHTML = visible.map((message) => `
@@ -341,8 +348,8 @@ function render() {
       <div class="message-label">${message.role === "assistant" ? "EV" : "You"}${message.pending ? message.failed ? " · retrying when connected" : " · sending" : ""}</div>
       <p>${escapeHtml(message.content)}</p>
       ${!message.taskId ? "" : cardAt.get(message.taskId) === message.messageId ? renderTask(tasks.get(message.taskId)) : message.role === "assistant" && message.taskStatus ? `<span class="task-status ${escapeHtml(message.taskStatus)}">${escapeHtml(message.taskStatus.replaceAll("_", " "))}</span>` : ""}
-    </article>`).join("");
-  requestAnimationFrame(() => { document.getElementById("conversation").scrollTop = document.getElementById("conversation").scrollHeight; });
+    </article>`).join("") + (busy ? `<div class="thinking" role="status" aria-busy="true">EV is thinking</div>` : "");
+  if (following) requestAnimationFrame(() => { elements.conversation.scrollTop = elements.conversation.scrollHeight; });
 }
 
 async function loadTasks({ incremental = false } = {}) {
@@ -353,7 +360,7 @@ async function loadTasks({ incremental = false } = {}) {
   if (!incremental) tasks.clear();
   mergeTasks(body.tasks ?? []);
   taskRevision = Math.max(taskRevision, body.revision ?? 0);
-  document.getElementById("conversation").dataset.taskRevision = String(taskRevision);
+  elements.conversation.dataset.taskRevision = String(taskRevision);
   render();
 }
 
@@ -387,7 +394,8 @@ async function loadConversation({ incremental = false } = {}) {
     if (!incremental) messages = [];
     mergeMessages(body.messages);
     revision = Math.max(revision, body.revision);
-    document.getElementById("conversation").dataset.revision = String(revision);
+    thinking = Boolean(body.thinking);
+    elements.conversation.dataset.revision = String(revision);
     elements.status.textContent = "Saved locally";
     elements.status.className = "online";
     elements.composerStatus.textContent = "Replies survive reload and daemon restart.";
@@ -427,6 +435,8 @@ async function sendPending(item) {
     const body = await response.json();
     pending.delete(item.clientMessageId);
     mergeMessages([body.message]);
+    thinking = true;
+    schedulePoll(500);
     elements.status.textContent = "Saved locally";
     elements.status.className = "online";
     elements.composerStatus.textContent = "Replies survive reload and daemon restart.";
@@ -443,6 +453,7 @@ async function sendPending(item) {
 }
 
 async function submitMessage(text) {
+  following = true;
   return sendPending({ clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString(), pending: true, failed: false });
 }
 
@@ -481,6 +492,10 @@ elements.composer.addEventListener("submit", (event) => {
 });
 
 elements.input.addEventListener("input", resizeInput);
+elements.conversation.addEventListener("scroll", () => {
+  const { scrollTop, scrollHeight, clientHeight } = elements.conversation;
+  following = scrollHeight - scrollTop - clientHeight < 80;
+}, { passive: true });
 elements.input.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -613,4 +628,16 @@ if (connected) await loadResponsibilities();
 if (connected) await retryPending({ refresh: false });
 elements.input.focus();
 window.addEventListener("online", () => { void synchronize(); });
-setInterval(() => { void synchronize(); }, 4000);
+
+// Look for EV's answer often while it is thinking, and for everything else now and then.
+function schedulePoll(ms) {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(poll, ms);
+}
+async function poll() {
+  try {
+    if (!thinking) await synchronize();
+    else if (await loadConversation({ incremental: true }) && !thinking) await synchronize();
+  } finally { schedulePoll(thinking ? 500 : 4000); }
+}
+schedulePoll(thinking ? 500 : 4000);
