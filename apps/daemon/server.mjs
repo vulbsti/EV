@@ -90,7 +90,6 @@ function publicTask(task) {
     run: task.run ? { runId: task.run.runId, startedAt: task.run.startedAt } : null,
     result: task.result,
     artifacts: task.artifacts,
-    error: task.error ? { code: task.error.code, message: task.error.message, heldAnswer: task.error.heldAnswer ?? null } : null,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     revision: task.revision,
@@ -192,11 +191,11 @@ function recentConversation(conversationId, before, limit = 12) {
   }).join("\n");
 }
 
-/** The work in a conversation, as EV is shown it: everything still open, and the last few that ended. */
+/** The work in a conversation, as EV is shown it: everything not yet delivered, and the last few delivered. */
 async function workList(conversationId) {
   const tasks = (await assistantSupervisor.listTasks()).filter((task) => task.input?.metadata?.conversationId === conversationId && task.input?.capability === "openclaw-general-v1");
-  const ended = tasks.filter((task) => ["completed", "failed", "cancelled"].includes(task.status));
-  return tasks.filter((task) => !ended.includes(task) || ended.slice(-5).includes(task))
+  const delivered = tasks.filter((task) => task.status === "completed");
+  return tasks.filter((task) => !delivered.includes(task) || delivered.slice(-5).includes(task))
     .map((task) => `[work:${task.taskId}] ${task.input.metadata.title ?? "Untitled"}: ${workState(task)} (started ${time(task.createdAt)})`).join("\n");
 }
 
@@ -419,7 +418,7 @@ async function handleApi(request, response, url) {
       const prepared = await standingStore.listPreparedTasks({ responsibilityId });
       await Promise.all(prepared
         .filter((item) => item.status === "revoked" && item.supervisorTaskId)
-        .map((item) => assistantWorkers.cancelTask({ taskId: item.supervisorTaskId, reason: "standing-authority-revoked" }).catch(() => null)));
+        .map((item) => assistantWorkers.holdTask({ taskId: item.supervisorTaskId, reason: "standing-authority-revoked" }).catch(() => null)));
       return json(response, 200, { responsibility: await publicResponsibility(revoked) });
     }
     if (body.type === "check_now") {
@@ -511,10 +510,10 @@ async function handleApi(request, response, url) {
     const body = await readJson(request);
     const commandId = String(body.commandId ?? "");
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(commandId)) throw Object.assign(new Error("A safe commandId is required"), { statusCode: 400 });
-    if (body.type !== "cancel") throw Object.assign(new Error("Only the cancel command is supported"), { statusCode: 400 });
+    if (body.type !== "hold") throw Object.assign(new Error("Only the hold command is supported"), { statusCode: 400 });
     const expectedRevision = body.expectedRevision;
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw Object.assign(new Error("expectedRevision must be a non-negative integer"), { statusCode: 400 });
-    const result = await assistantWorkers.cancelTask({ taskId, commandId, expectedRevision, reason: "user-requested" });
+    const result = await assistantWorkers.holdTask({ taskId, commandId, expectedRevision, reason: "user-requested" });
     const snapshot = await assistantWorkers.snapshot();
     return json(response, 200, { replayed: result.replayed, revision: snapshot.revision, task: publicTask(result.task) });
   }

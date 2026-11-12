@@ -85,7 +85,6 @@ CREATE TABLE IF NOT EXISTS work (
   worker_id TEXT,
   run_id TEXT,
   started_at TEXT,
-  error_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   revision INTEGER NOT NULL DEFAULT 0
@@ -111,6 +110,21 @@ CREATE TABLE IF NOT EXISTS files (
   bytes INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS files_result ON files (result_id);
+
+-- One row per execution of an agent: when it started, its last sign of
+-- progress, and how it ended. A row without ended_at after a crash names the
+-- process (and container) EV must stop before the work goes on.
+CREATE TABLE IF NOT EXISTS runs (
+  run_id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES work(work_id),
+  started_at TEXT NOT NULL,
+  progress_at TEXT NOT NULL,
+  pid INTEGER,
+  container TEXT,
+  ended_at TEXT,
+  ended TEXT
+);
+CREATE INDEX IF NOT EXISTS runs_live ON runs (work_id) WHERE ended_at IS NULL;
 
 -- Memory: a statement and its versions, resting on sources (an event's id, or a manual entry).
 CREATE TABLE IF NOT EXISTS memory_sources (

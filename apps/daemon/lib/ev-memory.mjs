@@ -354,7 +354,9 @@ export class MemoryLearner {
   /** A settled root task becomes an episode: what was asked, what was done, how review went. */
   recordTask(task) {
     const metadata = task.input?.metadata ?? {};
-    if (metadata.parentTaskId || !["completed", "failed", "cancelled"].includes(task.status)) return;
+    // Delivered, put on hold, or stuck on a problem it had to put to the person.
+    const problem = task.status === "waiting" ? task.history?.findLast((event) => event.type === "input_needed")?.state?.problem ?? null : null;
+    if (metadata.parentTaskId || !(["completed", "held"].includes(task.status) || problem)) return;
     const report = task.result?.report;
     const verification = report?.verification ?? {};
     this.memory.recordEpisode({
@@ -367,7 +369,7 @@ export class MemoryLearner {
         reviews: (verification.reviews ?? []).map(({ round, verdict, intentMatch, summary, missing, feedback }) => ({ round, verdict, intentMatch, summary: text(summary, 300), missing: (missing ?? []).slice(0, 5).map((item) => text(item, 300)), feedback: (feedback ?? []).slice(0, 5).map((item) => text(item, 300)) })),
         unresolved: (verification.unresolvedIssues ?? []).slice(0, 5).map((item) => text(item, 300)),
         stopReason: verification.stopReason ?? null,
-        error: task.error?.message ? text(task.error.message, 300) : null,
+        problem,
         limitations: (report?.limitations ?? []).slice(0, 5).map((item) => text(item, 300))
       }
     });

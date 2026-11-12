@@ -46,7 +46,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .task-status { display: inline-block; margin-top: 10px; padding: 4px 8px; border-radius: 999px; background: var(--amber-soft); color: var(--amber); font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .task-card { margin-top: 14px; width: min(540px, 100%); padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
 .task-card.completed { border-color: #9bbbaa; background: #f3f8f5; }
-.task-card.failed, .task-card.cancelled { background: #f7f3ed; }
+.task-card.held { background: #f7f3ed; }
 .task-card.partial, .task-card.blocked { border-color: #d1b98b; background: #fff9ed; }
 .task-status.completed { background: var(--green-soft); color: var(--green); }
 .task-card-head, .task-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -62,9 +62,9 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .task-report a { color: var(--green); }
 .task-report small { display: block; margin-top: 12px; color: var(--muted); line-height: 1.4; }
 .task-actions { justify-content: flex-start; margin-top: 12px; }
-.task-artifact, .task-cancel { border: 0; border-radius: 9px; padding: 8px 11px; background: var(--green-soft); color: var(--green); cursor: pointer; font-size: 12px; font-weight: 700; text-decoration: none; }
-.task-cancel { background: transparent; color: var(--muted); border: 1px solid var(--line); }
-.task-artifact:focus-visible, .task-cancel:focus-visible { outline: 3px solid #70a98d; outline-offset: 3px; }
+.task-artifact, .task-hold { border: 0; border-radius: 9px; padding: 8px 11px; background: var(--green-soft); color: var(--green); cursor: pointer; font-size: 12px; font-weight: 700; text-decoration: none; }
+.task-hold { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.task-artifact:focus-visible, .task-hold:focus-visible { outline: 3px solid #70a98d; outline-offset: 3px; }
 .composer { position: sticky; bottom: 0; width: min(720px, calc(100% - 30px)); margin: 0 auto 18px; padding: 13px 14px 10px; border: 1px solid #c9c8c0; border-radius: 18px; background: white; box-shadow: 0 16px 46px #3d443817; }
 .composer label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .composer textarea { display: block; width: 100%; min-height: 42px; max-height: 160px; resize: none; border: 0; outline: 0; padding: 7px 6px; background: transparent; color: var(--ink); font-size: 15px; line-height: 1.5; }

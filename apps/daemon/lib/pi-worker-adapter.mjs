@@ -36,7 +36,7 @@ export class PiWorkerAdapter {
     executable = "pi",
     sessionDir,
     cwd,
-    timeoutMs = 120_000,
+    stallMs = 600_000,
     provider = "opencode-go",
     model = "deepseek-v4.1-flash",
     expectedVersion = null,
@@ -49,7 +49,7 @@ export class PiWorkerAdapter {
     this.executable = executable;
     this.sessionDir = sessionDir;
     this.cwd = cwd;
-    this.timeoutMs = timeoutMs;
+    this.stallMs = stallMs;
     this.provider = provider;
     this.model = model;
     this.expectedVersion = expectedVersion;
@@ -60,7 +60,7 @@ export class PiWorkerAdapter {
     this.env = env;
   }
 
-  async start({ runId, sessionId = runId, prompt, budget = null, onUsage = null }) {
+  async start({ runId, sessionId = runId, prompt, budget = null, onUsage = null, onProgress = null }) {
     ensurePrivateDirectorySync(this.sessionDir);
     securePrivateTreeSync(this.sessionDir);
     const command = extname(this.executable) === ".mjs" ? process.execPath : this.executable;
@@ -97,7 +97,7 @@ export class PiWorkerAdapter {
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32"
     });
-    const run = { runId, sessionId, argv: [...argv.slice(0, -1), "[prompt omitted]"], child, cancelled: false, timedOut: false, budgetExceeded: null };
+    const run = { runId, sessionId, argv: [...argv.slice(0, -1), "[prompt omitted]"], child, stopped: false, stalled: false, budgetExceeded: null };
     // Parse the JSONL stream as it arrives instead of buffering all of stdout:
     // long runs never lose their final message to a size cap, and usage is
     // known while the run is still going, so the budget can stop it early.
@@ -111,10 +111,14 @@ export class PiWorkerAdapter {
       const escalation = setTimeout(() => terminateProcess(run, "SIGKILL"), 2_000);
       escalation.unref?.();
     };
+    // Every event Pi prints is a sign of progress; silence past stallMs stops it.
+    let progressAt = Date.now();
     const handleLine = (line) => {
       if (!line.trim()) return;
       let event;
       try { event = JSON.parse(line); } catch { return; }
+      progressAt = Date.now();
+      onProgress?.();
       events.push(event);
       if (events.length > MAX_RETAINED_EVENTS) events.splice(0, events.length - MAX_RETAINED_EVENTS);
       if (event.type === "tool_execution_start") usage.toolCalls += 1;
@@ -136,27 +140,28 @@ export class PiWorkerAdapter {
       for (const line of lines) handleLine(line);
     });
     child.stderr.on("data", (chunk) => stderr.push(chunk));
-    const timer = setTimeout(() => {
-      run.timedOut = true;
+    const watchdog = setInterval(() => {
+      if (run.stalled || Date.now() - progressAt <= this.stallMs) return;
+      run.stalled = true;
       stop();
-    }, this.timeoutMs);
-    timer.unref?.();
+    }, Math.min(1_000, Math.max(100, this.stallMs / 4)));
+    watchdog.unref?.();
     run.completion = new Promise((resolve) => {
       let settled = false;
       const finish = async (value) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        clearInterval(watchdog);
         const diagnosticsLog = value.status === "completed" ? null : await writeDiagnosticsLog(this.sessionDir, runId, stderr);
         resolve({ ...value, usage: publicUsage(usage), ...(diagnosticsLog ? { diagnosticsLog } : {}) });
       };
-      child.on("error", () => finish({ status: run.cancelled ? "cancelled" : "failed", code: "PI_PROCESS_START", message: "Pi worker could not start", events: [] }));
+      child.on("error", () => finish({ status: run.stopped ? "stopped" : "failed", code: "PI_PROCESS_START", message: "Pi worker could not start", events: [] }));
       child.on("close", (code, signal) => {
         handleLine(pending);
         pending = "";
-        if (run.cancelled) return finish({ status: "cancelled", code: "PI_CANCELLED", message: "Pi worker was cancelled", events });
+        if (run.stopped) return finish({ status: "stopped", code: "PI_STOPPED", message: "Pi worker was stopped", events });
         if (run.budgetExceeded) return finish({ status: "budget_exceeded", code: "WORKER_BUDGET_EXCEEDED", message: `The worker reached its ${run.budgetExceeded} budget and was stopped`, text: finalText, events });
-        if (run.timedOut) return finish({ status: "timed_out", code: "PI_TIMEOUT", message: "Pi worker exceeded its time budget", events });
+        if (run.stalled) return finish({ status: "stalled", code: "PI_STALLED", message: `Pi worker showed no progress for ${Math.round(this.stallMs / 1000)} s`, events });
         if (code !== 0) return finish({ status: "failed", code: "PI_PROCESS_EXIT", message: `Pi worker failed with exit code ${code ?? signal ?? "unknown"}`, events });
         if (!finalText) return finish({ status: "failed", code: "PI_EMPTY_RESULT", message: "Pi worker returned no final assistant text", events });
         finish({ status: "completed", text: finalText, events });
@@ -165,12 +170,11 @@ export class PiWorkerAdapter {
     return run;
   }
 
-  async cancel(run, { reason = "cancelled" } = {}) {
-    if (!run.child || run.child.exitCode !== null) return { status: "already_stopped", reason };
-    run.cancelled = true;
+  async stop(run) {
+    if (!run.child || run.child.exitCode !== null) return;
+    run.stopped = true;
     terminateProcess(run);
     const escalation = setTimeout(() => terminateProcess(run, "SIGKILL"), 2_000);
     escalation.unref?.();
-    return { status: "cancelled", reason };
   }
 }

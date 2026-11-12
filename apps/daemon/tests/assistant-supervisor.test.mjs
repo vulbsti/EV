@@ -9,7 +9,7 @@ import { join } from "node:path";
 // transition requires the current fencingToken; reopening the store must
 // recover the same task, run and event history. Completion verifies each
 // artifact receipt { artifactId, relativePath, sha256, bytes } beneath
-// artifactRoot before the work becomes terminal.
+// artifactRoot before the work is delivered.
 import { AssistantSupervisor } from "../lib/assistant-supervisor.mjs";
 import { openStore } from "../lib/store.mjs";
 
@@ -100,7 +100,7 @@ test("rejects an unverified artifact receipt and keeps the run non-terminal", as
   }
 });
 
-test("makes duplicate completion idempotent and exposes failed and cancelled terminal states", async () => {
+test("makes duplicate completion idempotent, and delivered work reopens when told something", async () => {
   const f = await fixture();
   try {
     const supervisor = await f.open();
@@ -112,13 +112,10 @@ test("makes duplicate completion idempotent and exposes failed and cancelled ter
     assert.deepEqual(duplicate, first);
     assert.equal((await supervisor.getTask("task-done")).history.filter((event) => event.type === "completed").length, 1);
 
-    await supervisor.createTask({ taskId: "task-failed", input: {} });
-    const failedLease = await supervisor.leaseTask({ taskId: "task-failed", workerId: "worker-a" });
-    await supervisor.startTask({ taskId: "task-failed", runId: "run-failed", fencingToken: failedLease.fencingToken });
-    assert.equal((await supervisor.failTask({ taskId: "task-failed", runId: "run-failed", fencingToken: failedLease.fencingToken, error: { code: "WORKER_ERROR", message: "nope" } })).status, "failed");
-
-    await supervisor.createTask({ taskId: "task-cancelled", input: {} });
-    assert.equal((await supervisor.cancelTask({ taskId: "task-cancelled", reason: "user-requested" })).status, "cancelled");
+    assert.equal(supervisor.instruct({ taskId: "task-done", text: "Make it shorter." }), "queued");
+    const reopened = await supervisor.getTask("task-done");
+    assert.equal(reopened.history.at(-1).reopened, "completed");
+    assert.deepEqual(reopened.result, { value: 1 }, "the delivered result stays until a new one is accepted");
   } finally {
     await f.close();
   }
@@ -203,23 +200,24 @@ test("exposes a monotonic snapshot revision and ordered task events for reconnec
   }
 });
 
-test("makes cancellation idempotent and fences a late worker completion", async () => {
+test("a hold is idempotent, fences a late worker completion, and the work carries on when told something", async () => {
   const f = await fixture();
   try {
     const supervisor = await f.open();
-    await supervisor.createTask({ taskId: "task-cancel-race", input: { capability: "launch-status-brief-v1" } });
-    const lease = await supervisor.leaseTask({ taskId: "task-cancel-race", workerId: "worker-cancel" });
-    await supervisor.startTask({ taskId: "task-cancel-race", runId: "run-cancel", fencingToken: lease.fencingToken });
+    await supervisor.createTask({ taskId: "task-hold-race", input: {} });
+    const lease = await supervisor.leaseTask({ taskId: "task-hold-race", workerId: "worker-hold" });
+    await supervisor.startTask({ taskId: "task-hold-race", runId: "run-hold", fencingToken: lease.fencingToken });
 
-    const cancelled = await supervisor.cancelTask({ taskId: "task-cancel-race", reason: "user-requested" });
-    const duplicate = await supervisor.cancelTask({ taskId: "task-cancel-race", reason: "retry-of-user-request" });
-    assert.equal(cancelled.status, "cancelled");
-    assert.deepEqual(duplicate, cancelled);
-    assert.equal(cancelled.history.filter((event) => event.type === "cancelled").length, 1);
+    assert.equal(supervisor.hold("task-hold-race", { reason: "user-requested" }), true);
+    assert.equal(supervisor.hold("task-hold-race", { reason: "retry-of-user-request" }), false);
+    const held = await supervisor.getTask("task-hold-race");
+    assert.equal(held.status, "held");
+    assert.equal(held.history.filter((event) => event.type === "held").length, 1);
     await assert.rejects(
-      supervisor.completeTask({ taskId: "task-cancel-race", runId: "run-cancel", fencingToken: lease.fencingToken, artifacts: [] }),
+      supervisor.completeTask({ taskId: "task-hold-race", runId: "run-hold", fencingToken: lease.fencingToken, artifacts: [] }),
       staleToken
     );
+    assert.equal(supervisor.instruct({ taskId: "task-hold-race", text: "Carry on." }), "queued");
   } finally {
     await f.close();
   }
@@ -255,21 +253,21 @@ test("rejects artifact receipts that traverse or resolve through a symlink", asy
   }
 });
 
-test("persists replay-safe cancel commands and rejects stale task revisions", async () => {
+test("persists replay-safe hold commands and rejects stale task revisions", async () => {
   const f = await fixture();
   try {
     const supervisor = await f.open();
     const created = await supervisor.createTask({ taskId: "task-command", input: {} });
     await assert.rejects(
-      supervisor.commandTask({ taskId: "task-command", commandId: "cancel-stale", type: "cancel", expectedRevision: created.revision + 1 }),
+      supervisor.commandTask({ taskId: "task-command", commandId: "hold-stale", type: "hold", expectedRevision: created.revision + 1 }),
       (error) => error?.code === "TASK_REVISION_CONFLICT"
     );
-    const first = await supervisor.commandTask({ taskId: "task-command", commandId: "cancel-1", type: "cancel", expectedRevision: created.revision });
-    const replay = await supervisor.commandTask({ taskId: "task-command", commandId: "cancel-1", type: "cancel", expectedRevision: created.revision });
+    const first = await supervisor.commandTask({ taskId: "task-command", commandId: "hold-1", type: "hold", expectedRevision: created.revision });
+    const replay = await supervisor.commandTask({ taskId: "task-command", commandId: "hold-1", type: "hold", expectedRevision: created.revision });
     assert.equal(first.replayed, false);
     assert.equal(replay.replayed, true);
-    assert.equal(replay.task.status, "cancelled");
-    assert.equal(replay.task.history.filter((event) => event.type === "cancelled").length, 1);
+    assert.equal(replay.task.status, "held");
+    assert.equal(replay.task.history.filter((event) => event.type === "held").length, 1);
   } finally {
     await f.close();
   }

@@ -14,7 +14,8 @@ export const projectRoot = resolve(import.meta.dirname, "../..");
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const TOKEN = "verify-token";
 const AUTH = { Authorization: `Bearer ${TOKEN}` };
-const DONE = new Set(["completed", "failed", "cancelled", "not_executable"]);
+// Work with no agent on it: delivered, or on hold with everything it made.
+const DONE = new Set(["completed", "held"]);
 
 async function freePort() {
   return new Promise((done, reject) => {

@@ -29,20 +29,19 @@ function fakeAdapterFactory({ calls, delay = 0 } = {}) {
       calls?.push({ type: "start", taskId: task.taskId, runId });
       let resolveCompletion;
       const completion = new Promise((resolve) => { resolveCompletion = resolve; });
-      const run = { completion, resolveCompletion, cancelled: false };
+      const run = { completion, resolveCompletion, stopped: false };
       const timer = setTimeout(async () => {
         await writeFile(join(workspacePath, "output.md"), "## Verified output\n", { mode: 0o600 });
         resolveCompletion({ status: "completed", text: "done", events: [] });
       }, delay);
-      run.cancelTimer = timer;
+      run.timer = timer;
       return run;
     },
-    async cancel(run) {
-      calls?.push({ type: "cancel", taskId: task.taskId });
-      clearTimeout(run.cancelTimer);
-      run.cancelled = true;
-      run.resolveCompletion({ status: "cancelled", code: "PI_CANCELLED", message: "cancelled" });
-      return { status: "cancelled" };
+    async stop(run) {
+      calls?.push({ type: "stop", taskId: task.taskId });
+      clearTimeout(run.timer);
+      run.stopped = true;
+      run.resolveCompletion({ status: "stopped", code: "PI_STOPPED", message: "stopped" });
     }
   });
 }
@@ -79,7 +78,7 @@ test("submits a fixed scoped task, owns its run, and completes only after artifa
   } finally { await f.close(); }
 });
 
-test("persists cancellation before stopping an active adapter and prevents late completion", async () => {
+test("stores a hold before stopping an active adapter, and the held work keeps its place", async () => {
   const f = await fixture();
   const calls = [];
   try {
@@ -89,18 +88,19 @@ test("persists cancellation before stopping an active adapter and prevents late 
       workspaceRoot: f.workspaceRoot,
       adapterFactory: fakeAdapterFactory({ calls, delay: 10_000 }),
     });
-    await service.submitTask({ taskId: "cancel-1", capability: "no-tools-v1", prompt: "hang" });
+    await service.submitTask({ taskId: "hold-1", capability: "no-tools-v1", prompt: "hang" });
     for (let attempt = 0; attempt < 100; attempt += 1) {
-      if ((await f.supervisor.getTask("cancel-1")).status === "running") break;
+      if ((await f.supervisor.getTask("hold-1")).status === "running") break;
       await new Promise((resolve) => setTimeout(resolve, 2));
     }
-    assert.equal((await f.supervisor.getTask("cancel-1")).status, "running");
-    const cancelled = await service.cancelTask({ taskId: "cancel-1", reason: "user-requested" });
-    assert.equal(cancelled.status, "cancelled");
-    const final = await service.waitForTask("cancel-1");
-    assert.equal(final.status, "cancelled");
-    assert.equal(calls.filter((call) => call.type === "cancel").length, 1);
-    assert.deepEqual(final.history.map((event) => event.type), ["created", "leased", "started", "cancelled"]);
+    assert.equal((await f.supervisor.getTask("hold-1")).status, "running");
+    const { task: held } = await service.holdTask({ taskId: "hold-1", reason: "user-requested" });
+    assert.equal(held.status, "held");
+    const final = await service.waitForTask("hold-1");
+    assert.equal(final.status, "held");
+    assert.equal(calls.filter((call) => call.type === "stop").length, 1);
+    assert.deepEqual(final.history.map((event) => event.type), ["created", "leased", "started", "held"]);
+    assert.ok(f.supervisor.runs("hold-1").every((run) => run.endedAt), "the stopped run is recorded as ended");
   } finally { await f.close(); }
 });
 
@@ -156,7 +156,7 @@ test("graceful daemon shutdown fences the old run and resumes one queued replace
     const completed = await second.waitForTask("restart-1");
     assert.equal(completed.status, "completed");
     assert.equal(firstCalls.filter((call) => call.type === "start").length, 1);
-    assert.equal(firstCalls.filter((call) => call.type === "cancel").length, 1);
+    assert.equal(firstCalls.filter((call) => call.type === "stop").length, 1);
     assert.equal(secondCalls.filter((call) => call.type === "start").length, 1);
   } finally { await f.close(); }
 });
@@ -169,7 +169,7 @@ test("rejects capabilities outside the fixed profile registry", async () => {
   } finally { await f.close(); }
 });
 
-test("fails closed when a completed model response exceeds its reviewed budget", async () => {
+test("a run past its reviewed budget is not delivered; the person is asked instead", async () => {
   const f = await fixture();
   try {
     const profiles = {
@@ -186,14 +186,14 @@ test("fails closed when a completed model response exceeds its reviewed budget",
       profiles,
       adapterFactory: async () => ({
         async start() { return { completion: Promise.resolve({ status: "completed", text: "too expensive", usage: { totalTokens: 2, cost: { total: 0 } }, events: [] }) }; },
-        async cancel() { return { status: "already_stopped" }; }
+        async stop() {}
       })
     });
     await service.submitTask({ taskId: "budget-1", capability: "tiny-budget-v1", prompt: "bounded" });
-    const failed = await service.waitForTask("budget-1");
-    assert.equal(failed.status, "failed");
-    assert.equal(failed.error.code, "WORKER_BUDGET_EXCEEDED");
-    assert.deepEqual(failed.artifacts, []);
+    const waiting = await service.waitForTask("budget-1");
+    assert.equal(waiting.status, "waiting");
+    assert.equal(waiting.history.at(-1).state.problem, "WORKER_BUDGET_EXCEEDED");
+    assert.deepEqual(waiting.artifacts, []);
   } finally { await f.close(); }
 });
 
@@ -213,14 +213,14 @@ test("a deliverable EV's review never accepts is not delivered, and the feedback
           await writeFile(join(workspacePath, "output.md"), `draft ${prompts.length}\n`, { mode: 0o600 });
           return { completion: Promise.resolve({ status: "completed", text: "done", events: [] }) };
         },
-        async cancel() {}
+        async stop() {}
       })
     });
     await service.submitTask({ taskId: "never-good", capability: "scoped-workspace-v1", prompt: "write the brief", context: "# Context", artifact: { sourcePath: "output.md" } });
-    const failed = await service.waitForTask("never-good");
-    assert.equal(failed.status, "failed");
-    assert.equal(failed.error.code, "QUALITY_NOT_REACHED");
-    assert.deepEqual(failed.artifacts, []);
+    const waiting = await service.waitForTask("never-good");
+    assert.equal(waiting.status, "waiting");
+    assert.equal(waiting.history.at(-1).state.problem, "QUALITY_NOT_REACHED");
+    assert.deepEqual(waiting.artifacts, []);
     assert.equal(prompts.length, 2);
     assert.match(prompts[1], /Name the two launch blockers/);
   } finally { await f.close(); }

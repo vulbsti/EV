@@ -7,10 +7,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 export const projectRoot = resolve(import.meta.dirname, "../..");
-export const TERMINAL = new Set(["completed", "failed", "cancelled", "not_executable"]);
+// Work with no agent on it: delivered, or on hold with everything it made.
+export const RESTING = new Set(["completed", "held"]);
 // A task waiting for the person's answer is settled from the harness's point of
 // view: nothing more happens until someone replies.
-export const SETTLED = new Set([...TERMINAL, "waiting"]);
+export const SETTLED = new Set([...RESTING, "waiting"]);
 
 async function freePort() {
   return new Promise((resolvePort, reject) => {

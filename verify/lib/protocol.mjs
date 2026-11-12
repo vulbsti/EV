@@ -187,7 +187,7 @@ export const today = {
 export function workerTurnKind(prompt) {
   if (/^You have used the budget/.test(prompt)) return "wrap-up";
   if (/^EV reviewed your result|^EV could not read your last result/.test(prompt)) return "revision";
-  if (/^Answer to your question|^While you were working|^You were interrupted/.test(prompt)) return "continuation";
+  if (/^Answer to your question|^While you were working|^You were interrupted|^The person came back/.test(prompt)) return "continuation";
   return "first";
 }
 

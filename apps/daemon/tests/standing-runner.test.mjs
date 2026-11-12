@@ -30,7 +30,7 @@ class FakeWorkerService {
     this.accepted = 0;
     this.failAfterAccept = false;
     this.onSubmit = null;
-    this.cancelled = [];
+    this.held = [];
   }
 
   async submitTask(input) {
@@ -48,10 +48,10 @@ class FakeWorkerService {
     return structuredClone(task);
   }
 
-  async cancelTask({ taskId, reason }) {
-    this.cancelled.push({ taskId, reason });
+  async holdTask({ taskId, reason }) {
+    this.held.push({ taskId, reason });
     const task = this.tasks.get(taskId) ?? { taskId };
-    task.status = "cancelled";
+    task.status = "held";
     this.tasks.set(taskId, task);
     return structuredClone(task);
   }
@@ -163,7 +163,7 @@ test("revoked responsibility does not read its source or submit work", async () 
   } finally { await f.close(); }
 });
 
-test("runner cancels a supervisor task when authority is revoked during submission", async () => {
+test("runner holds a supervisor task when authority is revoked during submission", async () => {
   const f = await fixture();
   try {
     f.worker.onSubmit = async () => {
@@ -174,7 +174,7 @@ test("runner cancels a supervisor task when authority is revoked during submissi
       (error) => error?.code === "PREPARED_TASK_AUTHORITY_REVOKED"
     );
     assert.equal(f.worker.accepted, 1);
-    assert.deepEqual(f.worker.cancelled, [{
+    assert.deepEqual(f.worker.held, [{
       taskId: f.worker.calls[0].taskId,
       reason: "standing-authority-revoked-before-confirmation"
     }]);
