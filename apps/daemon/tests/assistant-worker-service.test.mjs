@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AssistantSupervisor } from "../lib/assistant-supervisor.mjs";
+import { openStore } from "../lib/store.mjs";
 import { AssistantWorkerService, createFixedCapabilityProfiles } from "../lib/assistant-worker-service.mjs";
 
 async function fixture() {
@@ -14,10 +15,11 @@ async function fixture() {
   const artifactRoot = join(workerRoot, "artifacts");
   await mkdir(workspaceRoot, { recursive: true });
   await mkdir(artifactRoot, { recursive: true });
-  const supervisor = await AssistantSupervisor.open({ statePath: join(workerRoot, "state.sqlite"), artifactRoot });
+  const store = openStore({ path: join(workerRoot, "ev.sqlite") });
+  const supervisor = await AssistantSupervisor.open({ store, artifactRoot });
   return {
     root, workerRoot, workspaceRoot, artifactRoot, supervisor,
-    async close() { supervisor.close(); await rm(root, { recursive: true, force: true }); }
+    async close() { store.close(); await rm(root, { recursive: true, force: true }); }
   };
 }
 

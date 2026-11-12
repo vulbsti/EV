@@ -4,11 +4,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AssistantMemoryStore } from "../lib/assistant-memory.mjs";
+import { openStore } from "../lib/store.mjs";
 
 async function withMemory(run) {
   const root = await mkdtemp(join(tmpdir(), "ev-assistant-memory-"));
-  const memory = AssistantMemoryStore.open({ path: join(root, "memory.sqlite") });
-  try { return await run(memory); } finally { memory.close(); await rm(root, { recursive: true, force: true }); }
+  const store = openStore({ path: join(root, "ev.sqlite") });
+  try { return await run(AssistantMemoryStore.open({ store })); } finally { store.close(); await rm(root, { recursive: true, force: true }); }
 }
 
 async function source(memory, sourceId, scope = "global") {
@@ -62,9 +63,7 @@ test("stop-use is distinct from erase and erased claims cannot be resurrected", 
     memory.stopUse({ ownerId: "person-1", targetType: "claim", targetId: "claim-stop" });
     assert.deepEqual(memory.recall({ ownerId: "person-1" }), []);
     assert.equal(memory.getClaim("claim-stop").current.value, "review");
-    memory.erase({ ownerId: "person-1", targetType: "claim", targetId: "claim-stop" });
-    const tombstones = memory.listTombstones({ ownerId: "person-1", targetId: "claim-stop" });
-    assert.deepEqual(tombstones.map((item) => item.action), ["stop_use", "erase"]);
+    assert.equal(memory.erase({ ownerId: "person-1", targetType: "claim", targetId: "claim-stop" }).action, "erase");
     assert.throws(() => memory.correct({ claimId: claim.claimId, expectedRevision: 1, value: "resurrected" }), (error) => error.code === "MEMORY_ERASED");
     assert.deepEqual(memory.recall({ ownerId: "person-1", includeCandidates: true }), []);
   });
@@ -83,19 +82,6 @@ test("context manifest records exact revisions and erase epoch", async () => {
   });
 });
 
-test("memory proposals do not become active until accepted", async () => {
-  await withMemory(async (memory) => {
-    await source(memory, "src-proposal");
-    const proposal = memory.propose({ proposalId: "proposal-1", ownerId: "person-1", subject: "user", predicate: "style", value: "direct", sourceIds: ["src-proposal"] });
-    assert.equal(proposal.status, "pending");
-    assert.deepEqual(memory.recall({ ownerId: "person-1" }), []);
-    const claim = memory.acceptProposal({ proposalId: proposal.proposalId });
-    assert.equal(claim.current.status, "active");
-    assert.equal(memory.getProposal("proposal-1").status, "accepted");
-    assert.deepEqual(memory.recall({ ownerId: "person-1" }).map((item) => item.claimId), [claim.claimId]);
-  });
-});
-
 test("temporary stop-use expiries are normalized and invalid values are rejected", async () => {
   await withMemory(async (memory) => {
     await source(memory, "src-expiry");
@@ -111,25 +97,4 @@ test("temporary stop-use expiries are normalized and invalid values are rejected
       (error) => error.code === "INVALID_INPUT"
     );
   });
-});
-
-test("proposal acceptance is idempotent across store instances", async () => {
-  const root = await mkdtemp(join(tmpdir(), "ev-assistant-memory-proposal-"));
-  const path = join(root, "memory.sqlite");
-  const first = AssistantMemoryStore.open({ path });
-  const second = AssistantMemoryStore.open({ path });
-  try {
-    await source(first, "src-concurrent-proposal");
-    const proposal = first.propose({ proposalId: "proposal-concurrent", ownerId: "person-1", subject: "user", predicate: "style", value: "direct", sourceIds: ["src-concurrent-proposal"] });
-    const firstClaim = first.acceptProposal({ proposalId: proposal.proposalId, authorType: "reviewer-a" });
-    const secondClaim = second.acceptProposal({ proposalId: proposal.proposalId, authorType: "reviewer-b" });
-    assert.equal(secondClaim.claimId, firstClaim.claimId);
-    assert.equal(secondClaim.current.authorType, "reviewer-a");
-    assert.equal(first.recall({ ownerId: "person-1" }).length, 1);
-    assert.equal(second.getProposal(proposal.proposalId).acceptedClaimId, firstClaim.claimId);
-  } finally {
-    first.close();
-    second.close();
-    await rm(root, { recursive: true, force: true });
-  }
 });

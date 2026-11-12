@@ -5,7 +5,6 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permissions.mjs";
 
-import { AssistantSupervisor } from "./assistant-supervisor.mjs";
 import { reviewOpenClawReport } from "./ev-quality-gate.mjs";
 import { OpenClawWorkerAdapter } from "./openclaw-worker-adapter.mjs";
 import { readTranscript } from "./openclaw-transcript.mjs";
@@ -179,6 +178,7 @@ export class AssistantWorkerService {
     workerRoot,
     workspaceRoot = join(workerRoot, "workspaces"),
     sessionRoot = join(workerRoot, "sessions"),
+    homeRoot = join(workerRoot, "homes"),
     workerId = "ev-pi-worker-v1",
     profiles = createFixedCapabilityProfiles(),
     adapterFactory = null,
@@ -206,6 +206,7 @@ export class AssistantWorkerService {
     this.workerRoot = resolve(workerRoot);
     this.workspaceRoot = resolve(workspaceRoot);
     this.sessionRoot = resolve(sessionRoot);
+    this.homeRoot = resolve(homeRoot);
     this.workerId = workerId;
     this.profiles = profiles;
     this.executable = executable;
@@ -216,8 +217,6 @@ export class AssistantWorkerService {
     this.settlementDelayMs = Math.max(0, settlementDelayMs);
     this.reviewHoldMs = reviewHoldMs;
     this.openClawSandbox = openClawSandbox;
-    // A sandboxed OpenClaw never sees the person's own ~/.openclaw.
-    this.openClawHome = openClawSandbox ? join(this.workerRoot, "openclaw-home") : process.env.HOME ?? "";
     this.activeRuns = new Map();
     this.planner = planner;
     this.reviewer = reviewer;
@@ -231,7 +230,7 @@ export class AssistantWorkerService {
     this.stopping = false;
     this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => profile.capability === "openclaw-general-v1"
       ? new OpenClawWorkerAdapter({
-        taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs, homeDir: this.openClawHome,
+        taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs, homeDir: this._home(task.taskId),
         sandbox: this.openClawSandbox && { ...this.openClawSandbox, mountRoot: task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath }
       })
       : new PiWorkerAdapter({
@@ -255,6 +254,7 @@ export class AssistantWorkerService {
     ensurePrivateDirectorySync(this.workerRoot);
     ensurePrivateDirectorySync(this.workspaceRoot);
     ensurePrivateDirectorySync(this.sessionRoot);
+    ensurePrivateDirectorySync(this.homeRoot);
     ensurePrivateDirectorySync(this.supervisor.artifactRoot);
     this.started = true;
     const recovery = await this.recover();
@@ -358,7 +358,7 @@ export class AssistantWorkerService {
   }
 
   async _cancelChildren(taskId, reason) {
-    const children = (await this.supervisor.listTasks()).filter((task) => task.input.metadata?.parentTaskId === taskId && !["completed", "failed", "cancelled"].includes(task.status));
+    const children = (await this.supervisor.listTasks({ parentId: taskId })).filter((task) => !["completed", "failed", "cancelled"].includes(task.status));
     await Promise.all(children.map((task) => this.cancelTask({ taskId: task.taskId, reason })));
   }
 
@@ -408,6 +408,15 @@ export class AssistantWorkerService {
     }
     this._pumpWorkers();
     await Promise.allSettled(active.map((entry) => entry.promise));
+  }
+
+  /**
+   * Each piece of work's agent has its own home, made with its workspace and
+   * kept with it, so its session survives a restart and no other work can
+   * read what it left there. It never sees the person's own home.
+   */
+  _home(taskId) {
+    return join(this.homeRoot, safeTaskId(taskId));
   }
 
   _profile(capability) {
@@ -581,18 +590,20 @@ export class AssistantWorkerService {
       let previous = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         if (active.cancelRequested || active.shutdownRequested) return previous;
-        const taskId = `${task.taskId}-child-${index + 1}${attempt ? "-retry" : ""}`;
-        let child = await this.supervisor.getTask(taskId).catch(() => null);
+        // A restart finds the pieces already started under this goal by their link to it.
+        let child = (await this.supervisor.listTasks({ parentId: task.taskId })).find((item) => item.input.metadata?.assignment === index && item.input.metadata?.attempt === attempt) ?? null;
         if (!child) {
+          const id = safeTaskId();
           child = await this.submitTask({
-            taskId, capability: "openclaw-general-v1",
-            ...(task.input.sharedWorkspace ? { sharedWorkspace: task.input.sharedWorkspace } : { workspace: taskId }),
+            taskId: id, capability: "openclaw-general-v1",
+            ...(task.input.sharedWorkspace ? { sharedWorkspace: task.input.sharedWorkspace } : { workspace: id }),
             context: `${task.input.context}\n\n# Assignment\n\n${assignment.instruction}`,
             prompt: executionPrompt({ request, plan: active.plan, sharedPath, assignment: `${assignment.instruction}${previous ? `\nPrevious attempt failed: ${previous.error?.message}. Its workspace is ${resolve(this.workspaceRoot, previous.input.workspace)}. Inspect that work before retrying; do not repeat completed external actions.` : ""}` }),
-            metadata: { parentTaskId: task.taskId, title: assignment.title, conversationId: task.input.metadata.conversationId, sourceRequest: assignment.instruction, retryOf: previous?.taskId ?? null, attempt, verification: {} }
+            metadata: { parentTaskId: task.taskId, title: assignment.title, conversationId: task.input.metadata.conversationId, sourceRequest: assignment.instruction, retryOf: previous?.taskId ?? null, assignment: index, attempt, verification: {} }
           });
           await this._updateTeam(task);
-        } else if (child.status === "queued") this._dispatch(taskId);
+        } else if (child.status === "queued") this._dispatch(child.taskId);
+        const taskId = child.taskId;
         if (active.cancelRequested) await this.cancelTask({ taskId, reason: "parent-cancelled" });
         child = await this.waitForTask(taskId);
         await this._updateTeam(task);
@@ -662,19 +673,16 @@ export class AssistantWorkerService {
   async _updateTeam(rootTask) {
     const sharedPath = this._sharedPath(rootTask);
     if (!sharedPath) return;
-    const tasks = await this.supervisor.listTasks();
-    const team = [rootTask, ...tasks.filter((item) => item.input.metadata?.parentTaskId === rootTask.taskId)].map((item) => {
-      const current = tasks.find((candidate) => candidate.taskId === item.taskId) ?? item;
-      return {
-        taskId: current.taskId,
-        title: current.input.metadata?.parentTaskId ? current.input.metadata.title : "Lead agent (combines and delivers)",
-        status: current.status,
-        retryOf: current.input.metadata?.retryOf ?? null,
-        workspacePath: resolve(this.workspaceRoot, current.input.workspace),
-        assignment: current.input.metadata?.parentTaskId ? current.input.metadata.sourceRequest : null,
-        summary: current.result?.report ? `${current.result.report.outcome}: ${current.result.report.answer.slice(0, 280)}` : current.error?.message ?? null
-      };
-    });
+    const root = await this.supervisor.getTask(rootTask.taskId).catch(() => rootTask);
+    const team = [root, ...await this.supervisor.listTasks({ parentId: rootTask.taskId })].map((current) => ({
+      taskId: current.taskId,
+      title: current.input.metadata?.parentTaskId ? current.input.metadata.title : "Lead agent (combines and delivers)",
+      status: current.status,
+      retryOf: current.input.metadata?.retryOf ?? null,
+      workspacePath: resolve(this.workspaceRoot, current.input.workspace),
+      assignment: current.input.metadata?.parentTaskId ? current.input.metadata.sourceRequest : null,
+      summary: current.result?.report ? `${current.result.report.outcome}: ${current.result.report.answer.slice(0, 280)}` : current.error?.message ?? null
+    }));
     await writeSharedFiles(sharedPath, { "TEAM.md": renderTeam(team) }).catch(() => {});
   }
 
@@ -905,7 +913,7 @@ export class AssistantWorkerService {
   }
 
   _transcriptEvents(taskId) {
-    try { return readTranscript({ homeDir: this.openClawHome, sessionId: taskId }).events; }
+    try { return readTranscript({ homeDir: this._home(taskId), sessionId: taskId }).events; }
     catch { return []; }
   }
 
@@ -1123,11 +1131,6 @@ export class AssistantWorkerService {
     await writeArtifact(this.supervisor.artifactRoot, relativeName, contents);
     return [{ artifactId: randomUUID(), relativePath: relativeName, sha256: createHash("sha256").update(contents).digest("hex"), bytes: contents.byteLength }];
   }
-}
-
-export async function openAssistantWorkerService({ statePath, artifactRoot, workerRoot, ...options }) {
-  const supervisor = await AssistantSupervisor.open({ statePath, artifactRoot });
-  return new AssistantWorkerService({ supervisor, workerRoot, ...options });
 }
 
 export default AssistantWorkerService;

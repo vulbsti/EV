@@ -21,7 +21,7 @@ Ordinary requests use one executor. When assignments are independent, the manage
 Every agent on one goal works under one directory:
 
 ```text
-data/assistant-worker/workspaces/<goal>/
+data/work/workspaces/<goal>/
   shared/          written only by EV
     BRIEF.md       the mediator's brief
     CONTEXT.md     guidance, recent conversation, the request
@@ -30,7 +30,7 @@ data/assistant-worker/workspaces/<goal>/
   tasks/<taskId>/  one agent's own working directory
 ```
 
-Agents are told to read the shared files first, may read a teammate's directory, and write only in their own. EV serializes writes to `shared/` per goal and replaces files atomically, so an agent never reads a half-written brief. `TEAM.md` is regenerated from supervisor state whenever an agent is added or finishes. Tasks created before this layout keep their old one-directory-per-task workspace.
+Agents are told to read the shared files first, may read a teammate's directory, and write only in their own. EV serializes writes to `shared/` per goal and replaces files atomically, so an agent never reads a half-written brief. `TEAM.md` is regenerated from supervisor state whenever an agent is added or finishes.
 
 ### Admission control
 
@@ -60,7 +60,7 @@ EV learns memory from every turn and settled task (see [memory types](MEMORY_TYP
 
 EV's own calls and OpenClaw use OpenCode Go (`EV_MODEL`, `EV_OPENCLAW_MODEL`), with `OPENCODE_API` from the repo-local .env. Keys pass through the child environment, not task configuration, so an agent with network access can still reach the key. Every task receives a separate provider session header and workspace. Each of EV's own model calls writes one `[model]` log line with its role, attempts, duration and tokens.
 
-By default every OpenClaw run is a docker container (`npm run openclaw:image`) that mounts only its goal folder and a shared OpenClaw home; the home folder is shared by all tasks, so one task's transcripts are readable by the next. `EV_OPENCLAW_SANDBOX=host` runs agents uncontained as the daemon user and should only be used when asked for.
+By default every OpenClaw run is a docker container (`npm run openclaw:image`) that mounts only its goal folder and its own home (`data/work/homes/<taskId>`), so no task can read another task's transcripts or files. On the host, agents get that same home instead of yours. `EV_OPENCLAW_SANDBOX=host` runs agents uncontained as the daemon user and should only be used when asked for.
 
 The daemon listens on loopback only, rejects foreign Host and Origin headers, and requires a per-start token on every API call except `/api/health`. The browser gets it from the link the daemon prints at start; local tools send it as a bearer token from `data/api-token` (`EV_API_TOKEN` pins it).
 

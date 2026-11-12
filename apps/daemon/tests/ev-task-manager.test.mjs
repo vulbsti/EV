@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AssistantSupervisor } from "../lib/assistant-supervisor.mjs";
+import { openStore } from "../lib/store.mjs";
 import { AssistantWorkerService } from "../lib/assistant-worker-service.mjs";
 import { normalizeTaskPlan } from "../lib/ev-task-manager.mjs";
 import { taskUpdate } from "../lib/ev-main-agent.mjs";
@@ -17,8 +18,17 @@ const pass = async () => ({ pass: true, issues: [], caveats: [], summary: "Goal 
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "ev-manager-"));
-  const supervisor = await AssistantSupervisor.open({ statePath: join(root, "state.sqlite"), artifactRoot: join(root, "artifacts") });
-  return { root, supervisor, options: { supervisor, workerRoot: root }, async close() { supervisor.close(); await rm(root, { recursive: true, force: true }); } };
+  const store = openStore({ path: join(root, "ev.sqlite") });
+  const supervisor = await AssistantSupervisor.open({ store, artifactRoot: join(root, "artifacts") });
+  return { root, supervisor, options: { supervisor, workerRoot: root }, async close() { store.close(); await rm(root, { recursive: true, force: true }); } };
+}
+/** A piece of work by its assignment: children have random ids. */
+function name(task) {
+  const metadata = task.input.metadata ?? {};
+  return metadata.parentTaskId ? `${metadata.title}${metadata.attempt ? "-retry" : ""}` : task.taskId;
+}
+async function child(f, wanted, parentId = "parent") {
+  return (await f.supervisor.listTasks({ parentId })).find((task) => name(task) === wanted) ?? null;
 }
 async function submit(service, taskId = "parent") {
   return service.submitTask({ taskId, capability: "openclaw-general-v1", context: "# User request\n\nProduce a report", prompt: "unused initial prompt", metadata: { managerMode: true, sourceRequest: "Produce a report", conversationId: "test" } });
@@ -39,12 +49,12 @@ test("one parent runs independent children concurrently, retries a failed child,
         starts.push({ taskId: task.taskId, workspacePath, prompt }); running++; peak = Math.max(peak, running);
         return { completion: new Promise((resolve) => setTimeout(async () => {
           running--;
-          if (task.taskId === "parent-child-2") return resolve({ status: "failed", code: "OPENCLAW_PROCESS_EXIT", message: "Temporary failure" });
+          if (name(task) === "Inspect") return resolve({ status: "failed", code: "OPENCLAW_PROCESS_EXIT", message: "Temporary failure" });
           if (task.taskId === "parent") {
-            assert.match(prompt, /parent-child-1/); assert.match(prompt, /parent-child-2-retry/);
+            assert.match(prompt, /Research/); assert.match(prompt, /Inspect-retry/);
             await writeFile(join(workspacePath, "combined.md"), "Both assignments were combined.\n");
           }
-          resolve({ status: "completed", text: report(task.taskId, task.taskId === "parent" ? { deliverables: [{ path: "combined.md", title: "Combined report" }] } : {}) });
+          resolve({ status: "completed", text: report(name(task), task.taskId === "parent" ? { deliverables: [{ path: "combined.md", title: "Combined report" }] } : {}) });
         }, 25)) };
       }, async cancel() {}
     })
@@ -55,8 +65,8 @@ test("one parent runs independent children concurrently, retries a failed child,
     assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "completed");
     assert.equal(peak, 2); assert.equal(plans, 1);
     assert.equal(starts.length, 4); assert.equal(new Set(starts.map((start) => start.workspacePath)).size, 4);
-    assert.equal((await f.supervisor.getTask("parent-child-2")).status, "failed");
-    assert.equal((await f.supervisor.getTask("parent-child-2-retry")).status, "completed");
+    assert.equal((await child(f, "Inspect")).status, "failed");
+    assert.equal((await child(f, "Inspect-retry")).status, "completed");
     assert.equal(final.history.filter((event) => event.type === "worker_retry").length, 1);
     assert.equal(final.artifacts.length, 1);
     assert.equal(final.result.report.verification.deliverables[0].verified, true);
@@ -143,7 +153,8 @@ test("agents on one goal share a brief and team board, each working in its own d
     const shared = join(f.root, "workspaces", "goal", "shared");
     assert.match(await readFile(join(shared, "BRIEF.md"), "utf8"), /Both assignments are covered/);
     const team = await readFile(join(shared, "TEAM.md"), "utf8");
-    assert.match(team, /goal-child-1/); assert.match(team, /goal-child-2/);
+    for (const task of await f.supervisor.listTasks({ parentId: "goal" })) assert.match(team, new RegExp(task.taskId));
+    assert.match(team, /## Research/); assert.match(team, /## Inspect/);
     for (const item of seen) {
       assert.equal(item.workspacePath, join(f.root, "workspaces", "goal", "tasks", item.taskId));
       assert.match(item.prompt, new RegExp(`${shared}/BRIEF.md`));
@@ -222,8 +233,8 @@ test("restart preserves the plan and completed child, then resumes interrupted w
   const first = new AssistantWorkerService({ ...f.options, planner: async () => plan, reviewer: pass,
     adapterFactory: async ({ task }) => ({
       async start() {
-        starts.push(task.taskId);
-        if (task.taskId === "parent-child-1") return { completion: Promise.resolve({ status: "completed", text: report("first child") }) };
+        starts.push(name(task));
+        if (name(task) === "Research") return { completion: Promise.resolve({ status: "completed", text: report("first child") }) };
         let finish; return { completion: new Promise((resolve) => { finish = resolve; }), finish: (value) => finish(value) };
       }, async cancel(run) { run.finish({ status: "cancelled" }); }
     })
@@ -231,15 +242,15 @@ test("restart preserves the plan and completed child, then resumes interrupted w
   let second;
   try {
     await submit(first);
-    await until(async () => (await f.supervisor.getTask("parent-child-1").catch(() => null))?.status === "completed");
+    await until(async () => (await child(f, "Research"))?.status === "completed");
     await first.shutdown();
     second = new AssistantWorkerService({ ...f.options, planner: async () => { assert.fail("A saved plan must be reused"); }, reviewer: pass,
-      adapterFactory: async ({ task }) => ({ async start() { starts.push(task.taskId); return { completion: Promise.resolve({ status: "completed", text: report(task.taskId) }) }; }, async cancel() {} })
+      adapterFactory: async ({ task }) => ({ async start() { starts.push(name(task)); return { completion: Promise.resolve({ status: "completed", text: report(task.taskId) }) }; }, async cancel() {} })
     });
     await second.start(); const final = await second.waitForTask("parent");
     assert.equal(final.status, "completed");
-    assert.equal(starts.filter((id) => id === "parent-child-1").length, 1);
-    assert.equal(starts.filter((id) => id === "parent-child-2").length, 2);
+    assert.equal(starts.filter((id) => id === "Research").length, 1);
+    assert.equal(starts.filter((id) => id === "Inspect").length, 2);
     assert.equal(final.history.filter((event) => event.type === "manager_plan").length, 1);
   } finally { await second?.shutdown(); await f.close(); }
 });
@@ -261,8 +272,8 @@ test("an assignment with uncertain side effects is not automatically repeated af
   const service = new AssistantWorkerService({ ...f.options, reviewer: pass,
     planner: async () => ({ ...plan, subtasks: plan.subtasks.map((task) => ({ ...task, retrySafe: false })) }),
     adapterFactory: async ({ task }) => ({ async start() {
-      starts.push(task.taskId);
-      return { completion: Promise.resolve(task.taskId.endsWith("child-2") ? { status: "failed", code: "OPENCLAW_PROCESS_EXIT", message: "Unknown action outcome" } : { status: "completed", text: report("Successful contribution retained", task.taskId === "parent" ? { outcome: "partial" } : {}) }) };
+      starts.push(name(task));
+      return { completion: Promise.resolve(name(task) === "Inspect" ? { status: "failed", code: "OPENCLAW_PROCESS_EXIT", message: "Unknown action outcome" } : { status: "completed", text: report("Successful contribution retained", task.taskId === "parent" ? { outcome: "partial" } : {}) }) };
     }, async cancel() {} })
   });
   try {
