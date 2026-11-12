@@ -5,15 +5,14 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permissions.mjs";
 
 /**
- * Layout for one goal that several agents work on together:
+ * Layout for one goal:
  *
  *   <workspaceRoot>/<goalId>/
- *     shared/            written only by EV, read by every agent on this goal
- *       BRIEF.md         EV's reading of the ask: intent, criteria, quality bar
- *       CONTEXT.md       what the agents need to know about the user
- *       TEAM.md          every agent on the goal, its assignment, status, result
+ *     shared/            written only by EV, read by the agent
+ *       BRIEF.md         EV's brief for the work, and later changes from the person
+ *       CONTEXT.md       what the agent needs to know about the person
  *       REVIEW.md        EV's review rounds and verdicts
- *     tasks/<taskId>/    one agent's own working directory
+ *     tasks/<taskId>/    the agent's own working directory
  *
  * Agents write only inside their own task directory. Shared files change
  * through this module, which serializes writers per goal and replaces files
@@ -90,62 +89,23 @@ function bullet(items) {
   return items?.length ? items.map((item) => `- ${item}`).join("\n") : "- None";
 }
 
-export function renderBrief(brief, request) {
+export function renderBrief(brief) {
   return [
     "# Brief",
     "",
-    "EV wrote this from the user's request and what it knows about them. Every agent on this goal works to it, and EV reviews the result against it.",
+    "EV wrote this from what the person asked and what it knows about them. The agent works to it, and EV reviews the result against it.",
     "",
-    "## What the user wrote",
-    "",
-    brief.literalAsk || request || brief.goal,
-    "",
-    ...(request && brief.literalAsk && request !== brief.literalAsk ? ["## What EV understood them to ask", "", request, ""] : []),
-    "## What they most likely want",
-    "",
-    brief.intent || brief.goal,
-    ...(brief.servesGoal ? ["", `This serves their goal: ${brief.servesGoal}`] : []),
-    "",
-    "## Goal",
+    "## The job",
     "",
     brief.goal,
     "",
-    "## Success criteria",
-    "",
-    bullet(brief.successCriteria),
-    "",
-    "## Quality the user expects",
-    "",
-    bullet(brief.qualityBar),
-    "",
-    "## Assumptions EV made",
-    "",
-    bullet(brief.assumptions),
-    "",
-    "## Still unknown",
-    "",
-    bullet(brief.unknowns),
-    "",
-    ...(brief.updates?.length ? ["## Later from the user (overrides the above where they differ)", "", bullet(brief.updates), ""] : []),
+    ...(brief.updates?.length ? ["## Later from the person (overrides the above where they differ)", "", bullet(brief.updates), ""] : []),
     "## Budget",
     "",
-    "- Review: until EV accepts the result, or asks the user when the work is stuck",
-    ...(brief.budget?.maxTotalTokens ? [`- Tokens per agent (excluding cache reads): ${brief.budget.maxTotalTokens.toLocaleString("en-US")}`] : []),
+    "- Review: until EV accepts the result, or asks the person when the work is stuck",
+    ...(brief.budget?.maxTotalTokens ? [`- Tokens (excluding cache reads): ${brief.budget.maxTotalTokens.toLocaleString("en-US")}`] : []),
     ""
   ].join("\n");
-}
-
-export function renderTeam(entries) {
-  const rows = entries.map((entry) => [
-    `## ${entry.title}`,
-    "",
-    `- Task: ${entry.taskId}${entry.retryOf ? ` (retry of ${entry.retryOf})` : ""}`,
-    `- Status: ${entry.status}`,
-    `- Directory: ${entry.workspacePath}`,
-    ...(entry.assignment ? [`- Assignment: ${entry.assignment}`] : []),
-    ...(entry.summary ? [`- Result: ${entry.summary}`] : [])
-  ].join("\n"));
-  return ["# Team", "", "Every agent working on this goal. Read a teammate's directory for its files; write only in your own.", "", ...rows, ""].join("\n");
 }
 
 export function renderReviews(reviews) {

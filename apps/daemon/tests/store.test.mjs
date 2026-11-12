@@ -34,3 +34,16 @@ test("a message is saved on arrival, survives reopening, and is handled once wit
     reopened.close();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("one search finds what was said in any conversation, and erasing a message takes it out of the index", () => {
+  const store = openStore();
+  const { message } = store.receive({ conversationId: "travel", clientMessageId: "t1", text: "for Kyoto I've settled on the hotel Sakura-no-Yado" });
+  store.receive({ conversationId: "main", clientMessageId: "t2", text: "which hotels did I look at?" });
+  const hits = store.search("hotel Kyoto");
+  assert.equal(hits[0].ref, `message:${message.messageId}`);
+  assert.equal(hits[0].conversationId, "travel");
+  assert.match(hits[0].excerpt, /Sakura-no-Yado/);
+  store.eraseMessage(message.messageId);
+  assert.deepEqual(store.search("Kyoto Sakura"), []);
+  store.close();
+});

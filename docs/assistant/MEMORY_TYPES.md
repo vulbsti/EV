@@ -53,7 +53,7 @@ A goal is not true or false; it is somewhere in a lifecycle: *considering → de
 
 - **Write**: from conversation; the state change itself is the memory.
 - **Time**: goals go stale quickly. One that hasn't come up in weeks should be shown to EV1 as "last mentioned on <date>" rather than as current. EV can check in about it when it naturally comes up, not on a timer.
-- **Link**: tasks should record which goal they serve. EV1 already produces `servesGoal` in its understanding (`apps/daemon/lib/ev-main-agent.mjs:68`) but nothing stores it.
+- **Link**: tasks should record which goal they serve. Nothing does yet: EV writes a free-text brief (`start_work`), and a goal link would be a field on the work record.
 
 ### 4. Working agreements: instructions about EV itself
 

@@ -132,10 +132,14 @@ const squash = (value) => typeof value === "string" ? value.normalize("NFKC").re
  * is not enough; code checks the words are really theirs.
  */
 function quotesPerson(event, op) {
-  if (event.type !== "turn") return false;
-  const quote = squash(op?.quote);
-  const said = squash(event.content?.userText);
-  return quote.length >= Math.min(8, said.length) && quote.length > 0 && said.includes(quote);
+  return event.type === "turn" && isQuoteOf(op?.quote, event.content?.userText);
+}
+
+/** True when `quote` is found verbatim (ignoring case and spacing) in what the person wrote. */
+export function isQuoteOf(quote, written) {
+  const words = squash(quote);
+  const said = squash(written);
+  return words.length >= Math.min(8, said.length) && words.length > 0 && said.includes(words);
 }
 
 /**
@@ -304,7 +308,6 @@ export class MemoryLearner {
       content: {
         title: metadata.title ?? null,
         request: text(metadata.sourceRequest, 1_500),
-        intent: text(metadata.understanding?.intent, 600),
         status: task.status,
         outcome: report?.outcome ?? null,
         reviews: (verification.reviews ?? []).map(({ round, verdict, intentMatch, summary, missing, feedback }) => ({ round, verdict, intentMatch, summary: text(summary, 300), missing: (missing ?? []).slice(0, 5).map((item) => text(item, 300)), feedback: (feedback ?? []).slice(0, 5).map((item) => text(item, 300)) })),
@@ -372,18 +375,6 @@ function troubled(content = {}) {
   return content.status !== "completed" || content.outcome !== "completed" || (content.reviews?.length ?? 0) > 1;
 }
 
-const WORD = /[a-z0-9][a-z0-9'-]{3,}/g;
-function relevance(claim, words) {
-  if (!words.size) return 0;
-  return (memoryText(claim.current.value).toLowerCase().match(WORD) ?? []).filter((word) => words.has(word)).length;
-}
-
-function pick(claims, words, limit) {
-  return claims.map((claim, index) => ({ claim, score: relevance(claim, words), index }))
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, limit).map((entry) => entry.claim);
-}
-
 function line(claim, now, { history = false } = {}) {
   const value = claim.current.value;
   const details = [
@@ -403,15 +394,16 @@ function line(claim, now, { history = false } = {}) {
 }
 
 /**
- * What a reader gets from memory. `ev` is EV's main agent (everything, grouped
- * by kind, with tentative items labelled); `agents` is what an agent doing the
- * work needs (preferences, relevant facts and goals, how-to lessons);
- * `reviewer` is what the person expects of a result. `claims` are the active
- * claims included, for the context manifest.
+ * What a reader gets from memory, newest first within each kind. `ev` is EV's
+ * main agent (everything, grouped by kind, with tentative items labelled);
+ * `agents` is what an agent doing the work needs (preferences, facts, goals,
+ * how-to lessons); `reviewer` is what the person expects of a result.
+ * `claims` are the active claims included, for the context manifest. Nothing
+ * here guesses what is relevant to a request: whoever needs more searches.
  */
-export function memoryView(memory, ownerId, { audience = "ev", query = "", now = new Date().toISOString() } = {}) {
+export function memoryView(memory, ownerId, { audience = "ev", now = new Date().toISOString() } = {}) {
   const all = memory.recall({ ownerId, scope: "global", includeCandidates: true });
-  const words = new Set(String(query).toLowerCase().match(WORD) ?? []);
+  const pick = (claims, limit) => claims.slice(0, limit);
   const active = all.filter((claim) => claim.current.status === "active");
   const of = (kind, list = active) => list.filter((claim) => claim.kind === kind);
   const lessonsFor = (causes) => of("lesson").filter((claim) => causes.includes(claim.current.value?.cause));
@@ -419,24 +411,24 @@ export function memoryView(memory, ownerId, { audience = "ev", query = "", now =
   const sections = [];
   const add = (title, claims, options) => { if (claims.length) sections.push({ title, claims, text: `${title}:\n${claims.map((claim) => line(claim, now, options)).join("\n")}` }); };
   if (audience === "ev") {
-    add("How they want EV to work with them (follow these)", pick(of("agreement"), words, 15));
+    add("How they want EV to work with them (follow these)", pick(of("agreement"), 15));
     add("Right now (passing, will expire)", of("state").slice(0, 5));
-    add("Goals", pick(openGoals, words, 10), { history: true });
-    add("Preferences", pick(of("preference"), words, 20), { history: true });
-    add("Facts about them", pick(of("fact"), words, 20), { history: true });
-    add("Lessons from earlier work", pick(lessonsFor(["brief", "review", "approach", "environment"]), words, 10));
+    add("Goals", pick(openGoals, 10), { history: true });
+    add("Preferences", pick(of("preference"), 20), { history: true });
+    add("Facts about them", pick(of("fact"), 20), { history: true });
+    add("Lessons from earlier work", pick(lessonsFor(["brief", "review", "approach", "environment"]), 10));
     const disputed = all.filter((claim) => claim.current.status === "disputed");
     if (disputed.length) sections.push({ title: "Unsettled", claims: [], text: `Unsettled (they have said each of these at different times; go with the newer if it matters, never state either as fact, and never claim EV recorded both):\n${disputed.slice(0, 6).map((claim) => line(claim, now)).join("\n")}` });
-    const tentative = pick(all.filter((claim) => claim.current.status === "candidate"), words, 8);
+    const tentative = pick(all.filter((claim) => claim.current.status === "candidate"), 8);
     if (tentative.length) sections.push({ title: "Tentative", claims: [], text: `Tentative (inferred or seen once; a light hint, not a rule):\n${tentative.map((claim) => `- [${claim.kind}] ${text(memoryText(claim.current.value), 400)}`).join("\n")}` });
   } else if (audience === "agents") {
-    add("Their preferences", pick(of("preference"), words, 15));
-    add("Relevant facts about them", pick(of("fact"), words, 8).filter((claim) => relevance(claim, words) > 0));
-    add("Goals this may serve", pick(openGoals, words, 3).filter((claim) => relevance(claim, words) > 0));
-    add("Known pitfalls from earlier tasks", pick(lessonsFor(["approach", "environment"]), words, 8));
+    add("Their preferences", pick(of("preference"), 15));
+    add("Facts about them", pick(of("fact"), 15));
+    add("Their goals", pick(openGoals, 8));
+    add("Known pitfalls from earlier tasks", pick(lessonsFor(["approach", "environment"]), 8));
   } else {
-    add("What this person expects", pick(of("preference"), words, 15));
-    add("What this person rejected before, or what earlier reviews missed", pick(lessonsFor(["review", "brief"]), words, 8));
+    add("What this person expects", pick(of("preference"), 15));
+    add("What this person rejected before, or what earlier reviews missed", pick(lessonsFor(["review", "brief"]), 8));
   }
   return { text: sections.map((section) => section.text).join("\n\n"), claims: sections.flatMap((section) => section.claims) };
 }

@@ -5,25 +5,32 @@
 // When the wire changes, change it here and no check has to move.
 //
 // Two wires are supported side by side:
-//   today   every role is one call that returns one JSON object
+//   json    the role is one call that returns one JSON object (the reviewer
+//           and the learner)
 //   tools   the request offers tools; the stand-in answers with tool calls and
-//           is called again with their results (any of the three API dialects)
-// A decision EV has no way to express yet (search, read, remember, two tasks
-// from one message) raises NotBuilt, and the check that needed it fails with
-// that reason.
+//           is called again with their results (any of the three API
+//           dialects). EV1 speaks this: it ends its turn when it has nothing
+//           more to call, so after its last call the stand-in answers with no
+//           text and no calls.
+// A decision a role has no way to express raises NotBuilt, and the check that
+// needed it fails with that reason.
 
 export class NotBuilt extends Error {
   constructor(what) { super(`EV cannot do this yet: ${what}`); this.name = "NotBuilt"; this.what = what; }
 }
 
-/** Tool names and argument shapes the stand-in uses once EV offers tools. */
+/**
+ * Tool names and argument shapes the stand-in uses once EV offers tools.
+ * `shown` is everything the model was shown, for arguments that refer to it.
+ */
 export const TOOLS = {
   search: { name: "search", args: ({ query }) => ({ query }) },
   read: { name: "read", args: ({ id }) => ({ id }) },
   reply: { name: "reply", args: ({ text }) => ({ text }) },
   ask: { name: "ask", args: ({ questions, assumptions = [] }) => ({ questions, assumptions }) },
   startWork: { name: "start_work", args: ({ title, request }) => ({ title, request }) },
-  messageTask: { name: "message_task", args: ({ task, text = "", stop = false }) => ({ task, text, stop }) },
+  // Checks name work by its title; EV knows it by the id its work list shows.
+  messageTask: { name: "message_task", args: ({ task, text = "", stop = false }, shown = "") => ({ task: workId(shown, task) ?? task, text, stop }) },
   // quote is the person's own words the memory rests on; without one it is a guess.
   remember: { name: "remember", args: ({ text, quote = null }) => ({ text, ...(quote ? { quote } : {}) }) },
   // The reviewer's own tools.
@@ -79,8 +86,8 @@ export function toolResults(dialect, body) {
 /** Which of EV's thinking parts is calling. */
 export function roleOf({ userAgent = "", text = "" }) {
   const label = /^ev-([a-z0-9-]+)\//.exec(userAgent)?.[1] ?? "";
-  if (label === "main-agent") return /stopped to ask a question/.test(text) ? "answer" : "ev";
-  return { manager: "planner", "quality-gate": "reviewer", memory: "learner" }[label] ?? (label || "unknown");
+  if (label === "main-agent") return "ev";
+  return { "quality-gate": "reviewer", memory: "learner" }[label] ?? (label || "unknown");
 }
 
 /** The person's new message, as EV1 was shown it. */
@@ -97,11 +104,11 @@ export function memoryShown(text) {
   return from >= 0 && to > from ? text.slice(from, to) : text;
 }
 
-/** The number EV1's work list gives a task, found by its title. */
-function workNumber(text, title) {
+/** The id EV1's work list gives a piece of work, found by its title. */
+function workId(text, title) {
   for (const line of text.split("\n")) {
-    const match = /^\[(\d+)\] (.*)$/.exec(line);
-    if (match && match[2].toLowerCase().includes(String(title).toLowerCase())) return Number(match[1]);
+    const match = /^\[(work:[^\]]+)\] (.*)$/.exec(line);
+    if (match && match[2].toLowerCase().includes(String(title).toLowerCase())) return match[1];
   }
   return null;
 }
@@ -166,32 +173,12 @@ export function streamEvents(dialect, reply) {
   ];
 }
 
-/**
- * Today's wire for EV1: the whole turn is one JSON decision. `steps` are the
- * actions the script took, `said` is what it told the person.
- */
-export function decisionToday({ steps, said, text }) {
-  const actions = steps.filter((step) => ["startWork", "messageTask", "ask"].includes(step.intent));
-  if (actions.length > 1) throw new NotBuilt("more than one action from a single message");
-  const [action] = actions;
-  if (!action) return { action: "reply", message: said };
-  if (action.intent === "ask") return { action: "clarify", message: said, questions: action.questions, assumptions: action.assumptions ?? [] };
-  if (action.intent === "startWork") {
-    return { action: "work", message: said, title: action.title, request: action.request, intent: action.request, successCriteria: action.successCriteria ?? ["The request is fulfilled."], qualityBar: [], assumptions: [], unknowns: [] };
-  }
-  const target = workNumber(text, action.task);
-  if (!target) throw new Error(`The stand-in was told to message "${action.task}" but EV1's work list does not show it`);
-  return { action: "revise", message: said, target, instruction: action.text, stop: action.stop === true };
-}
-
-/** Today's wire for the one-shot roles. */
+/** The JSON wire of the one-shot roles. */
 export const today = {
-  planner: (plan = {}) => ({ goal: plan.goal ?? "Carry out the request.", reason: plan.reason ?? "", subtasks: plan.subtasks ?? [] }),
   reviewer: (review = {}) => review.verdict === "revise"
     ? { verdict: "revise", intentMatch: "partly", criteria: [], missing: review.missing ?? ["Something is missing."], feedback: review.feedback ?? review.missing ?? ["Fix it."], caveats: [], summary: review.summary ?? "Not ready.", handoff: review.handoff ?? "Still being worked on.", progress: review.progress ?? "improving", askPerson: review.askPerson ?? "" }
     : { verdict: "accept", intentMatch: "yes", criteria: [], missing: [], feedback: [], caveats: [], summary: review.summary ?? "Ready.", handoff: review.handoff ?? "It is done.", progress: "improving", askPerson: "" },
-  learner: (ops = []) => ({ ops }),
-  answer: (answer = null) => answer ? { answer: answer.answer, basis: answer.basis ?? "" } : { answer: null, basis: "" }
+  learner: (ops = []) => ({ ops })
 };
 
 // ----------------------------------------------------------------- workers

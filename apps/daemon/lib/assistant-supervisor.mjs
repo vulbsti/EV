@@ -109,8 +109,8 @@ export class AssistantSupervisor {
     if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", `Only the current run can ${what}`);
   }
 
-  /** `alongside` runs in the same transaction, to record what started the work. */
-  async createTask({ taskId, input, alongside = null }) {
+  /** New queued work. Call it alone, or inside the transaction that records what started it. */
+  insertTask({ taskId, input }) {
     if (typeof taskId !== "string" || !taskId) throw codedError("INVALID_TASK_ID", "taskId is required");
     const encoded = JSON.stringify(input ?? null);
     this.store.tx(() => {
@@ -123,8 +123,11 @@ export class AssistantSupervisor {
       this.db.prepare("INSERT INTO work (work_id, conversation_id, parent_id, input_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)")
         .run(taskId, input?.metadata?.conversationId ?? null, input?.metadata?.parentTaskId ?? null, encoded, at, at);
       this._change(taskId, "created", {});
-      alongside?.();
     });
+  }
+
+  async createTask({ taskId, input }) {
+    this.insertTask({ taskId, input });
     return this._task(taskId);
   }
 
@@ -185,7 +188,7 @@ export class AssistantSupervisor {
   }
 
   async recordProgress({ taskId, runId, fencingToken, type = "progress", data = {} }) {
-    if (!["progress", "manager_plan", "worker_retry", "review", "usage", "instructions_applied"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
+    if (!["progress", "worker_retry", "review", "usage", "instructions_applied"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
     this.store.tx(() => {
       this._assertRun(this._requireRow(taskId), fencingToken, runId, "record progress");
       this._change(taskId, type, data);
@@ -234,26 +237,35 @@ export class AssistantSupervisor {
   /**
    * Records something the person said about unfinished work. A running task
    * picks it up at its next step; a waiting task goes back to the queue.
-   * `alongside` runs in the same transaction.
+   * Returns the work's state after it. Can run inside a caller's transaction.
    */
-  async addInstruction({ taskId, text, source = null, alongside = null }) {
-    this.store.tx(() => {
+  instruct({ taskId, text, source = null }) {
+    return this.store.tx(() => {
       const row = this._requireRow(taskId);
       if (TERMINAL.includes(row.status)) throw codedError("TASK_NOT_ACTIVE", `Task ${taskId} is ${row.status}`);
-      this._change(taskId, "instruction", { text, source }, { status: row.status === "waiting" ? "queued" : row.status });
-      alongside?.();
+      const status = row.status === "waiting" ? "queued" : row.status;
+      this._change(taskId, "instruction", { text, source }, { status });
+      return status;
     });
+  }
+
+  async addInstruction({ taskId, text, source = null }) {
+    this.instruct({ taskId, text, source });
     return this._task(taskId);
   }
 
-  _cancel(taskId, data) {
-    const row = this._requireRow(taskId);
-    if (TERMINAL.includes(row.status)) return;
-    this._change(taskId, "cancelled", data, { status: "cancelled", lease_id: null, fencing_token: null, worker_id: null });
+  /** Stops unfinished work; returns false when it had already ended. Can run inside a caller's transaction. */
+  cancel(taskId, data) {
+    return this.store.tx(() => {
+      const row = this._requireRow(taskId);
+      if (TERMINAL.includes(row.status)) return false;
+      this._change(taskId, "cancelled", data, { status: "cancelled", lease_id: null, fencing_token: null, worker_id: null });
+      return true;
+    });
   }
 
   async cancelTask({ taskId, reason }) {
-    this.store.tx(() => this._cancel(taskId, { reason: reason ?? null }));
+    this.cancel(taskId, { reason: reason ?? null });
     return this._task(taskId);
   }
 
@@ -272,7 +284,7 @@ export class AssistantSupervisor {
         throw codedError("TASK_REVISION_CONFLICT", `Expected task revision ${expectedRevision}, found ${row.revision}`);
       }
       this.store.event({ type: "command", workId: taskId, data: { commandId, type, expectedRevision, reason } });
-      this._cancel(taskId, { reason, commandId });
+      this.cancel(taskId, { reason, commandId });
       return false;
     });
     return { replayed, task: this._task(taskId) };
@@ -311,12 +323,9 @@ export class AssistantSupervisor {
     return this._task(taskId);
   }
 
-  /** All work, oldest first; `parentId` narrows it to the pieces under one goal. */
-  async listTasks({ parentId = null } = {}) {
-    const rows = parentId
-      ? this.db.prepare("SELECT * FROM work WHERE parent_id = ? ORDER BY created_at, work_id").all(parentId)
-      : this.db.prepare("SELECT * FROM work ORDER BY created_at, work_id").all();
-    return rows.map((row) => this._taskFromRow(row));
+  /** All work, oldest first. */
+  async listTasks() {
+    return this.db.prepare("SELECT * FROM work ORDER BY created_at, work_id").all().map((row) => this._taskFromRow(row));
   }
 
   async snapshot() {
