@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stand-in for the OpenClaw runtime while EV is being verified. The harness
+# puts this directory first on PATH; the real openclaw is never started.
+exec node "$(dirname "$0")/../stub-worker.mjs" "$@"

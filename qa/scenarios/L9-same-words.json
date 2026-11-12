@@ -1,0 +1,164 @@
+{
+  "level": 9,
+  "name": "Same words, different meaning",
+  "summary": "Pairs. Each pair puts nearly the same words into two situations where the right action differs, so no fixed rule can pass both: \"stop\" that means one task, a pause, a change of direction, or nothing to do with the work; \"also\" that belongs in running work or is something else; a follow-up that belongs to old work or only sounds like it. A pair counts only when both halves pass. The fast checks in verify/ (D-01 to D-05, R-01, R-07, T-11, T-12) prove EV is able to do each of these; this level shows it chooses right.",
+  "scenarios": [
+    {
+      "id": "L9-01",
+      "title": "\"Stop\" means one of three",
+      "note": "Pair with L9-02.",
+      "guards": "Stop treated as a switch that halts everything, or EV asking which one when the message already says",
+      "components": ["controller", "supervisor"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Write a privacy policy draft for Tidepool as markdown.", "tasks": 1, "wait": false },
+            { "say": "Also research 5 Android habit apps and their pricing, as a table.", "tasks": 1, "wait": false },
+            { "say": "And draft an outline for devlog episode 12, about streaks.", "tasks": 1, "wait": false },
+            { "say": "stop, I'll just use the Play Console generator for that", "tasks": 0, "wait": false, "expect": ["Only the privacy policy is stopped, and EV says that is the one it stopped.", "The research and the outline keep running."], "fail": ["All three are stopped.", "Nothing is stopped.", "EV asks which task, although only one of the three is something the Play Console generates."] },
+            { "do": "wait" },
+            { "say": "what's done?", "tasks": 0, "expect": ["The pricing table and the outline are delivered; the policy is shown as stopped."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L9-02",
+      "title": "\"Stop\" is not about the work",
+      "note": "Pair with L9-01.",
+      "guards": "The word stop cancelling work when the person was talking about themselves",
+      "components": ["controller", "supervisor"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Write a privacy policy draft for Tidepool as markdown.", "tasks": 1, "wait": false },
+            { "say": "Also research 5 Android habit apps and their pricing, as a table.", "tasks": 1, "wait": false },
+            { "say": "And draft an outline for devlog episode 12, about streaks.", "tasks": 1, "wait": false },
+            { "say": "honestly I have to stop doing all of this myself", "tasks": 0, "wait": false, "expect": ["EV answers the remark as a person would; all three keep running."], "fail": ["Any task is stopped or paused.", "EV asks which task to stop.", "A new task is started."] },
+            { "do": "wait" },
+            { "say": "what's done?", "tasks": 0, "expect": ["All three are delivered."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L9-03",
+      "title": "\"Stop for a sec\" is a pause",
+      "note": "Pair with L9-04.",
+      "guards": "A pause throwing away the work done so far, or the work running on while the person checks something",
+      "components": ["controller", "supervisor", "task-manager"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Write a 2-page market overview of habit tracking apps for my pitch deck, markdown, with sources.", "tasks": 1, "wait": false },
+            { "say": "stop for a sec, I need to check whether the investor only cares about India", "tasks": 0, "wait": false, "expect": ["The overview is put on hold, and EV says what is there so far is kept."], "fail": ["EV treats it as abandoned for good.", "The work carries on and delivers the worldwide version."] },
+            { "say": "ok go on. India only", "tasks": 0, "wait": false, "expect": ["The same work continues with the India focus and uses what it had already gathered."], "fail": ["A new task that starts from nothing.", "EV asks what to go on with."] },
+            { "do": "wait" },
+            { "say": "show me", "tasks": 0, "expect": ["One overview, India only, with sources."], "fail": ["Two overviews.", "The worldwide overview."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L9-04",
+      "title": "\"Stop, not like that\" is a change of direction",
+      "note": "Pair with L9-03.",
+      "guards": "A correction that opens with stop cancelling the work instead of steering it",
+      "components": ["controller", "supervisor", "task-manager"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Write a 1-page landing page for Tidepool as a single HTML file, blue theme, with a pricing section.", "tasks": 1, "wait": false },
+            { "say": "stop stop, not blue. make it green", "tasks": 0, "wait": false, "expect": ["The running page is steered to green and nothing is cancelled; EV does not wait for a go-ahead."], "fail": ["The page is cancelled and EV waits.", "A second page is started.", "EV asks whether to continue."] },
+            { "do": "wait" },
+            { "say": "show me", "tasks": 0, "expect": ["One page, green, with the pricing section."], "fail": ["A blue page.", "No page."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L9-05",
+      "title": "\"Also\" belongs in the running work",
+      "note": "Pair with L9-06.",
+      "guards": "Every new message becoming a new task, away from the work that has the context",
+      "components": ["controller", "supervisor"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Research the 3 most popular habit tracking apps on the Play Store and summarise their pricing in a table.", "tasks": 1, "wait": false },
+            { "say": "also whether each one has a free tier", "tasks": 0, "wait": false, "expect": ["The running research is told to add it."], "fail": ["A second research task.", "EV asks what \"each one\" refers to."] },
+            { "do": "wait" },
+            { "say": "show me", "tasks": 0, "expect": ["One table, with pricing and the free tier for each app."], "fail": ["Two tables."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L9-06",
+      "title": "\"Also\" is something else entirely",
+      "note": "Pair with L9-05.",
+      "guards": "An unrelated ask being pushed into running work because it arrived while that work was running",
+      "components": ["controller", "supervisor"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Research the 3 most popular habit tracking apps on the Play Store and summarise their pricing in a table.", "tasks": 1, "wait": false },
+            { "say": "also draft a note to Meera that the bakery site will be a week late", "tasks": 1, "wait": false, "expect": ["Separate work for the note; the research is left alone."], "fail": ["The note is handed to the research agent.", "The research is stopped or restarted."] },
+            { "do": "wait" },
+            { "say": "what's done?", "tasks": 0, "expect": ["The pricing table and a draft note, as two results. The note is a draft and was not sent."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L9-07",
+      "title": "A follow-up finds the work it is about",
+      "note": "Pair with L9-08.",
+      "guards": "A follow-up on finished work starting from nothing, or landing on the wrong piece of work",
+      "components": ["controller", "task-manager"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Write a Play Store description for Tidepool, under 100 words.", "tasks": 1 },
+            { "say": "Write the opening-hours section for Meera's bakery site, as HTML.", "tasks": 1 }
+          ]
+        },
+        {
+          "label": "Day 2, new conversation",
+          "steps": [
+            { "say": "the description came out too salesy, tone it down", "tasks": "any", "expect": ["Yesterday's Play Store description is revised: same facts, calmer tone.", "The bakery section is untouched."], "fail": ["EV asks which description.", "A description written from nothing that drops what the first one said.", "The bakery section is changed."] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L9-08",
+      "title": "Sounds like a follow-up, is new work",
+      "note": "Pair with L9-07.",
+      "guards": "Similar words pulling a new ask into old work and overwriting a result the person was happy with",
+      "components": ["controller", "task-manager"],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            { "say": "Write a Play Store description for Tidepool, under 100 words.", "tasks": 1 },
+            { "say": "Write the opening-hours section for Meera's bakery site, as HTML.", "tasks": 1 }
+          ]
+        },
+        {
+          "label": "Day 2, new conversation",
+          "steps": [
+            { "say": "I need a description for the Product Hunt launch too. tagline plus three bullets", "tasks": 1, "expect": ["New work for Product Hunt, which may draw on the Play Store text.", "The Play Store description is still there, unchanged."], "fail": ["The Play Store description is replaced.", "EV asks whether to change the old description."] }
+          ]
+        }
+      ]
+    }
+  ]
+}

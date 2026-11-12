@@ -1,0 +1,296 @@
+{
+  "level": 8,
+  "name": "After the rework",
+  "summary": "What only the rebuilt EV can do: reach past the current conversation, handle several asks at once, keep a sense of history, and tell what the person said from what it guessed. The fast checks in verify/ prove the plumbing with a scripted model; these prove that a real model uses it well.",
+  "scenarios": [
+    {
+      "id": "L8-01",
+      "title": "Forgotten means gone everywhere",
+      "guards": "A forgotten detail surviving in the conversation, the search index or a later answer",
+      "components": [
+        "memory",
+        "store",
+        "search"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "my gym locker code is 4471, keep it handy",
+              "tasks": 0,
+              "memory": "The locker code is remembered."
+            },
+            {
+              "say": "actually forget my locker code, I shouldn't have told you",
+              "tasks": 0,
+              "expect": [
+                "EV confirms it has dropped it."
+              ],
+              "memory": "No memory mentions 4471."
+            }
+          ]
+        },
+        {
+          "label": "Day 2, new conversation",
+          "steps": [
+            {
+              "say": "what's my gym locker code?",
+              "tasks": 0,
+              "expect": [
+                "EV says it does not have it."
+              ],
+              "fail": [
+                "EV says 4471."
+              ]
+            },
+            {
+              "say": "what did I tell you about the gym yesterday?",
+              "tasks": 0,
+              "fail": [
+                "EV quotes or paraphrases the code."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L8-02",
+      "title": "An earlier conversation, not just a memory",
+      "guards": "EV only knowing what was distilled into memory, and asking again for something said in full before",
+      "components": [
+        "search",
+        "main-agent"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "For the Slow Bread weekly report I want exactly this layout: one sentence on top, then three bullets, then a small table with visits, orders and revenue.",
+              "tasks": 0
+            }
+          ]
+        },
+        {
+          "label": "Day 3, new conversation",
+          "steps": [
+            {
+              "say": "write this week's numbers for Tidepool using the layout I described for the Slow Bread report: 1,240 visits, 87 orders, 2,310 euros",
+              "tasks": "any",
+              "expect": [
+                "One sentence, then three bullets, then a table with visits, orders and revenue.",
+                "EV does not ask what the layout was."
+              ],
+              "fail": [
+                "EV asks the person to describe the layout again.",
+                "A generic report in some other shape."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L8-03",
+      "title": "Two asks, two results",
+      "guards": "One of two unrelated asks being dropped or folded into the other",
+      "components": [
+        "main-agent",
+        "task-manager"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "Put the pricing of the three most popular habit apps on the Play Store into a table, and separately draft a privacy policy for Tidepool as markdown.",
+              "tasks": 2,
+              "expect": [
+                "Two results: a pricing table and a privacy policy, each announced when it is ready."
+              ],
+              "fail": [
+                "Only one of the two is delivered.",
+                "One document that mixes both."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L8-04",
+      "title": "An assumption, not an interrogation",
+      "guards": "Questions where a stated assumption would do",
+      "components": [
+        "main-agent"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "Tidepool is my habit tracker for Android, launching next Friday. I like copy that is plain and a little dry.",
+              "tasks": 0
+            },
+            {
+              "say": "draft the launch post",
+              "tasks": "any",
+              "expect": [
+                "EV starts, and says what it assumed (which platform or length, the tone it took from what it knows)."
+              ],
+              "fail": [
+                "EV asks more than one question before doing anything.",
+                "EV asks about tone, which it was just told."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L8-05",
+      "title": "A sense of when",
+      "guards": "EV knowing facts but not the order or rough dates of what happened",
+      "components": [
+        "memory",
+        "timeline"
+      ],
+      "sessions": [
+        {
+          "label": "Week 1",
+          "note": "Run the three sessions with the clock moved forward between them (EV_QA_TIME_OFFSET_MS), about nine days apart.",
+          "steps": [
+            {
+              "say": "this week is all about the Tidepool onboarding screens, help me list what's left",
+              "tasks": "any"
+            }
+          ]
+        },
+        {
+          "label": "Week 2",
+          "steps": [
+            {
+              "say": "onboarding is done. now I'm stuck on the Play Store listing, let's work through the screenshots",
+              "tasks": "any"
+            }
+          ]
+        },
+        {
+          "label": "Week 4, new conversation",
+          "steps": [
+            {
+              "say": "what was I working on about two weeks ago?",
+              "tasks": 0,
+              "expect": [
+                "The Play Store listing and its screenshots, placed roughly two weeks back.",
+                "EV can add that onboarding came before it."
+              ],
+              "fail": [
+                "EV says it does not know.",
+                "EV answers with only the most recent topic."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L8-06",
+      "title": "What they do is a hint, what they say is a fact",
+      "guards": "A pattern in behaviour being stored and stated as a declared preference",
+      "components": [
+        "learning",
+        "memory"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "write a product description for Tidepool",
+              "tasks": "any"
+            },
+            {
+              "say": "too long, cut it in half",
+              "tasks": "any"
+            },
+            {
+              "say": "write the FAQ answer for 'how do streaks work'",
+              "tasks": "any"
+            },
+            {
+              "say": "shorter please",
+              "tasks": "any",
+              "memory": "At most a tentative preference for short copy; not an established one."
+            }
+          ]
+        },
+        {
+          "label": "Day 2, new conversation",
+          "steps": [
+            {
+              "say": "write the release notes for version 1.1",
+              "tasks": "any",
+              "expect": [
+                "A short version, with EV saying it kept it short because that seemed to be the pattern, or checking once."
+              ],
+              "fail": [
+                "EV states as fact that the person always wants short text.",
+                "A long version with no mention of length."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L8-07",
+      "title": "Corrected, with its history",
+      "guards": "A correction erasing what was true before, or the old value being stated as current",
+      "components": [
+        "memory",
+        "search"
+      ],
+      "sessions": [
+        {
+          "label": "Day 1",
+          "steps": [
+            {
+              "say": "I work at Northwind as a product designer",
+              "tasks": 0,
+              "memory": "Works at Northwind as a product designer."
+            }
+          ]
+        },
+        {
+          "label": "Day 30, new conversation",
+          "steps": [
+            {
+              "say": "I left Northwind last week, I'm freelancing now",
+              "tasks": 0,
+              "memory": "Freelancing is current; Northwind is kept as what was true before."
+            }
+          ]
+        },
+        {
+          "label": "Day 31, new conversation",
+          "steps": [
+            {
+              "say": "where did I work before I went freelance, and when did that change?",
+              "tasks": 0,
+              "expect": [
+                "Northwind, as a product designer, with roughly when it changed."
+              ],
+              "fail": [
+                "EV says the person works at Northwind now.",
+                "EV has no record of Northwind."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

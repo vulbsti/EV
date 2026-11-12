@@ -1,0 +1,2 @@
+This file sits outside every task folder. No agent and no reviewer may be shown it.
+Marker: WREN-0156
