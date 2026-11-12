@@ -21,7 +21,8 @@ const elements = {
   memoryForm: document.getElementById("memory-form"),
   memoryValue: document.getElementById("memory-value"),
   memoryStatus: document.getElementById("memory-status"),
-  memoryList: document.getElementById("memory-list")
+  memoryList: document.getElementById("memory-list"),
+  historyList: document.getElementById("history-list")
 };
 
 // Every API call needs the session the daemon's printed link hands out.
@@ -49,8 +50,16 @@ let thinking = false;
 let following = true;
 let pollTimer = null;
 let memoryClaims = [];
+let historyLines = [];
 const KIND_LABELS = { fact: "About you", preference: "Preference", goal: "Goal", agreement: "How EV works with you", state: "Right now", lesson: "Lesson from earlier work" };
 const claimText = (claim) => typeof claim.current.value === "string" ? claim.current.value : claim.current.value?.text ?? "";
+// Heard (your words), a guess, or a guess EV came to rely on by its own judgement.
+const claimStanding = (claim) => claim.current.status === "candidate" ? "a guess"
+  : claim.current.status === "disputed" ? "you have said both"
+    : claim.current.status !== "active" ? claim.current.status
+      : claim.current.value?.reliedBecause ? "EV relies on this guess" : claim.current.authorType === "user" ? "you said this" : "";
+const day = (iso) => String(iso ?? "").slice(0, 10);
+const evidenceItem = (item) => `<li>${escapeHtml(day(item.at))}: ${item.forgotten ? "(forgotten)" : item.said ? `“${escapeHtml(item.said)}”` : item.work ? `work “${escapeHtml(item.work)}”` : "entered by hand"}</li>`;
 let editingClaimId = null;
 let responsibilities = [];
 let verifiedSource = null;
@@ -166,7 +175,9 @@ function renderMemory() {
   elements.memoryList.innerHTML = memoryClaims.length ? memoryClaims.map((claim) => `
     <article class="memory-item" data-claim-id="${escapeHtml(claim.claimId)}">
       <p>${escapeHtml(claimText(claim))}</p>
-      <div class="memory-meta">${escapeHtml(KIND_LABELS[claim.kind] ?? claim.kind)}${claim.current.status === "active" ? "" : ` · ${escapeHtml(claim.current.status === "candidate" ? "tentative" : claim.current.status)}`}${claim.current.value?.state ? ` · ${escapeHtml(claim.current.value.state.replace("_", " "))}` : ""} · revision ${escapeHtml(claim.current.revision)}</div>
+      <div class="memory-meta">${escapeHtml(KIND_LABELS[claim.kind] ?? claim.kind)}${claimStanding(claim) ? ` · ${escapeHtml(claimStanding(claim))}` : ""}${claim.current.value?.state ? ` · ${escapeHtml(claim.current.value.state.replace("_", " "))}` : ""} · revision ${escapeHtml(claim.current.revision)}</div>
+      ${claim.current.value?.reliedBecause ? `<p class="memory-reason">Why EV relies on it: ${escapeHtml(claim.current.value.reliedBecause)}</p>` : ""}
+      ${claim.evidence?.length ? `<details><summary>What this rests on (${claim.evidence.length})</summary><ul>${claim.evidence.map(evidenceItem).join("")}</ul></details>` : ""}
       <div class="memory-actions">
         <button type="button" data-memory-action="explain">Why I remember this</button>
         <button type="button" data-memory-action="correct">Correct</button>
@@ -176,6 +187,12 @@ function renderMemory() {
       ${editingClaimId === claim.claimId ? `<form class="memory-correction"><input name="value" maxlength="2000" value="${escapeHtml(claimText(claim))}" aria-label="Correct remembered guidance" required><button type="submit">Save</button></form>` : ""}
       <div class="memory-note" aria-live="polite"></div>
     </article>`).join("") : `<p class="memory-note">Nothing learned yet. EV learns from your conversations and finished work.</p>`;
+  // The dated history: each line opens back to the messages and work it summarises.
+  elements.historyList.innerHTML = historyLines.length ? historyLines.map((line) => `
+    <details class="memory-item history-item">
+      <summary><strong>${escapeHtml(line.label)}</strong>${line.conversationId ? ` · ${escapeHtml(line.conversationId)}` : ""}: ${escapeHtml(line.text)}</summary>
+      <ul>${line.events.map((event) => `<li>${escapeHtml(day(event.at))}${event.conversation ? ` · ${escapeHtml(event.conversation)}` : ""}: ${event.work !== undefined ? `work “${escapeHtml(event.work ?? "untitled")}” settled` : `“${escapeHtml(event.said ?? "")}”`}</li>`).join("")}</ul>
+    </details>`).join("") : `<p class="memory-note">Nothing has happened yet.</p>`;
 }
 
 function renderResponsibilities() {
@@ -272,6 +289,8 @@ async function loadMemory() {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error ?? `Memory load failed: HTTP ${response.status}`);
   memoryClaims = body.claims ?? [];
+  const timeline = await fetch("/api/assistant/timeline", { cache: "no-store" });
+  historyLines = timeline.ok ? (await timeline.json().catch(() => ({}))).lines ?? [] : [];
   renderMemory();
 }
 

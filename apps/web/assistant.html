@@ -38,7 +38,7 @@
 
     <aside id="understanding-panel" class="understanding-panel" aria-label="Understanding you" hidden>
       <div class="understanding-head"><div><p class="eyebrow">UNDERSTANDING YOU</p><h2>Guidance EV can use</h2></div><button id="understanding-close" type="button" aria-label="Close understanding panel">Close</button></div>
-      <p class="understanding-intro">Only explicit, source-linked guidance is active here. Memory changes how EV helps; it never grants tools or permission.</p>
+      <p class="understanding-intro">Each memory says whether you said it, EV guessed it, or EV came to rely on a guess, and why, with what it rests on. Memory changes how EV helps; it never grants tools or permission.</p>
       <form id="memory-form" class="memory-form">
         <label for="memory-value">Remember guidance</label>
         <textarea id="memory-value" rows="2" maxlength="2000" placeholder="For example: Keep updates short." required></textarea>
@@ -46,6 +46,8 @@
       </form>
       <div id="memory-status" role="status"></div>
       <div id="memory-list" class="memory-list"></div>
+      <h3 class="history-head">What has happened</h3>
+      <div id="history-list" class="memory-list"></div>
     </aside>
 
     <form id="composer" class="composer">
