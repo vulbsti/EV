@@ -10,7 +10,7 @@ export async function openPage(ev, { conversation = "main", skip, viewport = { w
   try { browser = await chromium.launch(); }
   catch (error) { skip(`The browser could not start: ${error.message.split("\n")[0]}`); }
   const page = await browser.newPage({ viewport });
-  await page.goto(`${ev.baseUrl}/?conversation=${encodeURIComponent(conversation)}`);
+  await page.goto(ev.pageUrl(conversation));
   return {
     page,
     /** True when the element showing this text is fully inside the visible part of the page. */

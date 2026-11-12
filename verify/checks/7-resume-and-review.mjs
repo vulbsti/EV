@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { crashMidRevision, on, passOn, work } from "../lib/scripts.mjs";
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -5,14 +7,14 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 export default {
   task: 7,
   name: "Work that can be picked up again, watched and really checked",
-  goal: "Most of what people say after a result is a follow-up, so finished work can be continued where it stands. A run is watched for progress, not for the time on a clock, and a run that dies is resumed instead of failing the task. The reviewer opens and tries the real output before the person ever sees it, and can reach nothing outside the task it is reviewing.",
+  goal: "Most of what people say after a result is a follow-up, and \"stop\" often means \"not now\" or \"not like that\". So work that has finished or been stopped keeps what it knows and made, and EV can send the person back into it. A run is watched for progress, not for the time on a clock, and a run that dies is resumed instead of failing the task. The reviewer opens and tries the real output before the person ever sees it, and can reach nothing outside the task it is reviewing.",
   live: [
     "`L6-04` \"Make it shorter\" after a delivered document changes that document; there is still one task and one file."
   ],
   checks: [
     {
       id: "R-01",
-      expect: "A follow-up on finished work continues that same work, with its files, instead of starting over as a new task.",
+      expect: "EV can send a follow-up into work that has finished: the same agent picks it up, with what it knows and its files, instead of a new task starting from nothing.",
       async run({ start, assert }) {
         const ev = await start({ script: {
           ev: on([/rhyme/, passOn("Tide poem", "I've asked for that change.")], [/.*/, work("Tide poem")]),
@@ -32,6 +34,37 @@ export default {
         assert.ok(second.files.includes("poem.md"), "The agent picking up the follow-up did not find the file from the first round");
         assert.match(second.prompt, /make it rhyme/, "The follow-up did not reach the agent in the person's words");
         assert.equal(roots[0].result?.report?.answer, "Now it rhymes.", "The task still shows the result from before the follow-up");
+      }
+    },
+    {
+      id: "R-07",
+      expect: "Stopping work does not destroy it. When the person comes back to it, even with a change, the same agent continues from where it stood.",
+      async run({ start, assert, gate }) {
+        const hold = gate();
+        const ev = await start({ script: {
+          ev: on(
+            [/^stop/i, async (turn) => { await turn.messageTask({ task: "Quarterly report", stop: true }); return turn.reply("Stopped. What is written so far is kept."); }],
+            [/carry on/i, passOn("Quarterly report", "Picking the report back up, third quarter only.")],
+            [/.*/, work("Quarterly report")]
+          ),
+          worker: async (job) => {
+            if (job.run === 1) { writeFileSync(join(job.cwd, "report-draft.md"), "First and second quarter written.\n"); await hold.wait(); return job.done("Report."); }
+            return job.done("Report, third quarter only.");
+          }
+        } });
+        const { taskId } = await ev.say("write the quarterly report");
+        await hold.reached;
+        await ev.say("stop for now, I need to check the numbers first");
+        await ev.until("the work to stop", async () => !["queued", "running", "verifying"].includes((await ev.task(taskId)).status));
+        hold.open();
+        await ev.say("ok carry on with the report, but only the third quarter");
+        await ev.until("an agent to pick the report back up", () => ev.standIn.jobs().some((job) => /third quarter/.test(job.prompt)), { timeout: 8_000 });
+        const resumed = ev.standIn.jobs().find((job) => /third quarter/.test(job.prompt));
+        assert.equal((await ev.work()).length, 1, "Coming back to stopped work started a second task from nothing, so what had been done was lost");
+        assert.equal(resumed.taskId, taskId, "The work was picked up by a different agent session, without what the first one knew");
+        assert.ok(resumed.files.includes("report-draft.md"), "The agent picking the work back up did not have what had been written before the stop");
+        const [task] = await ev.settled();
+        assert.equal(task.result?.report?.answer, "Report, third quarter only.", "The work that was picked back up did not deliver");
       }
     },
     {

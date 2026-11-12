@@ -100,6 +100,8 @@ export async function startEV({ script = {}, env = {}, keep = false } = {}) {
     get baseUrl() { return baseUrl; },
     get log() { return log; },
     api,
+    /** The link a person opens: it signs the browser in, then shows the conversation. */
+    pageUrl: (conversation = "main") => `${baseUrl}/?token=${TOKEN}&conversation=${encodeURIComponent(conversation)}`,
 
     /** Sends a message and waits for EV's immediate answer. */
     async say(text, { conversation = "main", id = `m${++messageSeq}-${Date.now().toString(36)}` } = {}) {

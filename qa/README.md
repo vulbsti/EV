@@ -2,7 +2,7 @@
 
 This checks the one thing EV exists for: **understanding a person who is unpredictable, contradicts himself, changes his mind and changes as a person, without drifting or collapsing into confusion.** There are two tools:
 
-- **Scenarios** (`npm run qa`): 47 short scripted timelines, from mild to extreme. Each one targets a specific failure: venting read as a decision, a temporary rule that never expires, a quote attributed to the wrong person, and so on. They play against the real EV and produce a scorecard that a person grades.
+- **Scenarios** (`npm run qa`): 55 short scripted timelines, from mild to extreme. Each one targets a specific failure: venting read as a decision, a temporary rule that never expires, a quote attributed to the wrong person, and so on. They play against the real EV and produce a scorecard that a person grades.
 - **Evolution arcs** (`npm run qa:arc`): a model plays the person through a written life timeline over simulated weeks, sending hundreds of natural messages. After each phase EV is probed, and a judge model scores EV's memory and answers against that phase's ground truth. The result is a drift curve over time, not a pile of scorecards.
 
 Neither is a unit test. Nothing asserts EV's wording.
@@ -57,6 +57,7 @@ flowchart TD
 | **L6 Tasks under a fickle user** | Running work follows the latest intent, never duplicates, keeps good work, and is reviewed against the person | 7 |
 | **L7 Extreme** | Whiplash, memory flooding, poisoned content, an 8-week life arc, sustained contradiction and gaslighting, and understanding still converges | 6 |
 | **L8 After the rework** | What the rebuilt EV adds: forget reaches every copy, earlier conversations are found, two asks in one message both land, assumptions instead of interrogation, a sense of when things happened, guesses kept apart from what was said. Expected to fail until those steps are built; the fast checks for the same steps are in [verify/](../verify/README.md) | 7 |
+| **L9 Same words, different meaning** | Judgement, not rules: four pairs that put the same words ("stop", "also", a follow-up) into two situations where the right action differs. A pair counts only when both halves pass | 8 |
 
 The persona is the same everywhere: an indie builder who works a backend job, builds a habit app called Tidepool, makes a YouTube devlog, does a bakery client's website, and drifts toward music. Each scenario still starts from a person EV has never met. The runner gives every scenario its own empty EV data directory.
 

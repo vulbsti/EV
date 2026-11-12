@@ -20,7 +20,17 @@ npm run verify -- --accept      # record today's result as the baseline
 | Speed | Seconds, the same result every run | Minutes, graded by judgement |
 | Used | After every change | Before calling a step done |
 
-Each group of checks ends with `live:` lines naming the QA scenarios that cover the part only a real model can show. Level 8 in `qa/scenarios/` was written for this plan.
+Each group of checks ends with `live:` lines naming the QA scenarios that cover the part only a real model can show. Levels 8 and 9 in `qa/scenarios/` were written for this plan.
+
+## Judgement, not rules
+
+EV is meant to understand what the person means, so almost nothing it does may be a fixed flow. "Stop" can mean one task out of three, a pause, a change of direction, or nothing to do with the work. A request can be new work, or belong in old work that already has the context. A check that said "stop stops the work" would pass on a system built the wrong way. So every line here is one of three kinds:
+
+- **A guarantee**: true whatever EV decides. Nothing is lost, forgotten means gone, a restart changes nothing, only finished work reaches the person. These are the only things the code is allowed to fix.
+- **An option**: something EV is able to do once it has judged what the person means. The check plays EV's decision with the scripted model and verifies that exactly that happens and nothing else. Where it matters the check is a contrast: the same message is read two ways and must lead to two outcomes, which a rule keyed on the words cannot do (D-01 to D-05).
+- **Judgement**: whether EV picks the right option. Only a real model can show that, so it lives in the QA suite as pairs (level 9): nearly the same words in two situations where the right action differs. A pair counts only when both halves pass.
+
+When a behaviour turns out to depend on what the person meant, it is not a guarantee: write it as an option here and as a pair there.
 
 ## Reading the result
 
@@ -94,7 +104,7 @@ Add an entry to the step's file in `checks/`:
 }
 ```
 
-Keep to behaviour a person would notice. Do not assert on table names, function names or prompt wording.
+Keep to behaviour a person would notice. Do not assert on table names, function names or prompt wording. Do not write a check that ties particular words to a particular action: script what EV decides, and where the words could be read another way, script that reading too.
 
 ## What this cannot tell you
 

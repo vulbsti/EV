@@ -36,7 +36,7 @@ EV learns memory on its own from every turn and finished task: facts, preference
 ```bash
 npm test          # invariants: supervisor, memory write policy, security boundaries, review loop
 npm run verify    # the behaviours the rebuild is aiming for, checked in seconds with a scripted model
-npm run qa        # 47 scripted scenarios against a real EV, graded per scorecard
+npm run qa        # 55 scripted scenarios against a real EV, graded per scorecard
 npm run qa:arc    # a simulated person over weeks, scored for understanding and drift
 ```
 

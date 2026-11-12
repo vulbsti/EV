@@ -3,23 +3,12 @@ import { on, passOn, remembersAndForgets, said, work } from "../lib/scripts.mjs"
 
 export default {
   task: null,
-  name: "What already works and must keep working",
-  goal: "EV already tells talk from work, runs an agent, reviews the result until it is right, asks when only the person can answer, and stops when told. None of that may break while the insides are rebuilt.",
+  name: "Guarantees that hold whatever EV decides",
+  goal: "These are not decisions, so they are allowed to be fixed: nothing the person said or EV made is lost, only finished work reaches them, what they asked to forget is gone, and nobody else can talk to EV. They hold today and may not break while the insides are rebuilt.",
   checks: [
     {
-      id: "K-01",
-      expect: "Small talk gets an answer and starts no work.",
-      async run({ start, assert }) {
-        const ev = await start({ script: { ev: (turn) => turn.reply("Morning. What are we doing today?") } });
-        const turn = await ev.say("good morning");
-        assert.equal(turn.reply, "Morning. What are we doing today?", "EV's answer did not reach the person as written");
-        assert.equal((await ev.tasks()).length, 0, "A greeting started a task");
-        assert.equal(ev.standIn.jobs().length, 0, "A greeting started an agent");
-      }
-    },
-    {
       id: "K-02",
-      expect: "A request becomes one task, and its result and file reach the conversation.",
+      expect: "Work that EV starts runs to a result, and the result and its file reach the conversation.",
       async run({ start, assert }) {
         const ev = await start({ script: {
           ev: work("Tide poem"),
@@ -29,7 +18,7 @@ export default {
         assert.ok(turn.taskId, "The request did not start a task");
         const [task] = await ev.settled();
         assert.equal(task.status, "completed", `The task ended as ${task.status}: ${task.error?.message ?? ""}`);
-        assert.equal((await ev.work()).length, 1, "One request produced more than one task");
+        assert.equal((await ev.work()).length, 1, "EV started one piece of work and more than one appeared");
         assert.equal(task.artifacts?.length, 1, "The file the agent delivered is not attached to the task");
         const file = await fetch(`${ev.baseUrl}/api/assistant/artifacts/${encodeURIComponent(task.artifacts[0].artifactId)}`, { headers: { Authorization: "Bearer verify-token" } });
         assert.equal(await file.text(), "The tide comes in.\n", "The delivered file does not download with the agent's contents");
@@ -60,7 +49,7 @@ export default {
     },
     {
       id: "K-04",
-      expect: "A question only the person can answer reaches them, and their answer continues the same work.",
+      expect: "A question from an agent reaches the person, and when EV reads their next message as the answer, the same work continues with it.",
       async run({ start, assert }) {
         const ev = await start({ script: {
           ev: on([/^the blue one/i, passOn("Order the cover")], [/.*/, work("Order the cover")]),
@@ -75,24 +64,6 @@ export default {
         assert.equal(tasks.length, 1, "The answer started a second task");
         const jobs = ev.standIn.jobs(taskId);
         assert.match(jobs.at(-1).prompt, /the blue one/i, "The person's answer did not reach the agent");
-      }
-    },
-    {
-      id: "K-05",
-      expect: "\"Stop\" stops running work, and nothing is delivered for it.",
-      async run({ start, assert, gate }) {
-        const hold = gate();
-        const ev = await start({ script: {
-          ev: on([/stop/i, async (turn) => { await turn.messageTask({ task: "Long report", stop: true }); return turn.reply("Stopped."); }], [/.*/, work("Long report")]),
-          worker: async (job) => { await hold.wait(); return job.done("Report."); }
-        } });
-        const { taskId } = await ev.say("write the long quarterly report");
-        await hold.reached;
-        await ev.say("stop that");
-        const task = await ev.until("the task to be cancelled", async () => { const found = await ev.task(taskId); return found.status === "cancelled" ? found : null; });
-        hold.open();
-        assert.equal(task.result, null, "A cancelled task carries a result");
-        assert.ok(!(await ev.fromEV()).some((message) => /is done/.test(message.content)), "EV announced a result for work the person stopped");
       }
     },
     {

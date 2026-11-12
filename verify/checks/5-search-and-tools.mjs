@@ -94,7 +94,7 @@ export default {
     },
     {
       id: "T-06",
-      expect: "One message with two unrelated asks becomes two pieces of work, each with its own result.",
+      expect: "When EV reads two separate asks in one message, it can start both, and each gets its own result.",
       async run({ start, assert }) {
         const ev = await start({ script: {
           ev: async (turn) => {
@@ -166,13 +166,57 @@ export default {
     },
     {
       id: "T-10",
-      expect: "When EV asks a question, it also says what it will assume if the person does not answer.",
+      expect: "A question from EV can carry what it will assume in the meantime, and the person sees both.",
       async run({ start, assert }) {
         const ev = await start({ script: { ev: (turn) => turn.ask(["Which city is the offsite in?"], { assumptions: ["If you don't say, I'll plan for Lisbon like last year."], lead: "One thing first:" }) } });
         const answer = await ev.say("book the offsite");
         assert.match(answer.reply ?? "", /Which city is the offsite in/, "The question did not reach the person");
         assert.match(answer.reply ?? "", /I'll plan for Lisbon like last year/, "EV asked its question without saying what it would otherwise assume");
         assert.equal((await ev.tasks()).length, 0, "Work started before the person answered");
+      }
+    },
+    {
+      id: "T-11",
+      expect: "One message can call for several things at once (stop one piece of work, change another, start a third, answer a question), and EV can do all of them in the same turn.",
+      async run({ start, assert, gate }) {
+        const hold = gate();
+        const ev = await start({ script: {
+          ev: on(
+            [/^ok,/, async (turn) => {
+              await turn.messageTask({ task: "Privacy policy", stop: true });
+              await turn.messageTask({ task: "Store description", text: "Keep it under 80 words." });
+              await turn.startWork({ title: "Logo designers", request: "Find three logo designers who take small jobs." });
+              return turn.reply("Dropped the policy, asked for a shorter description, and I'm looking for designers. Yes, the 3pm call stands.");
+            }],
+            [/privacy/i, work("Privacy policy")], [/.*/, work("Store description")]
+          ),
+          worker: async (job) => { if (job.run === 1 && !/logo/i.test(job.prompt)) await hold.wait(); return job.done("Finished."); }
+        } });
+        const policy = await ev.say("write a privacy policy draft");
+        const store = await ev.say("write the store description");
+        await ev.until("both agents to be running", () => ev.standIn.jobs().length === 2);
+        const turn = await ev.say("ok, drop the policy, make the description shorter, and find me a logo designer. are we still on for 3pm?");
+        assert.match(turn.reply ?? "", /3pm call stands/, "EV's answer to the question in the message did not reach the person");
+        await ev.until("the privacy policy to stop", async () => !["queued", "running", "verifying"].includes((await ev.task(policy.taskId)).status));
+        hold.open();
+        await ev.until("the description's agent to get the change", () => ev.standIn.jobs(store.taskId).some((job) => /under 80 words/.test(job.prompt)));
+        assert.equal((await ev.work()).length, 3, "The new ask in the message did not become work of its own");
+      }
+    },
+    {
+      id: "T-12",
+      expect: "When the person's answer still leaves the real question open, EV can ask again. The code does not push the work to start.",
+      async run({ start, assert }) {
+        let turns = 0;
+        const ev = await start({ script: {
+          ev: (turn) => ++turns === 1
+            ? turn.ask(["Who is the proposal for?"])
+            : turn.ask(["You have two clients called Meera. The bakery or the studio?"], { lead: "Sorry, one more:" })
+        } });
+        await ev.say("draft the proposal");
+        const second = await ev.say("it's for Meera");
+        assert.equal((await ev.tasks()).length, 0, "EV still needed to know which client, and the work was started anyway");
+        assert.match(second.reply ?? "", /The bakery or the studio/, "EV's second question did not reach the person");
       }
     }
   ]
