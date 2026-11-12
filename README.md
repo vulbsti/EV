@@ -7,6 +7,7 @@ An assistant that understands the person first, then coordinates agents that wor
 Needs Node.js 24.16+, OpenClaw 2026.10+, docker, and `OPENCODE_API` in the local `.env`.
 
 ```bash
+npm install              # pi-ai, the one library EV uses to talk to models
 npm run openclaw:image   # the container agents run in
 npm start
 ```
@@ -15,8 +16,9 @@ Open the link the daemon prints (`http://127.0.0.1:4317/?token=…`). The token 
 
 Settings in `.env` (all optional):
 
-- `EV_MODEL`, `EV_MODEL_API` (`responses`, `chat` or `messages`): the model EV thinks and reviews with. `EV_MODEL_URL` points EV's own calls elsewhere, such as a stub model in tests.
-- `EV_OPENCLAW_MODEL`, `EV_OPENCLAW_API` (`openai-responses` or `anthropic-messages`): the model agents use.
+- `EV_MODEL` (default `opencode-go/gpt-6-luna`): the model EV and its agents use, as `provider/model`; a bare model id means `opencode-go`. Its API shape, base URL and quirks come from pi-ai's OpenCode Go catalogue, and `OPENCODE_API` is its key.
+- `EV_MODEL_URL` sends the calls (EV's and the agents') to another endpoint, such as a stub model in tests or any OpenAI- or Anthropic-compatible server. A model the catalogue does not know also needs `EV_MODEL_API`: `openai-responses`, `openai-completions` or `anthropic-messages`. Give OpenAI-style base URLs with their `/v1`; an Anthropic base URL has none.
+- `EV_OPENCLAW_MODEL`: a different model for agents, named the same way.
 - `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you. The default is docker: each agent sees only its goal folder plus its own home folder. Either way each piece of work has its own home, never yours. `EV_OPENCLAW_IMAGE` overrides the image name.
 - Web search uses DuckDuckGo (no key) and is built into the image. In host mode, install the plugin with `npm i --prefix ~/.local/share/openclaw-plugins @openclaw/duckduckgo-plugin` and set `EV_OPENCLAW_SEARCH_PLUGIN` to its absolute path.
 - `EV_REVIEW_HOLD_MS` (default `30000,120000`): how long EV waits before retrying an unavailable reviewer. A result is never delivered unchecked.

@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { openClawTaskConfig, parseOpenClawOutput } from "../lib/openclaw-worker-adapter.mjs";
 import { validateOpenClawTaskReport } from "../lib/openclaw-task-report.mjs";
 import { reviewOpenClawReport } from "../lib/ev-quality-gate.mjs";
+import { modelReply, shownInput } from "./model-reply.mjs";
 
 test("parallel tasks use distinct OpenCode sessions without storing the API key", () => {
   const first = openClawTaskConfig({ taskId: "agent-one", workspacePath: "/tmp/agent-one" });
@@ -48,9 +49,9 @@ test("independent review checks source text and can reject an incomplete answer"
     if (url === "https://opencode.ai/docs/go/") {
       return new Response("<html><body>Your client should send x-opencode-session for each conversation.</body></html>", { status: 200 });
     }
-    assert.equal(url, "https://opencode.ai/zen/go/v1/responses");
-    reviewedInput = JSON.parse(options.body).input;
-    return Response.json({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: '{"pass":false,"issues":["Missing session header"],"summary":"Incomplete"}' }] }] });
+    assert.equal(String(url), "https://opencode.ai/inference/go/openai/v1/responses");
+    reviewedInput = shownInput(options);
+    return modelReply('{"pass":false,"issues":["Missing session header"],"summary":"Incomplete"}');
   };
   const verdict = await reviewOpenClawReport({
     taskId: "agent-review",
@@ -75,8 +76,8 @@ test("links missing from an exact X quote reach the reviewer as an observation",
       if (url === "https://x.com/tibo/status/1951196640309563807") {
         return new Response('<html><body>full_text:"Que faites-vous encore ici ? https://t.co/07YYB4H7fU"</body></html>', { status: 200 });
       }
-      reviewedInput = JSON.parse(options.body).input;
-      return Response.json({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: '{"verdict":"revise","missing":["The post link"],"feedback":["Include https://t.co/07YYB4H7fU"],"summary":"Quote is incomplete"}' }] }] });
+      reviewedInput = shownInput(options);
+      return modelReply('{"verdict":"revise","missing":["The post link"],"feedback":["Include https://t.co/07YYB4H7fU"],"summary":"Quote is incomplete"}');
     }
   });
   assert.match(reviewedInput, /Host observations:[\s\S]*07YYB4H7fU/);
@@ -105,9 +106,9 @@ test("local project evidence reaches review with verified excerpts and bounded a
     const result = await reviewOpenClawReport({
       taskId: "local-projects", request: "Brief update on my projects", report, apiKey: "test-only", localRoots: [root],
       fetchImpl: async (url, options) => {
-        assert.equal(url, "https://opencode.ai/zen/go/v1/responses");
-        reviewedInput = JSON.parse(options.body).input;
-        return Response.json({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: '{"pass":true,"issues":[],"summary":"Supported"}' }] }] });
+        assert.equal(String(url), "https://opencode.ai/inference/go/openai/v1/responses");
+        reviewedInput = shownInput(options);
+        return modelReply('{"pass":true,"issues":[],"summary":"Supported"}');
       }
     });
     assert.equal(result.pass, true);
@@ -131,8 +132,8 @@ test("unverified local quotes do not become reviewer observations", async () => 
       taskId: "local-false-quote", request: "What does the file say?", apiKey: "test-only", localRoots: [root],
       report: validateOpenClawTaskReport(JSON.stringify({ goal: "Read a file", answer: "Invented fact", evidence: [{ url: pathToFileURL(note).href, quotes: ["Invented fact"] }] })),
       fetchImpl: async (url, options) => {
-        reviewedInput = JSON.parse(options.body).input;
-        return Response.json({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: '{"pass":false,"issues":["Unsupported"],"summary":"Unsupported"}' }] }] });
+        reviewedInput = shownInput(options);
+        return modelReply('{"pass":false,"issues":["Unsupported"],"summary":"Unsupported"}');
       }
     });
     assert.match(reviewedInput, /"verified":false/);
@@ -164,8 +165,8 @@ test("review sees executed test results from the OpenClaw session without raw ou
       taskId: "executed-tests", request: "Which tests work?", sessionEvents, apiKey: "test-only",
       report: { goal: "Check tests", answer: "139 tests passed", evidence: [] },
       fetchImpl: async (url, options) => {
-        reviewedInput = JSON.parse(options.body).input;
-        return Response.json({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: '{"pass":true,"issues":[],"summary":"Supported"}' }] }] });
+        reviewedInput = shownInput(options);
+        return modelReply('{"pass":true,"issues":[],"summary":"Supported"}');
       }
     });
     assert.match(reviewedInput, /"command":"npm test"/);
@@ -193,8 +194,8 @@ test("review stays within selected evidence instead of expanding project scope",
       report: { goal: "Inventory projects", answer: "Alpha exists.", evidence: [] },
       localRoots: [root], projectRootPath: root,
       fetchImpl: async (url, options) => {
-        reviewedInput = JSON.parse(options.body).input;
-        return Response.json({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: '{"pass":true,"issues":[],"summary":"Supported"}' }] }] });
+        reviewedInput = shownInput(options);
+        return modelReply('{"pass":true,"issues":[],"summary":"Supported"}');
       }
     });
     assert.doesNotMatch(reviewedInput, /"entries":\["Alpha"\]/);
