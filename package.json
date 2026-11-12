@@ -1,26 +1,15 @@
 {
-  "name": "ev-experiment-lab",
+  "name": "ev",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Pre-build experiment and evidence suite for EV Mission Control",
+  "description": "EV: an assistant that understands the person first, then coordinates agents that work for them",
   "scripts": {
     "test": "node --test apps/daemon/tests/*.test.mjs",
-    "lab": "node scripts/run-lab.mjs",
-    "lab:quick": "node scripts/run-lab.mjs --mode mock --profile quick",
-    "lab:live": "node scripts/run-lab.mjs --mode live --profile full",
-    "lab:browser": "node scripts/serve-browser-lab.mjs",
-    "lab:summarize": "node scripts/summarize-lab.mjs",
-    "validate:assistant-run": "node scripts/validate-assistant-run.mjs",
-    "assistant:phase0": "node scripts/create-phase0-run.mjs",
-    "assistant:phase2-canary": "node scripts/run-phase2-worker-canary.mjs",
-    "assistant:phase2-extended": "node scripts/run-phase2-extended-canary.mjs",
-    "assistant:phase4-local": "node scripts/run-phase4-local-canary.mjs",
-    "assistant:phase4-github": "node scripts/run-phase4-github-canary.mjs",
-    "assistant:phase4-faults": "node scripts/run-phase4-fault-canary.mjs",
-    "assistant:manager-check": "node scripts/run-manager-acceptance.mjs",
-    "prototype": "node apps/daemon/server.mjs",
-    "openclaw:image": "docker build -t ev-openclaw docker/openclaw"
+    "start": "node apps/daemon/server.mjs",
+    "openclaw:image": "docker build -t ev-openclaw docker/openclaw",
+    "qa": "node scripts/run-qa-scenarios.mjs",
+    "qa:arc": "node scripts/run-qa-arc.mjs"
   },
   "engines": {
     "node": ">=24.16"

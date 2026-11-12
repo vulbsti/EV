@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
-import { redactEvidence } from "./evidence.mjs";
+import { redactEvidence } from "./redact.mjs";
 
 /**
  * Usage accounting shared by the worker adapters.

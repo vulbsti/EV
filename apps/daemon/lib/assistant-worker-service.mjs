@@ -51,28 +51,6 @@ function abortableDelay(ms, signal) {
   });
 }
 
-function parseJsonObject(value) {
-  const source = String(value ?? "").trim();
-  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
-  const start = source.indexOf("{");
-  const end = source.lastIndexOf("}");
-  const candidate = fenced ?? (start >= 0 && end > start ? source.slice(start, end + 1) : "");
-  try {
-    const parsed = JSON.parse(candidate);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-    return parsed;
-  } catch {
-    throw codedError("R1_OUTPUT_INVALID", "The content worker returned malformed structured output");
-  }
-}
-
-function boundedOutput(value, field, maxBytes = 64 * 1024) {
-  if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > maxBytes) {
-    throw codedError("R1_OUTPUT_INVALID", `${field} must be non-empty bounded text`);
-  }
-  return value.trim();
-}
-
 function workerError(result) {
   return {
     code: result.code ?? "WORKER_ERROR",
@@ -146,18 +124,6 @@ export function createFixedCapabilityProfiles({ projectRoot = PROJECT_ROOT } = {
       budget: Object.freeze({ maxTotalTokens: 60_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
       review: Object.freeze({ maxRounds: 2 }),
     }),
-    "extended-launch-brief-v1": Object.freeze({
-      capability: "extended-launch-brief-v1",
-      tools: Object.freeze(["workspace_read", "workspace_write", "workspace_list", "workspace_grep", "workspace_run"]),
-      extensionPaths: Object.freeze([extension]),
-      skillPaths: Object.freeze([skill]),
-      requireContext: true,
-      requireArtifact: true,
-      // Usage is summed over every model call (cache reads excluded), so a
-      // multi-step tool run needs more headroom than one final-call figure.
-      budget: Object.freeze({ maxTotalTokens: 60_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
-      review: Object.freeze({ maxRounds: 2 }),
-    }),
     "standing-brief-v1": Object.freeze({
       capability: "standing-brief-v1",
       tools: Object.freeze(["workspace_read", "workspace_write", "workspace_list", "workspace_grep", "workspace_run"]),
@@ -169,22 +135,6 @@ export function createFixedCapabilityProfiles({ projectRoot = PROJECT_ROOT } = {
       // multi-step tool run needs more headroom than one final-call figure.
       budget: Object.freeze({ maxTotalTokens: 60_000, maxCostUsd: 0.03, maxToolCalls: 24 }),
       review: Object.freeze({ maxRounds: 2 }),
-    }),
-    "r1-content-package-v1": Object.freeze({
-      capability: "r1-content-package-v1",
-      tools: Object.freeze([]),
-      extensionPaths: Object.freeze([]),
-      skillPaths: Object.freeze([]),
-      requireContext: true,
-      requireArtifact: true,
-      structuredOutput: "r1-content-package-json",
-      review: Object.freeze({ maxRounds: 2 }),
-      timeoutMs: 180_000,
-      // A real draft-review-revision pass currently lands around 20k tokens
-      // because Pi reports the final turn with accumulated cached context.
-      // Five live packages used 6.7k-11.8k tokens; 16k keeps measured
-      // headroom for recovery variance without reopening tools or cost scope.
-      budget: Object.freeze({ maxTotalTokens: 16_000, maxCostUsd: 0.03, maxToolCalls: 0 }),
     }),
     "openclaw-general-v1": Object.freeze({
       capability: "openclaw-general-v1",
@@ -244,9 +194,11 @@ export class AssistantWorkerService {
     timeoutMs = Number(process.env.EV_WORKER_TIMEOUT_MS ?? 120_000),
     settlementDelayMs = Number(process.env.EV_WORKER_SETTLEMENT_DELAY_MS ?? 0),
     reviewHoldMs = (process.env.EV_REVIEW_HOLD_MS ?? "30000,120000").split(",").map(Number).filter((ms) => ms >= 0),
-    // EV_OPENCLAW_SANDBOX=docker runs every OpenClaw turn in a container
-    // (image EV_OPENCLAW_IMAGE, built from docker/openclaw); see openClawCommand.
-    openClawSandbox = process.env.EV_OPENCLAW_SANDBOX === "docker" ? { image: process.env.EV_OPENCLAW_IMAGE || "ev-openclaw" } : null,
+    // Every OpenClaw turn runs in a container (image EV_OPENCLAW_IMAGE, built
+    // from docker/openclaw) that sees only its own task folder; see
+    // openClawCommand. EV_OPENCLAW_SANDBOX=host runs agents uncontained, as
+    // the person, and should only be used when asked for.
+    openClawSandbox = process.env.EV_OPENCLAW_SANDBOX === "host" ? null : { image: process.env.EV_OPENCLAW_IMAGE || "ev-openclaw" },
   }) {
     if (!supervisor) throw codedError("INVALID_SERVICE", "supervisor is required");
     if (typeof workerRoot !== "string" || !workerRoot) throw codedError("INVALID_SERVICE", "workerRoot is required");
@@ -368,6 +320,12 @@ export class AssistantWorkerService {
     const task = await this.supervisor.addInstruction({ taskId, text: text.trim().slice(0, 4_000), source });
     if (task.status === "queued") this._dispatch(taskId);
     return task;
+  }
+
+  async _hasPendingInstructions(active) {
+    const task = await this.supervisor.getTask(active.taskId);
+    const through = task.history.findLast((event) => event.type === "instructions_applied")?.through ?? 0;
+    return task.history.some((event) => event.type === "instruction" && event.sequence > through);
   }
 
   /** Instructions recorded since the agent last saw any, marked as seen. */
@@ -541,7 +499,7 @@ export class AssistantWorkerService {
     try {
       if (active.shutdownRequested || active.cancelRequested) return { status: "cancelled" };
       const budget = budgetOverride ?? this._remainingBudget(active, active.profile);
-      active.run = await active.adapter.start({ runId: active.runId, sessionId, prompt, reuseCompleted, budget });
+      active.run = await active.adapter.start({ runId: active.runId, sessionId, prompt, reuseCompleted: reuseCompleted && !active.reuseBlocked, budget });
       if (active.shutdownRequested || active.cancelRequested) await active.adapter.cancel(active.run, { reason: "stopped" });
       if (active.isGeneral && !active.shutdownRequested && !active.cancelRequested) await this._progress(active, { phase: "working", message: active.round > 1 ? "The agent is revising its work from EV's review." : "An agent is carrying out the request.", workerPid: active.run.child?.pid ?? null });
       result = await active.run.completion;
@@ -550,7 +508,10 @@ export class AssistantWorkerService {
       if (active.run) { await active.adapter.cancel(active.run, { reason: "worker-interrupted" }); await waitForWorkerExit(active.run); }
       throw error;
     } finally { active.run = null; release(); }
-    if (result?.usage) mergeUsage(active.usage, result.usage);
+    if (result?.usage) {
+      mergeUsage(active.usage, result.usage);
+      if (active.isGeneral) await this._progress(active, { usage: { ...active.usage } }, "usage").catch(() => {});
+    }
     if (active.isGeneral && result?.status === "budget_exceeded" && !active.wrappingUp && !active.cancelRequested && !active.shutdownRequested) {
       return { ...result, text: (await this._wrapUp(active)) ?? result.text };
     }
@@ -670,8 +631,9 @@ export class AssistantWorkerService {
   async _resumeParked(active, task, parked) {
     const request = task.input.metadata.sourceRequest;
     const understanding = task.input.metadata.understanding ?? null;
-    mergeUsage(active.usage, parked.state?.usage);
-    active.round = parked.state?.round ?? 1;
+    // Recorded spend already includes what was spent before the pause.
+    if (!active.restoredUsage) mergeUsage(active.usage, parked.state?.usage);
+    active.round = parked.state?.round ?? active.round;
     // The person has just answered, so the stuck check starts over from here.
     active.reviews = parked.state?.reviews ?? [];
     active.askedAt = { reviews: active.reviews.length, round: active.round };
@@ -681,6 +643,15 @@ export class AssistantWorkerService {
     const answers = await this._takeInstructions(active);
     await this._progress(active, { phase: "working", message: answers.length ? "The agent is carrying on with your answer." : "The agent is carrying on where it left off." });
     return this._runWorker(active, continuationPrompt({ request, plan: active.plan, answers }), { reuseCompleted: false });
+  }
+
+  /**
+   * The only host folders the reviewer may read on the agent's say-so: the
+   * folder the agent itself works in (its task folder, or the goal folder it
+   * shares with sibling agents). Nothing the agent could not already read.
+   */
+  _reviewRoots(task, workspacePath) {
+    return [task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath].filter(Boolean);
   }
 
   _sharedPath(task) {
@@ -707,6 +678,27 @@ export class AssistantWorkerService {
     await writeSharedFiles(sharedPath, { "TEAM.md": renderTeam(team) }).catch(() => {});
   }
 
+  /**
+   * A restart carries on the same review loop: spend, rounds and earlier
+   * reviews are rebuilt from the task's recorded events, so the token budget
+   * stays a real safety stop and the reviewer never sees round 1 again.
+   */
+  _restoreRunState(active, task) {
+    active.usage = emptyUsage();
+    active.round = 1;
+    if (!active.isGeneral) return;
+    const spent = task.history.findLast((event) => event.type === "usage")?.usage;
+    if (spent) { Object.assign(active.usage, spent); active.restoredUsage = true; }
+    const reviews = task.history.filter((event) => event.type === "review");
+    if (!reviews.length) return;
+    active.reviews = reviews.map(({ round, verdict, intentMatch, summary, missing, feedback, progress, askPerson, unavailable }) => ({
+      round, verdict, pass: verdict === "accept", intentMatch, summary, missing: missing ?? [], feedback: feedback ?? [], issues: verdict === "accept" ? [] : missing ?? [], progress, askPerson, unavailable
+    }));
+    active.round = Math.max(...reviews.map((event) => Number(event.round) || 1)) + 1;
+    // The answer the reviewer last sent back must not be handed in again.
+    active.reuseBlocked = reviews.at(-1).verdict !== "accept";
+  }
+
   async _execute(active) {
     const { taskId } = active;
     let lease;
@@ -717,9 +709,8 @@ export class AssistantWorkerService {
       const profile = this._profile(task.input.capability);
       active.task = task;
       active.profile = profile;
-      active.usage = emptyUsage();
-      active.round = 1;
       active.isGeneral = profile.capability === "openclaw-general-v1";
+      this._restoreRunState(active, task);
       await this._prepareTaskInput(taskId, profile, task.input);
       lease = await this.supervisor.leaseTask({ taskId, workerId: this.workerId });
       runId = randomUUID();
@@ -824,7 +815,7 @@ export class AssistantWorkerService {
       try {
         review = await this.reviewer({
           taskId: task.taskId, request, brief, report, round, previousReviews: active.reviews, hostNotes, personal: task.input.metadata?.reviewerMemory ?? "",
-          localRoots: [this.workspaceRoot, resolve(PROJECT_ROOT, "..")], sessionEvents, workspacePath
+          localRoots: this._reviewRoots(task, workspacePath), sessionEvents, workspacePath
         });
         review = { ...normalizeReviewShape(review), round };
         break;
@@ -882,7 +873,6 @@ export class AssistantWorkerService {
     let digestBefore = artifactBefore;
     let review = null;
     for (;;) {
-      if (profile.structuredOutput === "r1-content-package-json") await this._materializeR1StructuredOutput(task, result.text, workspacePath);
       const hostNotes = [];
       let contents = "";
       try {
@@ -1045,7 +1035,12 @@ export class AssistantWorkerService {
         successCriteria: active.plan.successCriteria
       };
       best = { result, report, issues: unresolved };
-      if (!unresolved.length || isChild || report.outcome === "blocked") break;
+      if (!unresolved.length || isChild || report.outcome === "blocked") {
+        // Something the person said while the review ran must reach the work
+        // before it is delivered, even when the review passed.
+        if (!stopReason && await this._hasPendingInstructions(active)) continue;
+        break;
+      }
       if (stopReason || this._budgetSpent(active)) {
         stopReason ??= "budget";
         break;
@@ -1127,16 +1122,6 @@ export class AssistantWorkerService {
     relativePath(relativeName, "artifact destination");
     await writeArtifact(this.supervisor.artifactRoot, relativeName, contents);
     return [{ artifactId: randomUUID(), relativePath: relativeName, sha256: createHash("sha256").update(contents).digest("hex"), bytes: contents.byteLength }];
-  }
-
-  async _materializeR1StructuredOutput(task, text, workspacePath) {
-    const value = parseJsonObject(text);
-    const draft = boundedOutput(value.draft, "draft");
-    const review = boundedOutput(value.review, "review");
-    const final = boundedOutput(value.final, "final");
-    await writeArtifact(workspacePath, "output/draft.md", Buffer.from(`${draft}\n`));
-    await writeArtifact(workspacePath, "output/review.md", Buffer.from(`${review}\n`));
-    await writeArtifact(workspacePath, "output/content-package.md", Buffer.from(`${final}\n`));
   }
 }
 

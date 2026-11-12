@@ -334,3 +334,55 @@ test("an instruction sent while an agent runs reaches it in the same task before
     await assert.rejects(service.instructTask({ taskId: "parent", text: "too late" }), (error) => error.code === "TASK_NOT_ACTIVE");
   } finally { await service.shutdown(); await f.close(); }
 });
+
+test("an instruction sent while EV reviews reaches the agent before delivery, even when the review passes", async () => {
+  const f = await fixture(); const prompts = []; let reviewing;
+  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
+    reviewer: async () => { if (!reviewing) await new Promise((resolve) => { reviewing = resolve; }); return pass(); },
+    adapterFactory: async () => ({ async start({ prompt }) {
+      prompts.push(prompt);
+      return { completion: Promise.resolve({ status: "completed", text: report(prompts.length === 1 ? "Formal draft" : "Casual draft") }) };
+    }, async cancel() {} })
+  });
+  try {
+    await submit(service);
+    await until(() => Boolean(reviewing));
+    await service.instructTask({ taskId: "parent", text: "Make it casual." });
+    reviewing();
+    const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed"); assert.match(final.result.report.answer, /Casual/);
+    assert.match(prompts[1], /Make it casual/);
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("a restart carries on the review loop: same round, earlier reviews and spend, and the rejected answer is not reused", async () => {
+  const f = await fixture(); const reviews = []; const starts = [];
+  const options = { ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
+    reviewer: async ({ round, previousReviews }) => {
+      reviews.push({ round, earlier: previousReviews.length });
+      return reviews.length === 1 ? { verdict: "revise", missing: ["More detail"], feedback: ["Add detail"], summary: "Thin" } : pass();
+    },
+    adapterFactory: async () => ({
+      async start({ reuseCompleted }) {
+        starts.push({ reuseCompleted });
+        // The second run (the revision) hangs until the daemon stops.
+        if (starts.length === 2) return { completion: new Promise((resolve) => { this.stop = () => resolve({ status: "cancelled" }); }) };
+        return { completion: Promise.resolve({ status: "completed", text: report(`Answer ${starts.length}`), usage: { input: 1_000, output: 500 } }) };
+      },
+      async cancel() { this.stop?.(); }
+    })
+  };
+  let service = new AssistantWorkerService(options);
+  try {
+    await submit(service);
+    await until(() => starts.length === 2);
+    await service.shutdown();
+    service = new AssistantWorkerService(options);
+    await service.start();
+    const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed");
+    assert.deepEqual(reviews, [{ round: 1, earlier: 0 }, { round: 2, earlier: 1 }]);
+    assert.equal(starts[2].reuseCompleted, false);
+    assert.equal(final.result.usage.budgetTokens, 3_000);
+  } finally { await service.shutdown(); await f.close(); }
+});

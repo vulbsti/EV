@@ -11,7 +11,7 @@
   <main class="assistant-shell">
     <header class="assistant-header">
       <a class="identity" href="/" aria-label="EV home"><span>EV</span><strong>Your personal assistant</strong></a>
-      <div class="header-actions"><span id="connection-status" role="status">Connecting</span><button id="new-conversation" type="button">New conversation</button><button id="responsibilities-toggle" type="button" aria-expanded="false" aria-controls="responsibilities-panel">Responsibilities</button><button id="understanding-toggle" type="button" aria-expanded="false" aria-controls="understanding-panel">Understanding you</button><a href="/workstation" title="Open the developer workstation">Developer view</a></div>
+      <div class="header-actions"><span id="connection-status" role="status">Connecting</span><button id="new-conversation" type="button">New conversation</button><button id="responsibilities-toggle" type="button" aria-expanded="false" aria-controls="responsibilities-panel">Responsibilities</button><button id="understanding-toggle" type="button" aria-expanded="false" aria-controls="understanding-panel">Understanding you</button></div>
     </header>
 
     <section id="conversation" class="conversation" aria-label="Conversation with EV">
@@ -41,7 +41,7 @@
       <p class="understanding-intro">Only explicit, source-linked guidance is active here. Memory changes how EV helps; it never grants tools or permission.</p>
       <form id="memory-form" class="memory-form">
         <label for="memory-value">Remember guidance</label>
-        <textarea id="memory-value" rows="2" maxlength="2000" placeholder="For example: Keep launch updates concise." required></textarea>
+        <textarea id="memory-value" rows="2" maxlength="2000" placeholder="For example: Keep updates short." required></textarea>
         <button type="submit">Remember</button>
       </form>
       <div id="memory-status" role="status"></div>
