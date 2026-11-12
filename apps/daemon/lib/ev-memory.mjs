@@ -150,7 +150,7 @@ export function applyLearning(memory, { ownerId, events, ops, seen, now = Date.n
   for (const op of Array.isArray(ops) ? ops : []) {
     const event = events[Number(op?.event) - 1];
     if (!event) { skip(op, "no such event"); continue; }
-    const fromTask = event.type === "task";
+    const fromTask = event.type === "episode";
     const author = fromTask ? "ev-episode" : "ev-learned";
     const stated = !fromTask && op.explicit === true && quotesPerson(event, op);
     try {
@@ -233,7 +233,7 @@ export function applyLearning(memory, { ownerId, events, ops, seen, now = Date.n
         }
         else memory.erase({ ownerId, targetType: "claim", targetId: target.claimId });
         // The request itself often repeats what is being forgotten.
-        memory.redactEvent(event.eventId);
+        memory.forgetEvent(event.eventId);
         applied.push({ op: "forget", claimId: target.claimId, kind, part: op.part === "history" ? "history" : "all" });
       } else if (op.op === "retire") {
         if (guarded && !quotesPerson(event, op)) { skip(op, "inference cannot retire an active claim"); continue; }
@@ -293,19 +293,14 @@ export class MemoryLearner {
     this.queued = false;
   }
 
-  recordTurn({ clientMessageId, conversationId, userText, evReply, action = null, recentWork = "" }) {
-    this.memory.recordEvent({ eventId: `turn:${clientMessageId}`, ownerId: this.ownerId, conversationId, type: "turn", content: { userText, evReply, action, recentWork } });
-    this.kick();
-  }
-
   /** A settled root task becomes an episode: what was asked, what was done, how review went. */
   recordTask(task) {
     const metadata = task.input?.metadata ?? {};
     if (metadata.parentTaskId || !["completed", "failed", "cancelled"].includes(task.status)) return;
     const report = task.result?.report;
     const verification = report?.verification ?? {};
-    this.memory.recordEvent({
-      eventId: `task:${task.taskId}:${task.revision}`, ownerId: this.ownerId, conversationId: metadata.conversationId ?? null, type: "task",
+    this.memory.recordEpisode({
+      workId: task.taskId, revision: task.revision, conversationId: metadata.conversationId ?? null,
       content: {
         title: metadata.title ?? null,
         request: text(metadata.sourceRequest, 1_500),

@@ -1,31 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
-import { basename, dirname, resolve, sep } from "node:path";
-import { ensurePrivateDirectorySync, secureDatabaseFilesSync, securePrivateTreeSync } from "./file-permissions.mjs";
+import { basename, resolve, sep } from "node:path";
+import { ensurePrivateDirectorySync, securePrivateTreeSync } from "./file-permissions.mjs";
+import { codedError, parse } from "./store.mjs";
 
 // A run is live while the agent works and while EV reviews its result.
 const ACTIVE_RUN_STATES = Object.freeze(["running", "verifying"]);
-
-function clone(value) {
-  return structuredClone(value);
-}
-
-function codedError(code, message) {
-  return Object.assign(new Error(message), { code });
-}
-
-function bounded(value, name) {
-  const encoded = JSON.stringify(value ?? null);
-  if (Buffer.byteLength(encoded) > 64_000) throw codedError("PAYLOAD_TOO_LARGE", `${name} exceeds 64 KB`);
-  return JSON.parse(encoded);
-}
-
-function parseJson(value, fallback = null) {
-  if (value === null || value === undefined) return fallback;
-  return JSON.parse(value);
-}
+const TERMINAL = Object.freeze(["completed", "failed", "cancelled"]);
 
 async function verifyReceipt(artifactRoot, receipt) {
   let handle;
@@ -53,100 +35,41 @@ async function verifyReceipt(artifactRoot, receipt) {
   }
 }
 
-/** Durable, transactional owner for assistant task state. */
+function receiptOf(row) {
+  return { artifactId: row.file_id, ...(row.title ? { title: row.title } : {}), relativePath: row.path, sha256: row.sha256, bytes: row.bytes };
+}
+
+/**
+ * The state of each piece of work, in the store: one row per work, every
+ * change written with its event, each delivered result in its own row and its
+ * files on disk under `artifactRoot`.
+ */
 export class AssistantSupervisor {
-  static async open({ statePath, artifactRoot }) {
-    ensurePrivateDirectorySync(dirname(statePath));
+  static async open({ store, artifactRoot }) {
     ensurePrivateDirectorySync(artifactRoot);
     securePrivateTreeSync(artifactRoot);
-    const database = new DatabaseSync(statePath);
-    secureDatabaseFilesSync(statePath);
-    database.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS supervisor_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
-      INSERT INTO supervisor_meta (key, value) VALUES ('revision', 0) ON CONFLICT(key) DO NOTHING;
-      INSERT INTO supervisor_meta (key, value) VALUES ('event_sequence', 0) ON CONFLICT(key) DO NOTHING;
-      CREATE TABLE IF NOT EXISTS tasks (
-        task_id TEXT PRIMARY KEY,
-        input_json TEXT NOT NULL,
-        status TEXT NOT NULL,
-        lease_id TEXT,
-        fencing_token TEXT,
-        lease_generation INTEGER NOT NULL DEFAULT 0,
-        worker_id TEXT,
-        run_id TEXT,
-        started_at TEXT,
-        result_json TEXT,
-        artifacts_json TEXT NOT NULL DEFAULT '[]',
-        error_json TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        revision INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS task_events (
-        task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-        sequence INTEGER NOT NULL,
-        event_id TEXT NOT NULL UNIQUE,
-        type TEXT NOT NULL,
-        at TEXT NOT NULL,
-        data_json TEXT NOT NULL DEFAULT '{}',
-        PRIMARY KEY (task_id, sequence)
-      );
-      CREATE INDEX IF NOT EXISTS task_events_task_order ON task_events(task_id, sequence);
-      CREATE INDEX IF NOT EXISTS tasks_created_order ON tasks(created_at, task_id);
-      CREATE TABLE IF NOT EXISTS task_commands (
-        command_id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-        type TEXT NOT NULL,
-        expected_revision INTEGER,
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS task_commands_task_order ON task_commands(task_id, created_at, command_id);
-    `);
-    secureDatabaseFilesSync(statePath);
-    return new AssistantSupervisor({ statePath, artifactRoot, database });
+    return new AssistantSupervisor({ store, artifactRoot });
   }
 
-  constructor({ statePath, artifactRoot, database }) {
-    this.statePath = statePath;
+  constructor({ store, artifactRoot }) {
+    this.store = store;
+    this.db = store.db;
     this.artifactRoot = artifactRoot;
-    this.database = database;
   }
 
-  close() {
-    this.database.close();
-  }
+  close() {}
 
-  _transaction(callback) {
-    this.database.exec("BEGIN IMMEDIATE");
-    try {
-      const result = callback();
-      this.database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      try { this.database.exec("ROLLBACK"); } catch { /* preserve original error */ }
-      throw error;
-    }
-  }
-
-  _nextRevision() {
-    const revision = this.database.prepare("SELECT value FROM supervisor_meta WHERE key = 'revision'").get().value + 1;
-    this.database.prepare("UPDATE supervisor_meta SET value = ? WHERE key = 'revision'").run(revision);
-    return revision;
-  }
-
-  _addEvent(taskId, type, data = {}) {
-    const sequence = this.database.prepare("SELECT value FROM supervisor_meta WHERE key = 'event_sequence'").get().value + 1;
-    this.database.prepare("UPDATE supervisor_meta SET value = ? WHERE key = 'event_sequence'").run(sequence);
-    const at = new Date().toISOString();
-    this.database.prepare(`INSERT INTO task_events (task_id, sequence, event_id, type, at, data_json) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(taskId, sequence, randomUUID(), type, at, JSON.stringify(data));
-    return at;
+  /** Writes the change and its event together, and moves the snapshot revision on. */
+  _change(taskId, type, data, set = {}) {
+    const { at } = this.store.event({ type, workId: taskId, data });
+    const revision = this.store.bump("work");
+    const columns = Object.keys(set);
+    this.db.prepare(`UPDATE work SET ${[...columns.map((column) => `${column} = ?`), "updated_at = ?", "revision = ?"].join(", ")} WHERE work_id = ?`)
+      .run(...columns.map((column) => set[column]), at, revision, taskId);
   }
 
   _row(taskId) {
-    return this.database.prepare("SELECT * FROM tasks WHERE task_id = ?").get(taskId);
+    return this.db.prepare("SELECT * FROM work WHERE work_id = ?").get(taskId);
   }
 
   _requireRow(taskId) {
@@ -155,25 +78,21 @@ export class AssistantSupervisor {
     return row;
   }
 
-  _events(taskId) {
-    return this.database.prepare("SELECT sequence, event_id, type, at, data_json FROM task_events WHERE task_id = ? ORDER BY sequence ASC")
-      .all(taskId).map((event) => ({ eventId: event.event_id, sequence: event.sequence, type: event.type, at: event.at, ...parseJson(event.data_json, {}) }));
-  }
-
   _taskFromRow(row) {
+    const result = this.db.prepare("SELECT * FROM results WHERE work_id = ? ORDER BY at DESC, rowid DESC LIMIT 1").get(row.work_id);
     return {
-      taskId: row.task_id,
-      input: parseJson(row.input_json),
+      taskId: row.work_id,
+      input: parse(row.input_json),
       status: row.status,
       lease: row.lease_id ? { leaseId: row.lease_id, fencingToken: row.fencing_token, fencingGeneration: row.lease_generation, generation: row.lease_generation, workerId: row.worker_id } : null,
       run: row.run_id ? { runId: row.run_id, workerId: row.worker_id, startedAt: row.started_at } : null,
-      result: parseJson(row.result_json),
-      artifacts: parseJson(row.artifacts_json, []),
-      error: parseJson(row.error_json),
+      result: result ? parse(result.result_json) : null,
+      artifacts: result ? this.db.prepare("SELECT * FROM files WHERE result_id = ? ORDER BY rowid").all(result.result_id).map(receiptOf) : [],
+      error: parse(row.error_json),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       revision: row.revision,
-      history: this._events(row.task_id)
+      history: this.store.events({ workId: row.work_id }).map(({ eventId, seq, type, at, data }) => ({ eventId, sequence: seq, type, at, ...data }))
     };
   }
 
@@ -185,105 +104,91 @@ export class AssistantSupervisor {
     if (!row.fencing_token || row.fencing_token !== fencingToken) throw codedError("STALE_FENCING_TOKEN", "The worker lease is no longer current");
   }
 
+  _assertRun(row, fencingToken, runId, what) {
+    this._assertToken(row, fencingToken);
+    if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", `Only the current run can ${what}`);
+  }
+
   async createTask({ taskId, input }) {
     if (typeof taskId !== "string" || !taskId) throw codedError("INVALID_TASK_ID", "taskId is required");
-    const safeInput = bounded(input, "task input");
-    const encodedInput = JSON.stringify(safeInput);
-    this._transaction(() => {
+    const encoded = JSON.stringify(input ?? null);
+    this.store.tx(() => {
       const existing = this._row(taskId);
       if (existing) {
-        if (existing.input_json !== encodedInput) throw codedError("TASK_ALREADY_EXISTS", `Task ${taskId} already exists`);
+        if (existing.input_json !== encoded) throw codedError("TASK_ALREADY_EXISTS", `Task ${taskId} already exists`);
         return;
       }
-      const timestamp = new Date().toISOString();
-      this.database.prepare("INSERT INTO tasks (task_id, input_json, status, created_at, updated_at, revision) VALUES (?, ?, 'queued', ?, ?, 0)")
-        .run(taskId, encodedInput, timestamp, timestamp);
-      const revision = this._nextRevision();
-      const eventAt = this._addEvent(taskId, "created");
-      this.database.prepare("UPDATE tasks SET updated_at = ?, revision = ? WHERE task_id = ?").run(eventAt, revision, taskId);
+      const at = this.store.now();
+      this.db.prepare("INSERT INTO work (work_id, conversation_id, parent_id, input_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)")
+        .run(taskId, input?.metadata?.conversationId ?? null, input?.metadata?.parentTaskId ?? null, encoded, at, at);
+      this._change(taskId, "created", {});
     });
-    return clone(this._task(taskId));
+    return this._task(taskId);
   }
 
   async leaseTask({ taskId, workerId }) {
     if (typeof workerId !== "string" || !workerId) throw codedError("INVALID_WORKER_ID", "workerId is required");
-    const lease = this._transaction(() => {
+    return this.store.tx(() => {
       const row = this._requireRow(taskId);
       if (row.status !== "queued") throw codedError("TASK_NOT_QUEUED", `Task ${taskId} is ${row.status}`);
       const fencingGeneration = row.lease_generation + 1;
-      const value = { leaseId: randomUUID(), fencingToken: randomUUID(), fencingGeneration, generation: fencingGeneration, workerId };
-      const revision = this._nextRevision();
-      const eventAt = this._addEvent(taskId, "leased", { workerId, leaseId: value.leaseId, fencingGeneration });
-      this.database.prepare("UPDATE tasks SET status = 'leased', lease_id = ?, fencing_token = ?, lease_generation = ?, worker_id = ?, run_id = NULL, started_at = NULL, updated_at = ?, revision = ? WHERE task_id = ?")
-        .run(value.leaseId, value.fencingToken, fencingGeneration, workerId, eventAt, revision, taskId);
-      return value;
+      const lease = { leaseId: randomUUID(), fencingToken: randomUUID(), fencingGeneration, generation: fencingGeneration, workerId };
+      this._change(taskId, "leased", { workerId, leaseId: lease.leaseId, fencingGeneration }, {
+        status: "leased", lease_id: lease.leaseId, fencing_token: lease.fencingToken, lease_generation: fencingGeneration, worker_id: workerId, run_id: null, started_at: null
+      });
+      return lease;
     });
-    return clone(lease);
   }
 
   async startTask({ taskId, runId, fencingToken }) {
     if (typeof runId !== "string" || !runId) throw codedError("INVALID_RUN_ID", "runId is required");
-    this._transaction(() => {
+    this.store.tx(() => {
       const row = this._requireRow(taskId);
       this._assertToken(row, fencingToken);
       if (row.status === "running" && row.run_id === runId) return;
       if (row.status !== "leased") throw codedError("INVALID_TASK_TRANSITION", `Cannot start task in ${row.status}`);
-      const revision = this._nextRevision();
-      const startedAt = this._addEvent(taskId, "started", { runId });
-      this.database.prepare("UPDATE tasks SET status = 'running', run_id = ?, started_at = ?, updated_at = ?, revision = ? WHERE task_id = ?")
-        .run(runId, startedAt, startedAt, revision, taskId);
+      this._change(taskId, "started", { runId }, { status: "running", run_id: runId, started_at: this.store.now() });
     });
-    return clone(this._task(taskId));
+    return this._task(taskId);
   }
 
+  /** The accepted result goes in its own row, however large; its files are verified on disk first. */
   async completeTask({ taskId, runId, fencingToken, result = null, artifacts = [] }) {
-    const safeResult = bounded(result, "task result");
-    const safeArtifacts = bounded(artifacts, "task artifacts");
-    if (!Array.isArray(safeArtifacts)) throw codedError("INVALID_ARTIFACTS", "artifacts must be an array");
+    if (!Array.isArray(artifacts)) throw codedError("INVALID_ARTIFACTS", "artifacts must be an array");
     const current = this._requireRow(taskId);
     this._assertToken(current, fencingToken);
-    if (current.status === "completed" && current.run_id === runId) return clone(this._taskFromRow(current));
-    if (!ACTIVE_RUN_STATES.includes(current.status) || current.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current running task can complete");
-    for (const receipt of safeArtifacts) await verifyReceipt(this.artifactRoot, receipt);
-    this._transaction(() => {
+    if (current.status === "completed" && current.run_id === runId) return this._taskFromRow(current);
+    this._assertRun(current, fencingToken, runId, "complete");
+    for (const receipt of artifacts) await verifyReceipt(this.artifactRoot, receipt);
+    this.store.tx(() => {
       const row = this._requireRow(taskId);
-      this._assertToken(row, fencingToken);
       if (row.status === "completed" && row.run_id === runId) return;
-      if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current running task can complete");
-      const revision = this._nextRevision();
-      const eventAt = this._addEvent(taskId, "completed", { runId });
-      this.database.prepare("UPDATE tasks SET status = 'completed', result_json = ?, artifacts_json = ?, updated_at = ?, revision = ? WHERE task_id = ?")
-        .run(JSON.stringify(safeResult), JSON.stringify(safeArtifacts), eventAt, revision, taskId);
+      this._assertRun(row, fencingToken, runId, "complete");
+      const resultId = randomUUID();
+      this.db.prepare("INSERT INTO results (result_id, work_id, run_id, result_json, at) VALUES (?, ?, ?, ?, ?)").run(resultId, taskId, runId, JSON.stringify(result), this.store.now());
+      const file = this.db.prepare("INSERT INTO files (file_id, result_id, work_id, title, path, sha256, bytes) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      for (const receipt of artifacts) file.run(receipt.artifactId, resultId, taskId, receipt.title ?? null, receipt.relativePath, receipt.sha256, receipt.bytes);
+      this._change(taskId, "completed", { runId, resultId }, { status: "completed" });
     });
-    return clone(this._task(taskId));
+    return this._task(taskId);
   }
 
   async failTask({ taskId, runId, fencingToken, error }) {
-    const safeError = bounded(error ?? { code: "WORKER_ERROR", message: "Worker failed" }, "task error");
-    this._transaction(() => {
-      const row = this._requireRow(taskId);
-      this._assertToken(row, fencingToken);
-      if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current running task can fail");
-      const revision = this._nextRevision();
-      const eventAt = this._addEvent(taskId, "failed", { runId, code: safeError.code });
-      this.database.prepare("UPDATE tasks SET status = 'failed', error_json = ?, updated_at = ?, revision = ? WHERE task_id = ?")
-        .run(JSON.stringify(safeError), eventAt, revision, taskId);
+    const failure = error ?? { code: "WORKER_ERROR", message: "Worker failed" };
+    this.store.tx(() => {
+      this._assertRun(this._requireRow(taskId), fencingToken, runId, "fail");
+      this._change(taskId, "failed", { runId, code: failure.code }, { status: "failed", error_json: JSON.stringify(failure) });
     });
-    return clone(this._task(taskId));
+    return this._task(taskId);
   }
 
   async recordProgress({ taskId, runId, fencingToken, type = "progress", data = {} }) {
     if (!["progress", "manager_plan", "worker_retry", "review", "usage", "instructions_applied"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
-    const safeData = bounded(data, "task progress");
-    this._transaction(() => {
-      const row = this._requireRow(taskId);
-      this._assertToken(row, fencingToken);
-      if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current run can record progress");
-      const revision = this._nextRevision();
-      const at = this._addEvent(taskId, type, safeData);
-      this.database.prepare("UPDATE tasks SET updated_at = ?, revision = ? WHERE task_id = ?").run(at, revision, taskId);
+    this.store.tx(() => {
+      this._assertRun(this._requireRow(taskId), fencingToken, runId, "record progress");
+      this._change(taskId, type, data);
     });
-    return clone(this._task(taskId));
+    return this._task(taskId);
   }
 
   /**
@@ -300,17 +205,15 @@ export class AssistantSupervisor {
   }
 
   _moveRun({ taskId, runId, fencingToken, from, to, event, data }) {
-    this._transaction(() => {
+    this.store.tx(() => {
       const row = this._requireRow(taskId);
       this._assertToken(row, fencingToken);
       if (row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current run can change state");
       if (row.status === to) return;
       if (row.status !== from) throw codedError("INVALID_TASK_TRANSITION", `Cannot move task from ${row.status} to ${to}`);
-      const revision = this._nextRevision();
-      const at = this._addEvent(taskId, event, bounded(data, "state change"));
-      this.database.prepare("UPDATE tasks SET status = ?, updated_at = ?, revision = ? WHERE task_id = ?").run(to, at, revision, taskId);
+      this._change(taskId, event, data, { status: to });
     });
-    return clone(this._task(taskId));
+    return this._task(taskId);
   }
 
   /**
@@ -319,17 +222,11 @@ export class AssistantSupervisor {
    * and survives restarts as is; `state` is what the next run restores.
    */
   async waitForInput({ taskId, runId, fencingToken, question, state = {} }) {
-    const data = bounded({ question, state }, "input request");
-    this._transaction(() => {
-      const row = this._requireRow(taskId);
-      this._assertToken(row, fencingToken);
-      if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current run can wait for input");
-      const revision = this._nextRevision();
-      const at = this._addEvent(taskId, "input_needed", data);
-      this.database.prepare("UPDATE tasks SET status = 'waiting', lease_id = NULL, fencing_token = NULL, worker_id = NULL, run_id = NULL, started_at = NULL, updated_at = ?, revision = ? WHERE task_id = ?")
-        .run(at, revision, taskId);
+    this.store.tx(() => {
+      this._assertRun(this._requireRow(taskId), fencingToken, runId, "wait for input");
+      this._change(taskId, "input_needed", { question, state }, { status: "waiting", lease_id: null, fencing_token: null, worker_id: null, run_id: null, started_at: null });
     });
-    return clone(this._task(taskId));
+    return this._task(taskId);
   }
 
   /**
@@ -337,123 +234,88 @@ export class AssistantSupervisor {
    * picks it up at its next step; a waiting task goes back to the queue.
    */
   async addInstruction({ taskId, text, source = null }) {
-    const data = bounded({ text, source }, "instruction");
-    this._transaction(() => {
+    this.store.tx(() => {
       const row = this._requireRow(taskId);
-      if (["completed", "failed", "cancelled"].includes(row.status)) throw codedError("TASK_NOT_ACTIVE", `Task ${taskId} is ${row.status}`);
-      const revision = this._nextRevision();
-      const at = this._addEvent(taskId, "instruction", data);
-      const status = row.status === "waiting" ? "queued" : row.status;
-      this.database.prepare("UPDATE tasks SET status = ?, updated_at = ?, revision = ? WHERE task_id = ?").run(status, at, revision, taskId);
+      if (TERMINAL.includes(row.status)) throw codedError("TASK_NOT_ACTIVE", `Task ${taskId} is ${row.status}`);
+      this._change(taskId, "instruction", { text, source }, { status: row.status === "waiting" ? "queued" : row.status });
     });
-    return clone(this._task(taskId));
+    return this._task(taskId);
+  }
+
+  _cancel(taskId, data) {
+    const row = this._requireRow(taskId);
+    if (TERMINAL.includes(row.status)) return;
+    this._change(taskId, "cancelled", data, { status: "cancelled", lease_id: null, fencing_token: null, worker_id: null });
   }
 
   async cancelTask({ taskId, reason }) {
-    const safeReason = bounded(reason ?? null, "cancel reason");
-    this._transaction(() => {
-      const row = this._requireRow(taskId);
-      if (["completed", "failed", "cancelled"].includes(row.status)) return;
-      const revision = this._nextRevision();
-      const eventAt = this._addEvent(taskId, "cancelled", { reason: safeReason });
-      this.database.prepare("UPDATE tasks SET status = 'cancelled', lease_id = NULL, fencing_token = NULL, worker_id = NULL, updated_at = ?, revision = ? WHERE task_id = ?")
-        .run(eventAt, revision, taskId);
-    });
-    return clone(this._task(taskId));
+    this.store.tx(() => this._cancel(taskId, { reason: reason ?? null }));
+    return this._task(taskId);
   }
 
+  /** A cancel the page sent, replay-safe by its command id. */
   async commandTask({ taskId, commandId, type, expectedRevision = null, reason = null }) {
-    if (typeof commandId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(commandId)) {
-      throw codedError("INVALID_COMMAND_ID", "A safe commandId is required");
-    }
+    if (typeof commandId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(commandId)) throw codedError("INVALID_COMMAND_ID", "A safe commandId is required");
     if (type !== "cancel") throw codedError("UNSUPPORTED_TASK_COMMAND", `Unsupported task command: ${type}`);
-    const safeReason = bounded(reason, "cancel reason");
-    const replayed = this._transaction(() => {
-      const existing = this.database.prepare("SELECT * FROM task_commands WHERE command_id = ?").get(commandId);
-      if (existing) {
-        if (existing.task_id !== taskId || existing.type !== type) throw codedError("COMMAND_ID_CONFLICT", "commandId was already used for another command");
+    const replayed = this.store.tx(() => {
+      const earlier = this.db.prepare("SELECT work_id FROM events WHERE type = 'command' AND json_extract(data_json, '$.commandId') = ?").get(commandId);
+      if (earlier) {
+        if (earlier.work_id !== taskId) throw codedError("COMMAND_ID_CONFLICT", "commandId was already used for another command");
         return true;
       }
       const row = this._requireRow(taskId);
       if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || row.revision !== expectedRevision)) {
         throw codedError("TASK_REVISION_CONFLICT", `Expected task revision ${expectedRevision}, found ${row.revision}`);
       }
-      const timestamp = new Date().toISOString();
-      this.database.prepare("INSERT INTO task_commands (command_id, task_id, type, expected_revision, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(commandId, taskId, type, expectedRevision, JSON.stringify({ reason: safeReason }), timestamp);
-      if (!["completed", "failed", "cancelled"].includes(row.status)) {
-        const revision = this._nextRevision();
-        const eventAt = this._addEvent(taskId, "cancelled", { reason: safeReason, commandId });
-        this.database.prepare("UPDATE tasks SET status = 'cancelled', lease_id = NULL, fencing_token = NULL, worker_id = NULL, updated_at = ?, revision = ? WHERE task_id = ?")
-          .run(eventAt, revision, taskId);
-      }
+      this.store.event({ type: "command", workId: taskId, data: { commandId, type, expectedRevision, reason } });
+      this._cancel(taskId, { reason, commandId });
       return false;
     });
-    return { replayed, task: clone(this._task(taskId)) };
+    return { replayed, task: this._task(taskId) };
   }
 
   async readArtifact(artifactId) {
-    if (typeof artifactId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(artifactId)) {
-      throw codedError("INVALID_ARTIFACT_ID", "A safe artifact id is required");
-    }
-    const rows = this.database.prepare("SELECT task_id, artifacts_json FROM tasks WHERE status = 'completed'").all();
-    for (const row of rows) {
-      const receipt = parseJson(row.artifacts_json, []).find((candidate) => candidate.artifactId === artifactId);
-      if (!receipt) continue;
-      const contents = await verifyReceipt(this.artifactRoot, receipt);
-      return { taskId: row.task_id, receipt: clone(receipt), filename: basename(receipt.relativePath), contents };
-    }
-    throw codedError("ARTIFACT_NOT_FOUND", `Unknown artifact: ${artifactId}`);
+    if (typeof artifactId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(artifactId)) throw codedError("INVALID_ARTIFACT_ID", "A safe artifact id is required");
+    const row = this.db.prepare("SELECT f.* FROM files f JOIN work w ON w.work_id = f.work_id WHERE f.file_id = ? AND w.status = 'completed'").get(artifactId);
+    if (!row) throw codedError("ARTIFACT_NOT_FOUND", `Unknown artifact: ${artifactId}`);
+    const receipt = receiptOf(row);
+    const contents = await verifyReceipt(this.artifactRoot, receipt);
+    return { taskId: row.work_id, receipt, filename: basename(receipt.relativePath), contents };
   }
 
+  /** After a restart, every run that was live goes back to the queue. */
   async recover() {
-    const recoveredTaskIds = this._transaction(() => {
-      const rows = this.database.prepare("SELECT * FROM tasks WHERE status IN ('leased', 'running', 'verifying') ORDER BY created_at ASC, task_id ASC").all();
-      const ids = [];
-      for (const row of rows) {
-        const revision = this._nextRevision();
-        const eventAt = this._addEvent(row.task_id, "recovered", { previousRunId: row.run_id ?? null });
-        this.database.prepare("UPDATE tasks SET status = 'queued', lease_id = NULL, fencing_token = NULL, worker_id = NULL, updated_at = ?, revision = ? WHERE task_id = ?")
-          .run(eventAt, revision, row.task_id);
-        ids.push(row.task_id);
-      }
-      return ids;
-    });
+    const recoveredTaskIds = this.store.tx(() => this.db.prepare("SELECT * FROM work WHERE status IN ('leased', 'running', 'verifying') ORDER BY created_at, work_id").all().map((row) => {
+      this._change(row.work_id, "recovered", { previousRunId: row.run_id ?? null }, { status: "queued", lease_id: null, fencing_token: null, worker_id: null });
+      return row.work_id;
+    }));
     return { recoveredTaskIds };
   }
 
   async requeueTask({ taskId, runId = null, fencingToken, reason = "interrupted" }) {
-    const safeReason = bounded(reason, "requeue reason");
-    this._transaction(() => {
+    this.store.tx(() => {
       const row = this._requireRow(taskId);
       this._assertToken(row, fencingToken);
-      if (ACTIVE_RUN_STATES.includes(row.status) && runId && row.run_id !== runId) {
-        throw codedError("INVALID_TASK_TRANSITION", "Only the current run can be requeued");
-      }
+      if (ACTIVE_RUN_STATES.includes(row.status) && runId && row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", "Only the current run can be requeued");
       if (!["leased", ...ACTIVE_RUN_STATES].includes(row.status)) throw codedError("INVALID_TASK_TRANSITION", `Cannot requeue task in ${row.status}`);
-      const revision = this._nextRevision();
-      const eventAt = this._addEvent(taskId, "interrupted", { previousRunId: row.run_id ?? null, reason: safeReason });
-      this.database.prepare("UPDATE tasks SET status = 'queued', lease_id = NULL, fencing_token = NULL, worker_id = NULL, run_id = NULL, started_at = NULL, updated_at = ?, revision = ? WHERE task_id = ?")
-        .run(eventAt, revision, taskId);
+      this._change(taskId, "interrupted", { previousRunId: row.run_id ?? null, reason }, { status: "queued", lease_id: null, fencing_token: null, worker_id: null, run_id: null, started_at: null });
     });
-    return clone(this._task(taskId));
+    return this._task(taskId);
   }
 
   async getTask(taskId) {
-    return clone(this._task(taskId));
+    return this._task(taskId);
   }
 
-  async listTasks() {
-    return clone(this.database.prepare("SELECT * FROM tasks ORDER BY created_at ASC, task_id ASC").all().map((row) => this._taskFromRow(row)));
+  /** All work, oldest first; `parentId` narrows it to the pieces under one goal. */
+  async listTasks({ parentId = null } = {}) {
+    const rows = parentId
+      ? this.db.prepare("SELECT * FROM work WHERE parent_id = ? ORDER BY created_at, work_id").all(parentId)
+      : this.db.prepare("SELECT * FROM work ORDER BY created_at, work_id").all();
+    return rows.map((row) => this._taskFromRow(row));
   }
 
   async snapshot() {
-    const revision = this.database.prepare("SELECT value FROM supervisor_meta WHERE key = 'revision'").get().value;
-    const tasks = this.database.prepare("SELECT * FROM tasks ORDER BY created_at ASC, task_id ASC").all().map((row) => this._taskFromRow(row));
-    return clone({ revision, tasks });
-  }
-
-  async getSnapshot() {
-    return this.snapshot();
+    return { revision: this.store.counter("work"), tasks: await this.listTasks() };
   }
 }

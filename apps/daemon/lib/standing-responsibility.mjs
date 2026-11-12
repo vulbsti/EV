@@ -1,7 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
-import { dirname } from "node:path";
-import { ensurePrivateDirectorySync, secureDatabaseFilesSync } from "./file-permissions.mjs";
+import { codedError, parse } from "./store.mjs";
 
 /**
  * Provider-neutral Phase 4 boundary.
@@ -11,107 +9,6 @@ import { ensurePrivateDirectorySync, secureDatabaseFilesSync } from "./file-perm
  * data. A material change can create a queued, prepare-only task receipt;
  * execution is deliberately left to the task/worker service.
  */
-
-const SCHEMA = `
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-
-CREATE TABLE IF NOT EXISTS standing_meta (
-  key TEXT PRIMARY KEY,
-  value INTEGER NOT NULL
-);
-INSERT INTO standing_meta (key, value) VALUES ('revision', 0)
-  ON CONFLICT(key) DO NOTHING;
-
-CREATE TABLE IF NOT EXISTS standing_responsibilities (
-  responsibility_id TEXT PRIMARY KEY,
-  owner_id TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('active', 'revoked', 'expired')),
-  mandate_version INTEGER NOT NULL,
-  mandate_json TEXT NOT NULL,
-  last_source_revision TEXT,
-  last_cursor TEXT,
-  last_material_hash TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  revoked_at TEXT,
-  revoke_reason TEXT,
-  revision INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS standing_observations (
-  observation_id TEXT PRIMARY KEY,
-  responsibility_id TEXT NOT NULL REFERENCES standing_responsibilities(responsibility_id),
-  mandate_version INTEGER NOT NULL,
-  source_revision TEXT NOT NULL,
-  cursor TEXT,
-  state TEXT NOT NULL CHECK (state IN ('fresh', 'unchanged', 'stale', 'no_data', 'out_of_order', 'duplicate', 'conflict', 'revoked')),
-  material_change INTEGER NOT NULL CHECK (material_change IN (0, 1)),
-  payload_json TEXT NOT NULL,
-  payload_hash TEXT NOT NULL,
-  material_hash TEXT,
-  observed_at TEXT,
-  received_at TEXT NOT NULL,
-  reason TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS standing_observation_source
-  ON standing_observations(responsibility_id, source_revision);
-CREATE INDEX IF NOT EXISTS standing_observation_order
-  ON standing_observations(responsibility_id, received_at, observation_id);
-
-CREATE TABLE IF NOT EXISTS standing_prepared_tasks (
-  task_id TEXT PRIMARY KEY,
-  responsibility_id TEXT NOT NULL REFERENCES standing_responsibilities(responsibility_id),
-  observation_id TEXT NOT NULL REFERENCES standing_observations(observation_id),
-  mandate_version INTEGER NOT NULL,
-  source_revision TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('queued', 'revoked', 'consumed')),
-  input_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  supervisor_task_id TEXT,
-  consumed_at TEXT,
-  submission_confirmed_at TEXT,
-  UNIQUE (responsibility_id, source_revision)
-);
-CREATE INDEX IF NOT EXISTS standing_task_order
-  ON standing_prepared_tasks(responsibility_id, created_at, task_id);
-
-CREATE TABLE IF NOT EXISTS standing_events (
-  event_id TEXT PRIMARY KEY,
-  responsibility_id TEXT NOT NULL REFERENCES standing_responsibilities(responsibility_id),
-  type TEXT NOT NULL,
-  data_json TEXT NOT NULL,
-  at TEXT NOT NULL,
-  revision INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS standing_event_order
-  ON standing_events(responsibility_id, revision, event_id);
-CREATE UNIQUE INDEX IF NOT EXISTS standing_active_resource
-  ON standing_responsibilities(
-    owner_id,
-    json_extract(mandate_json, '$.resourceRef'),
-    json_extract(mandate_json, '$.reportingDestination')
-  ) WHERE status = 'active';
-`;
-
-function codedError(code, message) {
-  return Object.assign(new Error(message), { code });
-}
-
-function clone(value) {
-  return structuredClone(value);
-}
-
-function json(value, name, maxBytes = 128_000) {
-  let encoded;
-  try { encoded = JSON.stringify(value ?? null); } catch { throw codedError("INVALID_INPUT", `${name} must be JSON-serializable`); }
-  if (Buffer.byteLength(encoded) > maxBytes) throw codedError("PAYLOAD_TOO_LARGE", `${name} exceeds ${maxBytes} bytes`);
-  return encoded;
-}
-
-function parse(value, fallback = null) {
-  return value === null || value === undefined ? fallback : JSON.parse(value);
-}
 
 function requiredText(value, name) {
   if (typeof value !== "string" || !value.trim()) throw codedError("INVALID_INPUT", `${name} must be a non-empty string`);
@@ -260,28 +157,17 @@ function mapTask(row) {
 
 /** Durable mandate/reconciliation boundary for one read-only standing source. */
 export class StandingResponsibilityStore {
-  static open({ path = ":memory:", clock = () => new Date() } = {}) {
-    if (path !== ":memory:") ensurePrivateDirectorySync(dirname(path));
-    const database = new DatabaseSync(path);
-    if (path !== ":memory:") secureDatabaseFilesSync(path);
-    database.exec(SCHEMA);
-    if (path !== ":memory:") secureDatabaseFilesSync(path);
-    // Additive migration for ledgers created before supervisor task links
-    // existed. No historical receipt is rewritten by this migration.
-    const columns = database.prepare("PRAGMA table_info(standing_prepared_tasks)").all().map((column) => column.name);
-    if (!columns.includes("supervisor_task_id")) database.exec("ALTER TABLE standing_prepared_tasks ADD COLUMN supervisor_task_id TEXT");
-    if (!columns.includes("consumed_at")) database.exec("ALTER TABLE standing_prepared_tasks ADD COLUMN consumed_at TEXT");
-    if (!columns.includes("submission_confirmed_at")) database.exec("ALTER TABLE standing_prepared_tasks ADD COLUMN submission_confirmed_at TEXT");
-    return new StandingResponsibilityStore({ path, clock, database });
+  static open({ store, clock = () => new Date() }) {
+    return new StandingResponsibilityStore({ store, clock });
   }
 
-  constructor({ path, clock, database }) {
-    this.path = path;
+  constructor({ store, clock = () => new Date() }) {
+    this.store = store;
+    this.database = store.db;
     this.clock = clock;
-    this.database = database;
   }
 
-  close() { this.database.close(); }
+  close() {}
 
   _now() {
     const value = this.clock();
@@ -289,35 +175,18 @@ export class StandingResponsibilityStore {
   }
 
   _transaction(callback) {
-    this.database.exec("BEGIN IMMEDIATE");
-    try {
-      const result = callback();
-      this.database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      try { this.database.exec("ROLLBACK"); } catch { /* preserve original */ }
-      throw error;
-    }
+    return this.store.tx(callback);
   }
 
-  _nextRevision() {
-    const current = this.database.prepare("SELECT value FROM standing_meta WHERE key = 'revision'").get().value;
-    const next = current + 1;
-    this.database.prepare("UPDATE standing_meta SET value = ? WHERE key = 'revision'").run(next);
-    return next;
-  }
-
-  _event(responsibilityId, type, data) {
-    const at = this._now();
-    const revision = this._nextRevision();
-    this.database.prepare("INSERT INTO standing_events (event_id, responsibility_id, type, data_json, at, revision) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(randomUUID(), responsibilityId, type, json(data, "event"), at, revision);
+  /** Writes one event about this responsibility and returns the new revision it carries. */
+  _event(responsibilityId, type, data = {}) {
+    const revision = this.store.bump("standing");
+    const { at } = this.store.event({ type, responsibilityId, data: { ...data, revision } });
     return { at, revision };
   }
 
   _events(responsibilityId) {
-    return this.database.prepare("SELECT * FROM standing_events WHERE responsibility_id = ? ORDER BY revision ASC")
-      .all(responsibilityId).map((row) => ({ eventId: row.event_id, type: row.type, data: parse(row.data_json, {}), at: row.at, revision: row.revision }));
+    return this.store.events({ responsibilityId }).map(({ eventId, type, at, data: { revision, ...data } }) => ({ eventId, type, data, at, revision }));
   }
 
   _row(responsibilityId) {
@@ -361,13 +230,12 @@ export class StandingResponsibilityStore {
     try {
       this._transaction(() => {
         if (this._row(responsibilityId)) throw codedError("RESPONSIBILITY_EXISTS", `Responsibility ${responsibilityId} already exists`);
-        const revision = this._nextRevision();
         this.database.prepare(`INSERT INTO standing_responsibilities
           (responsibility_id, owner_id, status, mandate_version, mandate_json, created_at, updated_at, revision)
-          VALUES (?, ?, 'active', 1, ?, ?, ?, ?)`)
-          .run(responsibilityId, ownerId, json(normalized, "mandate"), now, now, revision);
-        this.database.prepare("INSERT INTO standing_events (event_id, responsibility_id, type, data_json, at, revision) VALUES (?, ?, ?, ?, ?, ?)")
-          .run(randomUUID(), responsibilityId, "created", "{}", now, revision);
+          VALUES (?, ?, 'active', 1, ?, ?, ?, 0)`)
+          .run(responsibilityId, ownerId, JSON.stringify(normalized), now, now);
+        const { revision } = this._event(responsibilityId, "created");
+        this.database.prepare("UPDATE standing_responsibilities SET revision = ? WHERE responsibility_id = ?").run(revision, responsibilityId);
         this._expireRowIfDue(this._row(responsibilityId), now);
       });
     } catch (error) {
@@ -388,7 +256,7 @@ export class StandingResponsibilityStore {
       const nextVersion = row.mandate_version + 1;
       const event = this._event(responsibilityId, "mandate_revised", { fromVersion: row.mandate_version, toVersion: nextVersion });
       this.database.prepare("UPDATE standing_responsibilities SET mandate_version = ?, mandate_json = ?, updated_at = ?, revision = ? WHERE responsibility_id = ?")
-        .run(nextVersion, json(normalized, "mandate"), event.at, event.revision, responsibilityId);
+        .run(nextVersion, JSON.stringify(normalized), event.at, event.revision, responsibilityId);
       this.database.prepare("UPDATE standing_prepared_tasks SET status = 'revoked' WHERE responsibility_id = ? AND status = 'queued' AND mandate_version <> ?")
         .run(responsibilityId, nextVersion);
       this._expireRowIfDue(this._row(responsibilityId), event.at);
@@ -421,7 +289,7 @@ export class StandingResponsibilityStore {
       const sourceRevision = String(observation?.sourceRevision ?? "state:no-data");
       const cursor = observation?.cursor === undefined || observation?.cursor === null ? null : String(observation.cursor);
       const payload = observation?.payload ?? null;
-      const payloadJson = json(payload, "source payload");
+      const payloadJson = JSON.stringify(payload);
       const payloadHash = hash(payload);
       const observedAt = observation?.observedAt ? iso(observation.observedAt, "observation.observedAt") : null;
       const explicitState = observation?.state ?? (observation?.noData ? "no_data" : "fresh");
@@ -463,15 +331,13 @@ export class StandingResponsibilityStore {
       }
 
       const observationId = randomUUID();
-      const revision = this._nextRevision();
       this.database.prepare(`INSERT INTO standing_observations
         (observation_id, responsibility_id, mandate_version, source_revision, cursor, state, material_change,
          payload_json, payload_hash, material_hash, observed_at, received_at, reason)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(observationId, responsibilityId, row.mandate_version, sourceRevision, cursor, state, isMaterial ? 1 : 0,
           payloadJson, payloadHash, incomingMaterialHash, observedAt, receivedAt, reason);
-      this.database.prepare("INSERT INTO standing_events (event_id, responsibility_id, type, data_json, at, revision) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(randomUUID(), responsibilityId, "observed", json({ observationId, sourceRevision, state, materialChange: isMaterial }, "event"), receivedAt, revision);
+      const { revision } = this._event(responsibilityId, "observed", { observationId, sourceRevision, state, materialChange: isMaterial });
 
       let task = null;
       if (isMaterial && state === "fresh") {
@@ -494,7 +360,7 @@ export class StandingResponsibilityStore {
         this.database.prepare(`INSERT INTO standing_prepared_tasks
           (task_id, responsibility_id, observation_id, mandate_version, source_revision, status, input_json, created_at)
           VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`)
-          .run(taskId, responsibilityId, observationId, row.mandate_version, sourceRevision, json(input, "prepared task input"), receivedAt);
+          .run(taskId, responsibilityId, observationId, row.mandate_version, sourceRevision, JSON.stringify(input), receivedAt);
         task = mapTask(this.database.prepare("SELECT * FROM standing_prepared_tasks WHERE task_id = ?").get(taskId));
       }
 
@@ -506,12 +372,12 @@ export class StandingResponsibilityStore {
       }
       return { observation: mapObservation(this.database.prepare("SELECT * FROM standing_observations WHERE observation_id = ?").get(observationId)), task, deduped: false };
     });
-    return clone(result);
+    return result;
   }
 
   async getResponsibility(responsibilityId) {
     const row = this._expireDueAndGet(responsibilityId);
-    return clone(mapResponsibility(row, this._events(responsibilityId)));
+    return mapResponsibility(row, this._events(responsibilityId));
   }
 
   _expireDueAndGet(responsibilityId) {
@@ -535,12 +401,12 @@ export class StandingResponsibilityStore {
     const rows = status
       ? this.database.prepare("SELECT * FROM standing_responsibilities WHERE status = ? ORDER BY created_at ASC, responsibility_id ASC").all(status)
       : this.database.prepare("SELECT * FROM standing_responsibilities ORDER BY created_at ASC, responsibility_id ASC").all();
-    return clone(rows.map((row) => mapResponsibility(row, this._events(row.responsibility_id))));
+    return rows.map((row) => mapResponsibility(row, this._events(row.responsibility_id)));
   }
 
   async getObservation(observationId) {
     const row = this.database.prepare("SELECT * FROM standing_observations WHERE observation_id = ?").get(observationId);
-    return clone(mapObservation(row));
+    return mapObservation(row);
   }
 
   async listObservations({ responsibilityId = null, limit = 20 } = {}) {
@@ -548,7 +414,7 @@ export class StandingResponsibilityStore {
     const rows = responsibilityId
       ? this.database.prepare("SELECT * FROM standing_observations WHERE responsibility_id = ? ORDER BY received_at DESC, observation_id DESC LIMIT ?").all(responsibilityId, limit)
       : this.database.prepare("SELECT * FROM standing_observations ORDER BY received_at DESC, observation_id DESC LIMIT ?").all(limit);
-    return clone(rows.map(mapObservation));
+    return rows.map(mapObservation);
   }
 
   async recordWakeFailure({ responsibilityId, error }) {
@@ -560,12 +426,12 @@ export class StandingResponsibilityStore {
       this._require(responsibilityId);
       event = this._event(responsibilityId, "wake_failed", { code, message });
     });
-    return clone(event);
+    return event;
   }
 
   async getPreparedTask(taskId) {
     this._expireDueResponsibilities();
-    return clone(mapTask(this.database.prepare("SELECT * FROM standing_prepared_tasks WHERE task_id = ?").get(taskId)));
+    return mapTask(this.database.prepare("SELECT * FROM standing_prepared_tasks WHERE task_id = ?").get(taskId));
   }
 
   /**
@@ -579,7 +445,7 @@ export class StandingResponsibilityStore {
   async consumePreparedTask({ taskId, supervisorTaskId }) {
     requiredText(taskId, "taskId");
     requiredText(supervisorTaskId, "supervisorTaskId");
-    return clone(this._transaction(() => {
+    return this._transaction(() => {
       const row = this.database.prepare("SELECT * FROM standing_prepared_tasks WHERE task_id = ?").get(taskId);
       if (!row) throw codedError("PREPARED_TASK_NOT_FOUND", `Unknown prepared task: ${taskId}`);
       if (row.status === "consumed") {
@@ -600,13 +466,13 @@ export class StandingResponsibilityStore {
       this.database.prepare("UPDATE standing_prepared_tasks SET status = 'consumed', supervisor_task_id = ?, consumed_at = ? WHERE task_id = ?")
         .run(supervisorTaskId, now, taskId);
       return mapTask(this.database.prepare("SELECT * FROM standing_prepared_tasks WHERE task_id = ?").get(taskId));
-    }));
+    });
   }
 
   async confirmPreparedTaskSubmission({ taskId, supervisorTaskId }) {
     requiredText(taskId, "taskId");
     requiredText(supervisorTaskId, "supervisorTaskId");
-    return clone(this._transaction(() => {
+    return this._transaction(() => {
       const row = this.database.prepare("SELECT * FROM standing_prepared_tasks WHERE task_id = ?").get(taskId);
       if (!row) throw codedError("PREPARED_TASK_NOT_FOUND", `Unknown prepared task: ${taskId}`);
       const responsibility = this._expireRowIfDue(this._require(row.responsibility_id));
@@ -621,7 +487,7 @@ export class StandingResponsibilityStore {
           .run(this._now(), taskId);
       }
       return mapTask(this.database.prepare("SELECT * FROM standing_prepared_tasks WHERE task_id = ?").get(taskId));
-    }));
+    });
   }
 
   async listPreparedTasks({ responsibilityId = null, status = null } = {}) {
@@ -631,7 +497,7 @@ export class StandingResponsibilityStore {
     if (responsibilityId) { clauses.push("responsibility_id = ?"); args.push(responsibilityId); }
     if (status) { clauses.push("status = ?"); args.push(status); }
     const query = `SELECT * FROM standing_prepared_tasks${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY created_at ASC, task_id ASC`;
-    return clone(this.database.prepare(query).all(...args).map(mapTask));
+    return this.database.prepare(query).all(...args).map(mapTask);
   }
 }
 

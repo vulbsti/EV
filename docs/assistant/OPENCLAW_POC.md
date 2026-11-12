@@ -21,7 +21,7 @@ Ordinary requests use one executor. When assignments are independent, the manage
 Every agent on one goal works under one directory:
 
 ```text
-data/assistant-worker/workspaces/<goal>/
+data/work/workspaces/<goal>/
   shared/          written only by EV
     BRIEF.md       the mediator's brief
     CONTEXT.md     guidance, recent conversation, the request
@@ -30,7 +30,7 @@ data/assistant-worker/workspaces/<goal>/
   tasks/<taskId>/  one agent's own working directory
 ```
 
-Agents are told to read the shared files first, may read a teammate's directory, and write only in their own. EV serializes writes to `shared/` per goal and replaces files atomically, so an agent never reads a half-written brief. `TEAM.md` is regenerated from supervisor state whenever an agent is added or finishes. Tasks created before this layout keep their old one-directory-per-task workspace.
+Agents are told to read the shared files first, may read a teammate's directory, and write only in their own. EV serializes writes to `shared/` per goal and replaces files atomically, so an agent never reads a half-written brief. `TEAM.md` is regenerated from supervisor state whenever an agent is added or finishes.
 
 ### Admission control
 

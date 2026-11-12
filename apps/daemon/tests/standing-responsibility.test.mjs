@@ -6,11 +6,18 @@ import { join } from "node:path";
 
 import { LocalStandingConnector } from "../lib/local-standing-connector.mjs";
 import { StandingResponsibilityStore } from "../lib/standing-responsibility.mjs";
+import { openStore } from "../lib/store.mjs";
+
+/** The standing store on its own connection to the file at `path`; close() closes that connection. */
+function openStanding(path, options = {}) {
+  const store = openStore({ path });
+  return Object.assign(StandingResponsibilityStore.open({ store, ...options }), { close: () => store.close() });
+}
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "ev-standing-"));
   let now = new Date("2026-09-21T10:00:00.000Z");
-  const store = StandingResponsibilityStore.open({ path: join(root, "standing.sqlite"), clock: () => now });
+  const store = openStanding(join(root, "ev.sqlite"), { clock: () => now });
   const connector = new LocalStandingConnector({ clock: () => now });
   return {
     root, store, connector,

@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
-import { AssistantMemoryStore } from "../lib/assistant-memory.mjs";
 import { AssistantSupervisor } from "../lib/assistant-supervisor.mjs";
+import { openStore } from "../lib/store.mjs";
 import { assertLoopbackHost, PRIVATE_MODES, securePrivateTreeSync } from "../lib/file-permissions.mjs";
 import { localRequestRejection } from "../lib/local-request-guard.mjs";
 import { openClawCommand } from "../lib/openclaw-worker-adapter.mjs";
@@ -16,37 +16,32 @@ async function mode(path) {
 
 test("private data startup corrects existing directory, database, session, and artifact modes", async () => {
   const root = await mkdtemp(join(tmpdir(), "ev-security-boundary-"));
-  const workerRoot = join(root, "worker");
-  const artifactRoot = join(workerRoot, "artifacts");
+  const workerRoot = join(root, "work");
+  const artifactRoot = join(root, "files");
   const sessionRoot = join(workerRoot, "sessions");
-  const statePath = join(workerRoot, "supervisor.sqlite");
-  const memoryPath = join(root, "memory.sqlite");
+  const path = join(root, "ev.sqlite");
   try {
     await mkdir(workerRoot, { recursive: true, mode: 0o755 });
-    const initialSupervisor = await AssistantSupervisor.open({ statePath, artifactRoot });
-    initialSupervisor.close();
-    const initialMemory = AssistantMemoryStore.open({ path: memoryPath });
-    initialMemory.close();
+    const initial = openStore({ path });
+    await AssistantSupervisor.open({ store: initial, artifactRoot });
+    initial.close();
     await chmod(root, 0o755);
-    await chmod(workerRoot, 0o755);
     await chmod(artifactRoot, 0o755);
-    await chmod(statePath, 0o644);
-    await chmod(memoryPath, 0o644);
+    await chmod(path, 0o644);
 
-    const supervisor = await AssistantSupervisor.open({ statePath, artifactRoot });
-    assert.equal(await mode(workerRoot), PRIVATE_MODES.directory);
+    const store = openStore({ path });
+    await AssistantSupervisor.open({ store, artifactRoot });
+    assert.equal(await mode(root), PRIVATE_MODES.directory);
     assert.equal(await mode(artifactRoot), PRIVATE_MODES.directory);
-    assert.equal(await mode(statePath), PRIVATE_MODES.file);
-    supervisor.close();
-
-    const memory = AssistantMemoryStore.open({ path: memoryPath });
-    assert.equal(await mode(memoryPath), PRIVATE_MODES.file);
-    memory.close();
+    assert.equal(await mode(path), PRIVATE_MODES.file);
+    store.close();
 
     await writeFile(join(artifactRoot, "old.md"), "private", { mode: 0o644 });
     await mkdir(sessionRoot, { recursive: true, mode: 0o755 });
     await writeFile(join(sessionRoot, "old.json"), "private", { mode: 0o644 });
     securePrivateTreeSync(workerRoot);
+    securePrivateTreeSync(artifactRoot);
+    assert.equal(await mode(workerRoot), PRIVATE_MODES.directory);
     assert.equal(await mode(sessionRoot), PRIVATE_MODES.directory);
     assert.equal(await mode(join(sessionRoot, "old.json")), PRIVATE_MODES.file);
     assert.equal(await mode(join(artifactRoot, "old.md")), PRIVATE_MODES.file);

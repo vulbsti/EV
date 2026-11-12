@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadDotEnv } from "./lib/env.mjs";
-import { createAssistantLedger } from "./lib/assistant-ledger.mjs";
+import { openStore } from "./lib/store.mjs";
 import { AssistantSupervisor } from "./lib/assistant-supervisor.mjs";
 import { AssistantWorkerService } from "./lib/assistant-worker-service.mjs";
 import { executionPrompt, normalizeTaskPlan } from "./lib/ev-task-manager.mjs";
@@ -28,14 +28,12 @@ const configuredHost = assertLoopbackHost(process.env.EV_HOST ?? "127.0.0.1");
 const dataRoot = resolve(process.env.EV_DATA_DIR ?? join(projectRoot, "data"));
 ensurePrivateDirectorySync(dataRoot);
 const daemonToken = createDaemonToken({ dataRoot });
-const assistantLedger = createAssistantLedger({ path: join(dataRoot, "assistant.sqlite") });
-const assistantWorkerRoot = join(dataRoot, "assistant-worker");
-const artifactRoot = join(assistantWorkerRoot, "artifacts");
-const assistantSupervisor = await AssistantSupervisor.open({
-  statePath: join(assistantWorkerRoot, "supervisor-state.sqlite"),
-  artifactRoot
-});
-const assistantMemory = AssistantMemoryStore.open({ path: join(dataRoot, "assistant-memory.sqlite") });
+// Everything EV keeps: one SQLite file, delivered files beside it, and one
+// folder per piece of work (its workspace, session and home).
+const store = openStore({ path: join(dataRoot, "ev.sqlite") });
+const assistantWorkerRoot = join(dataRoot, "work");
+const assistantSupervisor = await AssistantSupervisor.open({ store, artifactRoot: join(dataRoot, "files") });
+const assistantMemory = AssistantMemoryStore.open({ store });
 const assistantOwnerId = "default-person";
 // Learns from every turn and settled task in the background; picks up events
 // left unanalysed by a restart.
@@ -43,7 +41,7 @@ const memoryLearner = new MemoryLearner({ memory: assistantMemory, ownerId: assi
 memoryLearner.kick();
 const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate });
 await assistantWorkers.start();
-const standingStore = StandingResponsibilityStore.open({ path: join(dataRoot, "assistant-standing.sqlite") });
+const standingStore = StandingResponsibilityStore.open({ store });
 const githubStandingConnector = new GitHubPullRequestConnector();
 const assistantTurnInFlight = new Map();
 
@@ -163,47 +161,36 @@ async function publicResponsibility(responsibility) {
   };
 }
 
-function taskIdForClientMessage(clientMessageId, capability = null) {
-  const prefix = capability === "openclaw-general-v1" ? "agent" : "launch";
-  return `${prefix}-${createHash("sha256").update(clientMessageId).digest("hex").slice(0, 24)}`;
+/** The work a turn started (not work it was only sent into). */
+async function startedWork(turn) {
+  return turn.intent?.route === "worker" && turn.workId ? assistantSupervisor.getTask(turn.workId).catch(() => null) : null;
 }
 
-async function taskForTurn(turn) {
-  if (turn.intent?.route !== "worker") return turn.task;
-  return assistantSupervisor.getTask(taskIdForClientMessage(turn.userMessage.clientMessageId, turn.intent.payload?.capability)).catch(() => null);
-}
-
+/**
+ * The conversation as the page shows it. A message carries the work it
+ * started, was sent into or reports on, so the page can show that work's
+ * result under it.
+ */
 async function publicConversation(conversationId = "default", afterSequence = 0) {
-  const turns = assistantLedger.listTurns(conversationId);
-  const linkedTasks = new Map(await Promise.all(turns.map(async (turn) => [turn.userMessage.messageId, await taskForTurn(turn)])));
-  const allMessages = turns.flatMap((turn) => [
-    { ...turn.userMessage, status: "received" },
-    {
-      ...turn.assistantMessage,
-      status: linkedTasks.get(turn.userMessage.messageId)?.status ?? "answered",
-      taskId: linkedTasks.get(turn.userMessage.messageId)?.taskId ?? null,
-      taskStatus: linkedTasks.get(turn.userMessage.messageId)?.status ?? null
-    }
-  ]).concat(assistantLedger.listUpdates(conversationId).map((message) => ({ ...message, status: "update", taskId: null, taskStatus: null })))
-    .sort((left, right) => left.sequence - right.sequence);
-  return {
-    messages: allMessages.filter((message) => message.sequence > afterSequence),
-    revision: allMessages.at(-1)?.sequence ?? 0
-  };
+  const messages = store.listMessages(conversationId);
+  const tasks = new Map();
+  for (const taskId of new Set(messages.map((message) => message.taskId).filter(Boolean))) tasks.set(taskId, await assistantSupervisor.getTask(taskId).catch(() => null));
+  const all = messages.map(({ intent, replyTo, ...message }) => {
+    const task = tasks.get(message.taskId) ?? null;
+    const status = message.role === "user" ? "received" : replyTo ? task?.status ?? "answered" : "update";
+    return { ...message, status, taskId: task?.taskId ?? null, taskStatus: task?.status ?? null };
+  });
+  return { messages: all.filter((message) => message.sequence > afterSequence), revision: all.at(-1)?.sequence ?? 0 };
 }
 
 async function publicTurn(turn) {
-  const task = await taskForTurn(turn);
+  const task = turn.workId ? await assistantSupervisor.getTask(turn.workId).catch(() => null) : null;
+  const strip = ({ intent, replyTo, ...message }) => message;
   return {
     replayed: turn.replayed,
     messages: [
-      { ...turn.userMessage, status: "received" },
-      {
-        ...turn.assistantMessage,
-        status: task?.status ?? "answered",
-        taskId: task?.taskId ?? null,
-        taskStatus: task?.status ?? null
-      }
+      { ...strip(turn.userMessage), status: "received" },
+      { ...strip(turn.assistantMessage), status: task?.status ?? "answered", taskId: task?.taskId ?? null, taskStatus: task?.status ?? null }
     ],
     task: publicTask(task)
   };
@@ -221,11 +208,11 @@ function verificationForRequest(request) {
  * updates are part of the conversation too.
  */
 async function recentConversation(conversationId, clientMessageId, limit = 6) {
-  const turns = assistantLedger.listTurns(conversationId).filter((turn) => turn.userMessage.clientMessageId !== clientMessageId).slice(-limit);
+  const turns = store.listTurns(conversationId).filter((turn) => turn.userMessage.clientMessageId !== clientMessageId).slice(-limit);
   const entries = [];
   for (const turn of turns) {
     const lines = [`User: ${String(turn.userMessage.content ?? "").slice(0, 800)}`];
-    const task = await taskForTurn(turn);
+    const task = await startedWork(turn);
     const report = task?.result?.report;
     if (report) lines.push(`EV (${report.outcome}): ${String(report.answer ?? "").slice(0, 600)}`);
     else if (task) lines.push(`EV: task ${task.status}${task.error?.message ? ` (${task.error.message})` : ""}`);
@@ -233,10 +220,15 @@ async function recentConversation(conversationId, clientMessageId, limit = 6) {
     entries.push({ sequence: turn.userMessage.sequence, text: lines.join("\n") });
   }
   const since = turns[0]?.userMessage.sequence ?? 0;
-  for (const update of assistantLedger.listUpdates(conversationId).filter((message) => message.sequence > since)) {
+  for (const update of updates(conversationId).filter((message) => message.sequence > since)) {
     entries.push({ sequence: update.sequence, text: `EV (update): ${String(update.content).slice(0, 400)}` });
   }
   return entries.sort((left, right) => left.sequence - right.sequence).map((entry) => entry.text).join("\n");
+}
+
+/** Messages EV posted on its own (work finished, work stuck), oldest first. */
+function updates(conversationId) {
+  return store.listMessages(conversationId).filter((message) => message.role === "assistant" && !message.replyTo);
 }
 
 /** Root tasks in this conversation that are running or recently settled, numbered for `revise`. */
@@ -259,11 +251,9 @@ async function workInProgress(conversationId) {
  */
 async function understandTurn({ clientMessageId, conversationId, text }) {
   try {
-    const turns = assistantLedger.listTurns(conversationId);
-    const last = turns.at(-1);
-    const updates = assistantLedger.listUpdates(conversationId);
+    const last = store.listTurns(conversationId).at(-1);
     // An update EV posted after its question means the question is no longer the last word.
-    const alreadyAsked = last?.intent?.kind === "clarify" && !(updates.at(-1)?.sequence > last.assistantMessage.sequence);
+    const alreadyAsked = last?.intent?.kind === "clarify" && !(updates(conversationId).at(-1)?.sequence > last.assistantMessage.sequence);
     const work = await workInProgress(conversationId);
     // What the person said a moment ago ("remember I'm vegetarian") should
     // already be in memory when EV reads this message.
@@ -309,13 +299,11 @@ function postTaskUpdate(task) {
     catch (error) { console.error(`[${new Date().toISOString()}] Could not record task ${task.taskId} for memory: ${error.message}`); }
   }
   if (!content || !conversationId || task.input?.capability !== "openclaw-general-v1") return;
-  assistantLedger.recordUpdate({ conversationId, key: `settled:${task.taskId}:${task.revision}`, content, taskId: task.taskId });
+  store.recordUpdate({ conversationId, key: `settled:${task.taskId}:${task.revision}`, content, workId: task.taskId });
 }
 
-async function ensureGeneralTask({ clientMessageId, conversationId = "default", request: message, understanding = null }) {
-  const taskId = taskIdForClientMessage(clientMessageId, "openclaw-general-v1");
-  const existing = await assistantSupervisor.getTask(taskId).catch(() => null);
-  if (existing) return existing;
+async function startGeneralTask({ clientMessageId, conversationId = "default", request: message, understanding = null }) {
+  const taskId = randomUUID();
   // Agents work to EV's settled reading of the message; the person's own
   // words stay in the brief as what they literally asked.
   const request = understanding?.request || message;
@@ -354,13 +342,8 @@ async function ensureGeneralTask({ clientMessageId, conversationId = "default", 
     prompt,
     layout: "shared",
     context,
-    metadata: { clientMessageId, conversationId, sourceRequest: request, understanding, title: (understanding?.title || message).slice(0, 140), contextManifestId: manifest.manifestId, verification, memoryMode: "learned-ev-memory", reviewerMemory: forReview.text, managerMode: true }
+    metadata: { conversationId, sourceRequest: request, understanding, title: (understanding?.title || message).slice(0, 140), contextManifestId: manifest.manifestId, verification, memoryMode: "learned-ev-memory", reviewerMemory: forReview.text, managerMode: true }
   });
-}
-
-async function ensureWorkerTask({ clientMessageId, conversationId, request, capability, understanding = null }) {
-  if (capability !== "openclaw-general-v1") throw Object.assign(new Error(`No worker is registered for ${capability}`), { code: "CAPABILITY_NOT_ALLOWED" });
-  return ensureGeneralTask({ clientMessageId, conversationId, request, understanding });
 }
 
 async function createAssistantTurn({ clientMessageId, conversationId, text }) {
@@ -393,35 +376,21 @@ async function createAssistantTurn({ clientMessageId, conversationId, text }) {
           : "I couldn’t think this through just now because my model didn’t answer, so I haven’t started anything. Send it again in a moment."
     };
   }
-  if (planned.route === "worker") {
-    await ensureWorkerTask({
-      clientMessageId,
-      conversationId,
-      request: text,
-      capability: planned.capability,
-      understanding: planned.understanding ?? null
-    });
-  }
-  const turn = assistantLedger.recordTurn({
+  // The message links to the work it started, or the work it was sent into.
+  const started = planned.route === "worker"
+    ? await startGeneralTask({ clientMessageId, conversationId, request: text, understanding: planned.understanding ?? null })
+    : null;
+  const turn = store.recordTurn({
     conversationId,
     clientMessageId,
     userText: text,
     assistantText: planned.response,
-    intent: {
-      kind: planned.classification,
-      route: planned.route,
-      capability: planned.capability ?? null,
-      understanding: planned.understanding ?? null
-    },
-    route: planned.route === "worker" ? "assistant" : planned.route,
-    skipTask: planned.route === "worker",
-    taskTitle: text
+    workId: started?.taskId ?? (planned.classification === "revise" ? understanding.taskId : null),
+    intent: { kind: planned.classification, route: planned.route, capability: planned.capability ?? null, understanding: planned.understanding ?? null },
+    // The learner reads this turn with the work EV had in view.
+    data: { action: planned.classification, recentWork: (await workInProgress(conversationId)).text }
   });
-  try {
-    memoryLearner.recordTurn({ clientMessageId, conversationId, userText: text, evReply: planned.response, action: planned.classification, recentWork: (await workInProgress(conversationId)).text });
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] Could not record turn for memory: ${error.message}`);
-  }
+  memoryLearner.kick();
   return turn;
 }
 
@@ -645,19 +614,10 @@ async function handleApi(request, response, url) {
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
     if (!text) throw Object.assign(new Error("text is required"), { statusCode: 400 });
     if (text.length > 8000) throw Object.assign(new Error("text must not exceed 8000 characters"), { statusCode: 400 });
-    const existing = assistantLedger.findByClientMessageId(clientMessageId);
+    const existing = store.findTurn(clientMessageId);
     if (existing) {
       if (existing.userMessage.conversationId !== conversationId) throw Object.assign(new Error("clientMessageId belongs to another conversation"), { statusCode: 409 });
       if (existing.userMessage.content !== text) throw Object.assign(new Error("clientMessageId belongs to different message text"), { statusCode: 409 });
-      if (existing.intent?.route === "worker") {
-        await ensureWorkerTask({
-          clientMessageId,
-          conversationId,
-          request: existing.userMessage.content,
-          capability: existing.intent.payload?.capability,
-          understanding: existing.intent.payload?.understanding ?? null
-        });
-      }
       return json(response, 200, await publicTurn({ ...existing, replayed: true }));
     }
     const inFlight = assistantTurnInFlight.get(clientMessageId);
@@ -754,10 +714,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     stopping = true;
     standingScheduler.stop();
     await assistantWorkers.shutdown().catch((error) => console.error(`Worker shutdown failed: ${error.message}`));
-    assistantLedger.close();
-    assistantMemory.close();
-    standingStore.close();
-    assistantSupervisor.close();
+    store.close();
     server.close(() => process.exit(0));
   });
 }

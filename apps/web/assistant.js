@@ -334,11 +334,13 @@ function render() {
     failed: item.failed
   }))].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   elements.empty.hidden = visible.length > 0;
+  // A piece of work's card sits under the latest message about it.
+  const cardAt = new Map(visible.filter((message) => message.taskId).map((message) => [message.taskId, message.messageId]));
   elements.messages.innerHTML = visible.map((message) => `
     <article class="message ${escapeHtml(message.role)} ${message.pending ? "pending" : ""}" data-message-id="${escapeHtml(message.messageId)}" data-message-status="${escapeHtml(message.pending ? "unconfirmed" : message.status ?? "answered")}"${message.taskId ? ` data-linked-task-id="${escapeHtml(message.taskId)}"` : ""}>
       <div class="message-label">${message.role === "assistant" ? "EV" : "You"}${message.pending ? message.failed ? " · retrying when connected" : " · sending" : ""}</div>
       <p>${escapeHtml(message.content)}</p>
-      ${message.taskId ? renderTask(tasks.get(message.taskId)) : message.taskStatus ? `<span class="task-status ${escapeHtml(message.taskStatus)}">${escapeHtml(message.taskStatus.replaceAll("_", " "))}</span>` : ""}
+      ${!message.taskId ? "" : cardAt.get(message.taskId) === message.messageId ? renderTask(tasks.get(message.taskId)) : message.role === "assistant" && message.taskStatus ? `<span class="task-status ${escapeHtml(message.taskStatus)}">${escapeHtml(message.taskStatus.replaceAll("_", " "))}</span>` : ""}
     </article>`).join("");
   requestAnimationFrame(() => { document.getElementById("conversation").scrollTop = document.getElementById("conversation").scrollHeight; });
 }

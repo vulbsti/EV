@@ -5,34 +5,30 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Future module contract under test:
-//
-//   const supervisor = await AssistantSupervisor.open({ statePath, artifactRoot });
-//   await supervisor.createTask({ taskId, input });
-//   const lease = await supervisor.leaseTask({ taskId, workerId });
-//   await supervisor.startTask({ taskId, runId, fencingToken: lease.fencingToken });
-//   await supervisor.completeTask({ taskId, runId, fencingToken, result, artifacts });
-//   await supervisor.failTask({ taskId, runId, fencingToken, error });
-//   await supervisor.cancelTask({ taskId, reason });
-//   await supervisor.recover();
-//   await supervisor.getTask(taskId);
-//
-// A lease returns { leaseId, fencingToken, workerId }. Every worker-owned
-// transition requires the current fencingToken. State is durable at statePath;
-// reopening the supervisor must recover the same task/run and event history.
-// Artifact receipts are { artifactId, relativePath, sha256, bytes }. Completion
-// must verify each receipt beneath artifactRoot before becoming terminal.
+// The supervisor keeps each piece of work in the store. Every worker-owned
+// transition requires the current fencingToken; reopening the store must
+// recover the same task, run and event history. Completion verifies each
+// artifact receipt { artifactId, relativePath, sha256, bytes } beneath
+// artifactRoot before the work becomes terminal.
 import { AssistantSupervisor } from "../lib/assistant-supervisor.mjs";
+import { openStore } from "../lib/store.mjs";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "ev-assistant-supervisor-"));
   const artifactRoot = join(root, "artifacts");
   await mkdir(artifactRoot, { recursive: true });
+  const stores = [];
   return {
     root,
-    statePath: join(root, "supervisor-state.sqlite"),
     artifactRoot,
+    /** A supervisor on its own connection to the same store, as after a restart. */
+    open() {
+      const store = openStore({ path: join(root, "ev.sqlite") });
+      stores.push(store);
+      return AssistantSupervisor.open({ store, artifactRoot });
+    },
     async close() {
+      for (const store of stores) store.close();
       await rm(root, { recursive: true, force: true });
     }
   };
@@ -58,7 +54,7 @@ function invalidReceipt(error) {
 test("runs one durable task through leased, started, and completed with a verified artifact", async () => {
   const f = await fixture();
   try {
-    const supervisor = await AssistantSupervisor.open(f);
+    const supervisor = await f.open();
     await supervisor.createTask({ taskId: "task-1", input: { prompt: "make report" } });
     const lease = await supervisor.leaseTask({ taskId: "task-1", workerId: "worker-a" });
     assert.equal(typeof lease.fencingToken, "string");
@@ -87,7 +83,7 @@ test("runs one durable task through leased, started, and completed with a verifi
 test("rejects an unverified artifact receipt and keeps the run non-terminal", async () => {
   const f = await fixture();
   try {
-    const supervisor = await AssistantSupervisor.open(f);
+    const supervisor = await f.open();
     await supervisor.createTask({ taskId: "task-receipt", input: { prompt: "write" } });
     const lease = await supervisor.leaseTask({ taskId: "task-receipt", workerId: "worker-a" });
     await supervisor.startTask({ taskId: "task-receipt", runId: "run-receipt", fencingToken: lease.fencingToken });
@@ -107,7 +103,7 @@ test("rejects an unverified artifact receipt and keeps the run non-terminal", as
 test("makes duplicate completion idempotent and exposes failed and cancelled terminal states", async () => {
   const f = await fixture();
   try {
-    const supervisor = await AssistantSupervisor.open(f);
+    const supervisor = await f.open();
     await supervisor.createTask({ taskId: "task-done", input: {} });
     const doneLease = await supervisor.leaseTask({ taskId: "task-done", workerId: "worker-a" });
     await supervisor.startTask({ taskId: "task-done", runId: "run-done", fencingToken: doneLease.fencingToken });
@@ -131,12 +127,12 @@ test("makes duplicate completion idempotent and exposes failed and cancelled ter
 test("recovers an in-flight run after restart and rejects the stale lease token", async () => {
   const f = await fixture();
   try {
-    const firstSupervisor = await AssistantSupervisor.open(f);
+    const firstSupervisor = await f.open();
     await firstSupervisor.createTask({ taskId: "task-restart", input: { prompt: "resume" } });
     const oldLease = await firstSupervisor.leaseTask({ taskId: "task-restart", workerId: "worker-old" });
     await firstSupervisor.startTask({ taskId: "task-restart", runId: "run-restart", fencingToken: oldLease.fencingToken });
 
-    const restarted = await AssistantSupervisor.open(f);
+    const restarted = await f.open();
     const recovered = await restarted.recover();
     assert.deepEqual(recovered, { recoveredTaskIds: ["task-restart"] });
     assert.equal((await restarted.getTask("task-restart")).status, "queued");
@@ -161,8 +157,8 @@ test("recovers an in-flight run after restart and rejects the stale lease token"
 test("serializes competing leases across two supervisor instances", async () => {
   const f = await fixture();
   try {
-    const first = await AssistantSupervisor.open(f);
-    const second = await AssistantSupervisor.open(f);
+    const first = await f.open();
+    const second = await f.open();
     await first.createTask({ taskId: "task-concurrent", input: { prompt: "one lease" } });
 
     const attempts = await Promise.allSettled([
@@ -187,8 +183,8 @@ test("serializes competing leases across two supervisor instances", async () => 
 test("exposes a monotonic snapshot revision and ordered task events for reconnect", async () => {
   const f = await fixture();
   try {
-    const supervisor = await AssistantSupervisor.open(f);
-    const before = await supervisor.getSnapshot();
+    const supervisor = await f.open();
+    const before = await supervisor.snapshot();
     assert.equal(before.tasks.length, 0);
 
     await supervisor.createTask({ taskId: "task-snapshot", input: { capability: "launch-status-brief-v1" } });
@@ -210,7 +206,7 @@ test("exposes a monotonic snapshot revision and ordered task events for reconnec
 test("makes cancellation idempotent and fences a late worker completion", async () => {
   const f = await fixture();
   try {
-    const supervisor = await AssistantSupervisor.open(f);
+    const supervisor = await f.open();
     await supervisor.createTask({ taskId: "task-cancel-race", input: { capability: "launch-status-brief-v1" } });
     const lease = await supervisor.leaseTask({ taskId: "task-cancel-race", workerId: "worker-cancel" });
     await supervisor.startTask({ taskId: "task-cancel-race", runId: "run-cancel", fencingToken: lease.fencingToken });
@@ -233,7 +229,7 @@ test("rejects artifact receipts that traverse or resolve through a symlink", asy
   const f = await fixture();
   const outside = await mkdtemp(join(tmpdir(), "ev-supervisor-artifact-outside-"));
   try {
-    const supervisor = await AssistantSupervisor.open(f);
+    const supervisor = await f.open();
     await supervisor.createTask({ taskId: "task-artifact-path", input: {} });
     const lease = await supervisor.leaseTask({ taskId: "task-artifact-path", workerId: "worker-artifact" });
     await supervisor.startTask({ taskId: "task-artifact-path", runId: "run-artifact", fencingToken: lease.fencingToken });
@@ -262,7 +258,7 @@ test("rejects artifact receipts that traverse or resolve through a symlink", asy
 test("persists replay-safe cancel commands and rejects stale task revisions", async () => {
   const f = await fixture();
   try {
-    const supervisor = await AssistantSupervisor.open(f);
+    const supervisor = await f.open();
     const created = await supervisor.createTask({ taskId: "task-command", input: {} });
     await assert.rejects(
       supervisor.commandTask({ taskId: "task-command", commandId: "cancel-stale", type: "cancel", expectedRevision: created.revision + 1 }),
@@ -282,7 +278,7 @@ test("persists replay-safe cancel commands and rejects stale task revisions", as
 test("reads only a completed artifact by its verified receipt id", async () => {
   const f = await fixture();
   try {
-    const supervisor = await AssistantSupervisor.open(f);
+    const supervisor = await f.open();
     await supervisor.createTask({ taskId: "task-download", input: {} });
     const lease = await supervisor.leaseTask({ taskId: "task-download", workerId: "worker-a" });
     await supervisor.startTask({ taskId: "task-download", runId: "run-download", fencingToken: lease.fencingToken });
