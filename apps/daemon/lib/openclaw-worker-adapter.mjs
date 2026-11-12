@@ -118,8 +118,8 @@ function accumulateUsage(events, state) {
 
 /**
  * The command that runs one OpenClaw turn. With a sandbox it runs inside a
- * container that sees only the goal's directory, this task's config and an
- * EV-owned OpenClaw home, under CPU, memory and process caps, as the person's
+ * container that sees only the goal's directory, this task's config and its
+ * own home, under CPU, memory and process caps, as the person's
  * own user (so files it writes stay theirs) and never as root on the host.
  * Paths are mounted at the same absolute location, so prompts stay valid.
  */
@@ -167,17 +167,18 @@ function terminate(run, signal = "SIGTERM") {
   } catch {}
 }
 
-function workerEnvironment(configPath) {
-  const allowed = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"];
+function workerEnvironment(configPath, homeDir) {
+  const allowed = ["PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"];
   return {
     ...Object.fromEntries(allowed.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]]])),
+    HOME: homeDir,
     OPENCODE_API: process.env.OPENCODE_API,
     OPENCLAW_CONFIG_PATH: configPath
   };
 }
 
 export class OpenClawWorkerAdapter {
-  constructor({ taskId, workspacePath, sessionDir, timeoutMs = 300_000, executable = "openclaw", homeDir = process.env.HOME, sandbox = null }) {
+  constructor({ taskId, workspacePath, sessionDir, homeDir, timeoutMs = 300_000, executable = "openclaw", sandbox = null }) {
     this.taskId = taskId;
     this.homeDir = homeDir;
     this.sandbox = sandbox;
@@ -200,10 +201,8 @@ export class OpenClawWorkerAdapter {
       const prior = completedResult(earlier.events);
       if (prior?.status === "completed") return { runId, completion: Promise.resolve(prior) };
     }
-    if (this.sandbox) {
-      ensurePrivateDirectorySync(this.homeDir);
-      await removeTaskContainers(this.taskId);
-    }
+    ensurePrivateDirectorySync(this.homeDir);
+    if (this.sandbox) await removeTaskContainers(this.taskId);
     // Each start gets its own container name: runs of one task can share a run id.
     const containerName = `ev-openclaw-${runId.slice(0, 12)}-${randomBytes(3).toString("hex")}`;
     const { command, args } = openClawCommand({
@@ -212,7 +211,7 @@ export class OpenClawWorkerAdapter {
     });
     const child = spawn(command, args, {
       cwd: this.workspacePath,
-      env: workerEnvironment(configPath),
+      env: workerEnvironment(configPath, this.homeDir),
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32"
     });

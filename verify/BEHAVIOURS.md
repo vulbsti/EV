@@ -44,12 +44,12 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 Everything EV holds lives in one place and is linked: a message to the work it started, the work to its result, a memory to where it came from. Because of that, forgetting reaches every copy, a restart loses nothing, and a result can never be too large to keep.
 
-- ✗ **S-01** After "forget that", the forgotten text is in no file EV keeps and no page it serves.
+- ✓ **S-01** After "forget that", the forgotten text is in no file EV keeps and no page it serves.
 - ✓ **S-02** A restart in the middle of a review loop keeps the loop: the reviewer still knows which round it is and what it asked for.
 - ✓ **S-03** Tokens spent before a restart still count, so the budget is a real limit.
-- ✗ **S-04** A long review loop with detailed feedback still ends in a delivered result; accepted work is never lost for being large.
-- ✗ **S-05** EV's "done" message is tied to the work it is about, so the page can show the result under it.
-- ✗ **S-06** Each task's agent has its own home: one task cannot read what another task's agent left behind.
+- ✓ **S-04** A long review loop with detailed feedback still ends in a delivered result; accepted work is never lost for being large.
+- ✓ **S-05** EV's "done" message is tied to the work it is about, so the page can show the result under it.
+- ✓ **S-06** Each task's agent has its own home: one task cannot read what another task's agent left behind.
 
 Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 

@@ -178,6 +178,7 @@ export class AssistantWorkerService {
     workerRoot,
     workspaceRoot = join(workerRoot, "workspaces"),
     sessionRoot = join(workerRoot, "sessions"),
+    homeRoot = join(workerRoot, "homes"),
     workerId = "ev-pi-worker-v1",
     profiles = createFixedCapabilityProfiles(),
     adapterFactory = null,
@@ -205,6 +206,7 @@ export class AssistantWorkerService {
     this.workerRoot = resolve(workerRoot);
     this.workspaceRoot = resolve(workspaceRoot);
     this.sessionRoot = resolve(sessionRoot);
+    this.homeRoot = resolve(homeRoot);
     this.workerId = workerId;
     this.profiles = profiles;
     this.executable = executable;
@@ -215,8 +217,6 @@ export class AssistantWorkerService {
     this.settlementDelayMs = Math.max(0, settlementDelayMs);
     this.reviewHoldMs = reviewHoldMs;
     this.openClawSandbox = openClawSandbox;
-    // A sandboxed OpenClaw never sees the person's own ~/.openclaw.
-    this.openClawHome = openClawSandbox ? join(this.workerRoot, "openclaw-home") : process.env.HOME ?? "";
     this.activeRuns = new Map();
     this.planner = planner;
     this.reviewer = reviewer;
@@ -230,7 +230,7 @@ export class AssistantWorkerService {
     this.stopping = false;
     this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => profile.capability === "openclaw-general-v1"
       ? new OpenClawWorkerAdapter({
-        taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs, homeDir: this.openClawHome,
+        taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs, homeDir: this._home(task.taskId),
         sandbox: this.openClawSandbox && { ...this.openClawSandbox, mountRoot: task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath }
       })
       : new PiWorkerAdapter({
@@ -254,6 +254,7 @@ export class AssistantWorkerService {
     ensurePrivateDirectorySync(this.workerRoot);
     ensurePrivateDirectorySync(this.workspaceRoot);
     ensurePrivateDirectorySync(this.sessionRoot);
+    ensurePrivateDirectorySync(this.homeRoot);
     ensurePrivateDirectorySync(this.supervisor.artifactRoot);
     this.started = true;
     const recovery = await this.recover();
@@ -407,6 +408,15 @@ export class AssistantWorkerService {
     }
     this._pumpWorkers();
     await Promise.allSettled(active.map((entry) => entry.promise));
+  }
+
+  /**
+   * Each piece of work's agent has its own home, made with its workspace and
+   * kept with it, so its session survives a restart and no other work can
+   * read what it left there. It never sees the person's own home.
+   */
+  _home(taskId) {
+    return join(this.homeRoot, safeTaskId(taskId));
   }
 
   _profile(capability) {
@@ -903,7 +913,7 @@ export class AssistantWorkerService {
   }
 
   _transcriptEvents(taskId) {
-    try { return readTranscript({ homeDir: this.openClawHome, sessionId: taskId }).events; }
+    try { return readTranscript({ homeDir: this._home(taskId), sessionId: taskId }).events; }
     catch { return []; }
   }
 

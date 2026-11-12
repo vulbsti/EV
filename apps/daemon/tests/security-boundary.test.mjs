@@ -76,14 +76,14 @@ test("local request guard admits only this daemon's loopback Host and Origin", (
   for (const request of rejected) assert.ok(localRequestRejection({ ...request, port }), JSON.stringify(request));
 });
 
-test("a sandboxed OpenClaw worker mounts only its goal, its config and an EV-owned home", () => {
+test("a sandboxed OpenClaw worker mounts only its goal, its config and its own home", () => {
   const { command, args } = openClawCommand({
     executable: "openclaw", args: ["agent"], sandbox: { image: "ev-openclaw", mountRoot: "/ev/workspaces/goal" },
-    workspacePath: "/ev/workspaces/goal/tasks/t1", sessionDir: "/ev/sessions/t1", homeDir: "/ev/openclaw-home", runId: "run-1234567890ab", taskId: "t1"
+    workspacePath: "/ev/workspaces/goal/tasks/t1", sessionDir: "/ev/sessions/t1", homeDir: "/ev/homes/t1", runId: "run-1234567890ab", taskId: "t1"
   });
   assert.equal(command, "docker");
   const mounts = args.flatMap((arg, index) => args[index - 1] === "-v" ? [arg] : []);
-  assert.deepEqual(mounts, ["/ev/workspaces/goal:/ev/workspaces/goal", "/ev/openclaw-home:/ev/openclaw-home", "/ev/sessions/t1:/ev/sessions/t1:ro"]);
+  assert.deepEqual(mounts, ["/ev/workspaces/goal:/ev/workspaces/goal", "/ev/homes/t1:/ev/homes/t1", "/ev/sessions/t1:/ev/sessions/t1:ro"]);
   for (const flag of ["--cap-drop", "--memory", "--pids-limit", "--cpus"]) assert.ok(args.includes(flag), flag);
   assert.ok(!args.includes("--privileged") && !args.some((arg) => arg.includes("docker.sock")));
 });

@@ -60,7 +60,7 @@ EV learns memory from every turn and settled task (see [memory types](MEMORY_TYP
 
 EV's own calls and OpenClaw use OpenCode Go (`EV_MODEL`, `EV_OPENCLAW_MODEL`), with `OPENCODE_API` from the repo-local .env. Keys pass through the child environment, not task configuration, so an agent with network access can still reach the key. Every task receives a separate provider session header and workspace. Each of EV's own model calls writes one `[model]` log line with its role, attempts, duration and tokens.
 
-By default every OpenClaw run is a docker container (`npm run openclaw:image`) that mounts only its goal folder and a shared OpenClaw home; the home folder is shared by all tasks, so one task's transcripts are readable by the next. `EV_OPENCLAW_SANDBOX=host` runs agents uncontained as the daemon user and should only be used when asked for.
+By default every OpenClaw run is a docker container (`npm run openclaw:image`) that mounts only its goal folder and its own home (`data/work/homes/<taskId>`), so no task can read another task's transcripts or files. On the host, agents get that same home instead of yours. `EV_OPENCLAW_SANDBOX=host` runs agents uncontained as the daemon user and should only be used when asked for.
 
 The daemon listens on loopback only, rejects foreign Host and Origin headers, and requires a per-start token on every API call except `/api/health`. The browser gets it from the link the daemon prints at start; local tools send it as a bearer token from `data/api-token` (`EV_API_TOKEN` pins it).
 
