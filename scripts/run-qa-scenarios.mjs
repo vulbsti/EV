@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { askModelJson } from "../qa/lib/model.mjs";
-import { TERMINAL, api, memoryOf, memoryView, projectRoot, settle, startServer, tasksIn } from "../qa/lib/ev-harness.mjs";
+import { TERMINAL, api, memoryOf, memoryView, projectRoot, say, settle, startServer, tasksIn } from "../qa/lib/ev-harness.mjs";
 
 const scenarioDir = join(projectRoot, "qa", "scenarios");
 
@@ -145,8 +145,7 @@ async function runSession({ baseUrl, scenario, sessionIndex, runId, timeoutMs })
     try {
       if (step.say !== undefined) {
         const before = new Set((await tasksIn(baseUrl, conversationId)).map((task) => task.taskId));
-        const turn = await api(baseUrl, "/api/assistant/messages", { clientMessageId: `${conversationId}-m${index + 1}`, conversationId, text: step.say });
-        const reply = turn.messages?.find((message) => message.role === "assistant") ?? turn.messages?.at(-1);
+        const reply = await say(baseUrl, conversationId, `${conversationId}-m${index + 1}`, step.say);
         record.reply = reply?.content ?? null;
         record.replySequence = reply?.sequence ?? null;
         const settled = step.wait === false ? { tasks: await tasksIn(baseUrl, conversationId), timedOut: false } : await settle(baseUrl, conversationId, timeoutMs);

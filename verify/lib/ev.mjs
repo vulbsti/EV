@@ -103,11 +103,17 @@ export async function startEV({ script = {}, env = {}, keep = false } = {}) {
     /** The link a person opens: it signs the browser in, then shows the conversation. */
     pageUrl: (conversation = "main") => `${baseUrl}/?token=${TOKEN}&conversation=${encodeURIComponent(conversation)}`,
 
-    /** Sends a message and waits for EV's immediate answer. */
-    async say(text, { conversation = "main", id = `m${++messageSeq}-${Date.now().toString(36)}` } = {}) {
+    /**
+     * Sends a message and waits for EV's immediate answer. EV saves the
+     * message and acknowledges it at once; the answer arrives in the
+     * conversation as the message that replies to it.
+     */
+    async say(text, { conversation = "main", id = `m${++messageSeq}-${Date.now().toString(36)}`, timeout = 30_000 } = {}) {
       const { ok, status, value } = await api("/api/assistant/messages", { clientMessageId: id, conversationId: conversation, text });
-      const reply = value?.messages?.find((message) => message.role === "assistant") ?? null;
-      return { ok, status, id, reply: reply?.content ?? null, taskId: value?.task?.taskId ?? reply?.taskId ?? null, raw: value };
+      const messageId = value?.message?.messageId;
+      if (!ok || !messageId) return { ok, status, id, reply: null, taskId: null, raw: value };
+      const reply = await ev.until(`EV to answer "${text.slice(0, 60)}"`, async () => (await ev.conversation(conversation)).find((message) => message.replyTo === messageId), { timeout, every: 50 });
+      return { ok, status, id, reply: reply.content, taskId: reply.taskId ?? null, raw: value };
     },
     /** Sends a message without waiting; the promise settles when EV answers. */
     send(text, options) { return ev.say(text, options); },

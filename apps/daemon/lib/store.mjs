@@ -56,6 +56,20 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_reply ON messages (reply_to);
 
+-- One inbox per conversation: whatever needs EV's attention, saved on arrival
+-- and handled in order. handled_at is set in the transaction that records
+-- what EV did about it, so an item is handled exactly once across a crash.
+CREATE TABLE IF NOT EXISTS inbox (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id TEXT NOT NULL UNIQUE,
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  message_id TEXT REFERENCES messages(message_id),
+  at TEXT NOT NULL,
+  handled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS inbox_waiting ON inbox (conversation_id, seq) WHERE handled_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS work (
   work_id TEXT PRIMARY KEY,
   conversation_id TEXT,
@@ -346,24 +360,54 @@ export function openStore({ path = ":memory:" } = {}) {
     return { userMessage, assistantMessage: mapMessage(reply), intent: userMessage.intent, workId: user.work_id };
   }
 
-  function findTurn(clientMessageId) {
-    const row = db.prepare("SELECT message_id FROM messages WHERE client_message_id = ? AND role = 'user'").get(clientMessageId);
-    return row ? getTurn(row.message_id) : null;
+  // ------------------------------------------------------------------ inbox
+
+  function mapItem(row) {
+    if (!row) return null;
+    return { itemId: row.item_id, conversationId: row.conversation_id, kind: row.kind, at: row.at, message: mapMessage(db.prepare("SELECT * FROM messages WHERE message_id = ?").get(row.message_id)) };
   }
 
   /**
-   * The person's message and EV's answer, linked to the work the message
-   * started or was sent into, with the "turn" event the learner reads.
+   * Saves the person's message and puts it in its conversation's inbox, before
+   * EV has read it. Sending the same clientMessageId again returns the saved one.
    */
-  function recordTurn({ conversationId, clientMessageId, userText, assistantText, intent = null, workId = null, data = {} }) {
-    if (!userText || !assistantText) throw codedError("INVALID_INPUT", "A turn needs both texts");
+  function receive({ conversationId, clientMessageId, text }) {
     return tx(() => {
-      const existing = findTurn(clientMessageId);
-      if (existing) return { ...existing, replayed: true };
-      const messageId = insertMessage({ conversationId, role: "user", content: userText, clientMessageId, workId, intent });
-      insertMessage({ conversationId, role: "assistant", content: assistantText, replyTo: messageId, workId });
-      const { eventId } = event({ type: "turn", conversationId, workId, messageId, data });
-      return { ...getTurn(messageId), eventId, replayed: false };
+      const existing = db.prepare("SELECT * FROM messages WHERE client_message_id = ? AND role = 'user'").get(clientMessageId);
+      if (existing) return { message: mapMessage(existing), replayed: true };
+      const messageId = insertMessage({ conversationId, role: "user", content: text, clientMessageId });
+      db.prepare("INSERT INTO inbox (item_id, conversation_id, kind, message_id, at) VALUES (?, ?, 'message', ?, ?)").run(randomUUID(), conversationId, messageId, now());
+      event({ type: "received", conversationId, messageId });
+      return { message: mapMessage(db.prepare("SELECT * FROM messages WHERE message_id = ?").get(messageId)), replayed: false };
+    });
+  }
+
+  /** The oldest item in this conversation's inbox that EV has not handled. */
+  function nextItem(conversationId) {
+    return mapItem(db.prepare("SELECT * FROM inbox WHERE conversation_id = ? AND handled_at IS NULL ORDER BY seq LIMIT 1").get(conversationId));
+  }
+
+  /** Conversations with something waiting in their inbox. */
+  function waitingConversations() {
+    return db.prepare("SELECT DISTINCT conversation_id FROM inbox WHERE handled_at IS NULL").all().map((row) => row.conversation_id);
+  }
+
+  /**
+   * Records what EV did about an item and marks it handled, in one
+   * transaction: its reply, the work the message started or was sent into,
+   * and the "turn" event the learner reads. Call it inside the transaction
+   * that starts or instructs that work, so neither can happen without the other.
+   */
+  function handled(itemId, { reply = null, workId = null, intent = null, data = {} } = {}) {
+    return tx(() => {
+      const row = db.prepare("SELECT * FROM inbox WHERE item_id = ?").get(itemId);
+      if (!row) throw codedError("ITEM_NOT_FOUND", `Unknown inbox item: ${itemId}`);
+      if (row.handled_at) throw codedError("ITEM_HANDLED", `Inbox item ${itemId} was already handled`);
+      db.prepare("UPDATE inbox SET handled_at = ? WHERE item_id = ?").run(now(), itemId);
+      if (row.message_id) db.prepare("UPDATE messages SET work_id = ?, intent_json = ? WHERE message_id = ?").run(workId, intent === null ? null : JSON.stringify(intent), row.message_id);
+      if (reply) insertMessage({ conversationId: row.conversation_id, role: "assistant", content: reply, replyTo: row.message_id, workId });
+      const { eventId } = event({ type: "turn", conversationId: row.conversation_id, workId, messageId: row.message_id, data });
+      return { eventId };
     });
   }
 
@@ -383,8 +427,9 @@ export function openStore({ path = ":memory:" } = {}) {
     return db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq").all(conversationId).map(mapMessage);
   }
 
-  function listTurns(conversationId) {
-    return db.prepare("SELECT message_id FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY seq").all(conversationId).map((row) => getTurn(row.message_id));
+  /** The person's messages and EV's replies to them, oldest first; `before` limits them to earlier messages. */
+  function listTurns(conversationId, { before = Number.MAX_SAFE_INTEGER } = {}) {
+    return db.prepare("SELECT message_id FROM messages WHERE conversation_id = ? AND role = 'user' AND seq < ? ORDER BY seq").all(conversationId, before).map((row) => getTurn(row.message_id));
   }
 
   // ------------------------------------------------------------------ erase
@@ -417,7 +462,7 @@ export function openStore({ path = ":memory:" } = {}) {
 
   return {
     db, path, tx, now, counter, bump, event, events, getEvent,
-    recordTurn, recordUpdate, findTurn, getTurn, listMessages, listTurns,
+    receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, listTurns,
     eraseMessage, eraseEvent, erased,
     close: () => db.close()
   };

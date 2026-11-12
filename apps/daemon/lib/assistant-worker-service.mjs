@@ -268,9 +268,10 @@ export class AssistantWorkerService {
    * `layout: "shared"` starts a new goal with its own shared directory; a
    * `sharedWorkspace` puts this task on an existing goal (a child agent).
    * Either way the task works in `<goal>/tasks/<taskId>`. Without them the
-   * task keeps the original one-directory-per-task layout.
+   * task keeps the original one-directory-per-task layout. `alongside` runs
+   * in the transaction that creates the task.
    */
-  async submitTask({ taskId, capability, prompt, workspace, context = null, artifact = null, metadata = null, layout = null, sharedWorkspace = null }) {
+  async submitTask({ taskId, capability, prompt, workspace, context = null, artifact = null, metadata = null, layout = null, sharedWorkspace = null, alongside = null }) {
     if (this.stopping) throw codedError("WORKER_SERVICE_STOPPING", "The worker service is stopping");
     const id = safeTaskId(taskId);
     const profile = this._profile(capability);
@@ -287,7 +288,7 @@ export class AssistantWorkerService {
       context, artifact, metadata
     };
     await this._prepareTaskInput(id, profile, input);
-    const task = await this.supervisor.createTask({ taskId: id, input });
+    const task = await this.supervisor.createTask({ taskId: id, input, alongside });
     this._dispatch(id);
     return task;
   }
@@ -315,9 +316,9 @@ export class AssistantWorkerService {
    * Passes something the person said to unfinished work. A running agent gets
    * it at its next step in the same session; a waiting one resumes with it.
    */
-  async instructTask({ taskId, text, source = null }) {
+  async instructTask({ taskId, text, source = null, alongside = null }) {
     if (typeof text !== "string" || !text.trim()) throw codedError("INVALID_INSTRUCTION", "instruction text is required");
-    const task = await this.supervisor.addInstruction({ taskId, text: text.trim().slice(0, 4_000), source });
+    const task = await this.supervisor.addInstruction({ taskId, text: text.trim().slice(0, 4_000), source, alongside });
     if (task.status === "queued") this._dispatch(taskId);
     return task;
   }

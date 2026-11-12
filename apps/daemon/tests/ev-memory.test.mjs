@@ -19,7 +19,9 @@ async function withMemory(run, { clock } = {}) {
 
 /** A conversation turn as the learner reads it. */
 function turn(memory, id, userText, data = {}) {
-  const { eventId } = memory.store.recordTurn({ conversationId: "c1", clientMessageId: id, userText, assistantText: "Noted.", data });
+  const { replayed } = memory.store.receive({ conversationId: "c1", clientMessageId: id, text: userText });
+  if (replayed) return null;
+  const { eventId } = memory.store.handled(memory.store.nextItem("c1").itemId, { reply: "Noted.", data });
   return memory.pendingEvents({ ownerId }).find((event) => event.eventId === eventId);
 }
 
@@ -82,7 +84,7 @@ test("events are recorded once, passing state expires, and erase removes the wor
   let now = Date.parse("2026-10-15T12:00:00Z");
   await withMemory(async (memory, path) => {
     const said = turn(memory, "1", "my manager is Priya, and I'm exhausted today");
-    memory.store.recordTurn({ conversationId: "c1", clientMessageId: "1", userText: "my manager is Priya, and I'm exhausted today", assistantText: "Noted." });
+    turn(memory, "1", "my manager is Priya, and I'm exhausted today");
     assert.equal(memory.pendingEvents({ ownerId }).length, 1);
     applyLearning(memory, {
       ownerId, events: [said], seen: new Map(), now,
@@ -99,7 +101,7 @@ test("events are recorded once, passing state expires, and erase removes the wor
     assert.equal(memory.getClaim(fact.claimId).current.value, null);
     // Erase follows the claim to the event and the message it was learned from, and leaves no bytes behind.
     assert.deepEqual(memory.store.getEvent(said.eventId).data, { erased: true });
-    assert.equal(memory.store.findTurn("1").userMessage.content.includes("Priya"), false);
+    assert.equal(memory.store.listMessages("c1").some((message) => message.content.includes("Priya")), false);
     for (const file of [path, `${path}-wal`]) assert.equal((await readFile(file).catch(() => Buffer.alloc(0))).includes(Buffer.from("Priya")), false, file);
   }, { clock: () => new Date(now) });
 });

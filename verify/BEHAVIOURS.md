@@ -59,13 +59,13 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 A conversation is a queue. Whatever happens in it (a message from the person, work finishing, an agent asking something) is saved the moment it happens and handled in order, so EV always decides with the full picture and the person never has to say something twice or wonder whether it arrived.
 
-- ✗ **Q-01** A message is saved the moment it arrives, before EV has decided anything about it.
+- ✓ **Q-01** A message is saved the moment it arrives, before EV has decided anything about it.
 - ✓ **Q-02** Two messages sent in quick succession are handled in order: the second is read knowing the first and what it started.
-- ✗ **Q-03** A message EV has received survives a crash and is answered afterwards without being sent again.
+- ✓ **Q-03** A message EV has received survives a crash and is answered afterwards without being sent again.
 - ✓ **Q-04** A change sent while the result is being reviewed reaches the agent before the work can be called done.
 - ✓ **Q-05** Work that finishes after a restart is announced exactly once.
-- ✗ **Q-06** Opening a long conversation lands on the newest message, not the oldest.
-- ✗ **Q-07** The page shows the message at once and that EV is thinking, for as long as it is.
+- ✓ **Q-06** Opening a long conversation lands on the newest message, not the oldest.
+- ✓ **Q-07** The page shows the message at once and that EV is thinking, for as long as it is.
 
 Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
