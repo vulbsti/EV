@@ -15,6 +15,8 @@ import { ensurePrivateDirectorySync, secureDatabaseFilesSync } from "./file-perm
  * - State and the event that explains it are written in one transaction.
  * - Erase follows those links, and then clears what SQLite keeps of the old
  *   bytes (secure_delete for free space, a truncating checkpoint for the WAL).
+ * - One full-text index covers messages, work, results and memory, kept in
+ *   step with them by triggers, so erasing a record erases its entry too.
  */
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -240,6 +242,45 @@ CREATE TABLE IF NOT EXISTS standing_prepared_tasks (
   submission_confirmed_at TEXT,
   UNIQUE (responsibility_id, source_revision)
 );
+
+-- One full-text index over what EV holds: every message, every piece of work
+-- (its title and brief), every result, every version of every memory.
+-- Triggers keep it in step with the records, so whatever changes or erases a
+-- record changes or erases its entry too; secure-delete makes FTS5 drop the
+-- old terms instead of leaving them in its segments.
+CREATE TABLE IF NOT EXISTS search_refs (
+  id INTEGER PRIMARY KEY,
+  ref TEXT NOT NULL UNIQUE,
+  conversation_id TEXT,
+  at TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5 (body, tokenize = 'porter unicode61');
+INSERT INTO search_index (search_index, rank) VALUES ('secure-delete', 1);
+
+CREATE TRIGGER IF NOT EXISTS index_message AFTER INSERT ON messages BEGIN
+  INSERT INTO search_refs (ref, conversation_id, at) VALUES ('message:' || new.message_id, new.conversation_id, new.at);
+  INSERT INTO search_index (rowid, body) VALUES (last_insert_rowid(), new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS reindex_message AFTER UPDATE OF content ON messages BEGIN
+  DELETE FROM search_index WHERE rowid = (SELECT id FROM search_refs WHERE ref = 'message:' || new.message_id);
+  INSERT INTO search_index (rowid, body) SELECT id, new.content FROM search_refs WHERE ref = 'message:' || new.message_id AND new.content <> '[forgotten]';
+END;
+CREATE TRIGGER IF NOT EXISTS index_work AFTER INSERT ON work BEGIN
+  INSERT INTO search_refs (ref, conversation_id, at) VALUES ('work:' || new.work_id, new.conversation_id, new.created_at);
+  INSERT INTO search_index (rowid, body) VALUES (last_insert_rowid(), concat_ws(char(10), json_extract(new.input_json, '$.metadata.title'), json_extract(new.input_json, '$.metadata.sourceRequest')));
+END;
+CREATE TRIGGER IF NOT EXISTS index_result AFTER INSERT ON results BEGIN
+  INSERT INTO search_refs (ref, conversation_id, at) VALUES ('result:' || new.result_id, (SELECT conversation_id FROM work WHERE work_id = new.work_id), new.at);
+  INSERT INTO search_index (rowid, body) VALUES (last_insert_rowid(), concat_ws(char(10), (SELECT json_extract(input_json, '$.metadata.title') FROM work WHERE work_id = new.work_id), json_extract(new.result_json, '$.text')));
+END;
+CREATE TRIGGER IF NOT EXISTS index_memory AFTER INSERT ON memory_revisions BEGIN
+  INSERT INTO search_refs (ref, conversation_id, at) VALUES ('memory:' || new.revision_id, NULL, new.created_at);
+  INSERT INTO search_index (rowid, body) VALUES (last_insert_rowid(), CASE json_type(new.value_json) WHEN 'text' THEN json_extract(new.value_json, '$') WHEN 'object' THEN json_extract(new.value_json, '$.text') END);
+END;
+CREATE TRIGGER IF NOT EXISTS reindex_memory AFTER UPDATE OF value_json ON memory_revisions BEGIN
+  DELETE FROM search_index WHERE rowid = (SELECT id FROM search_refs WHERE ref = 'memory:' || new.revision_id);
+  INSERT INTO search_index (rowid, body) SELECT id, CASE json_type(new.value_json) WHEN 'text' THEN json_extract(new.value_json, '$') WHEN 'object' THEN json_extract(new.value_json, '$.text') END FROM search_refs WHERE ref = 'memory:' || new.revision_id;
+END;
 `;
 
 const ERASED_TEXT = "[forgotten]";
@@ -460,10 +501,29 @@ export function openStore({ path = ":memory:" } = {}) {
   /** Marks that this transaction removed words, so the WAL is emptied after it commits. */
   function erased() { scrubAfterCommit = true; }
 
+  // ----------------------------------------------------------------- search
+
+  /**
+   * The best matches for `query` across everything indexed, as
+   * { ref, conversationId, at, excerpt }. A record is found by any of the
+   * query's words (stemmed), ranked by how well it matches them all.
+   */
+  function search(query, { limit = 8, exclude = [] } = {}) {
+    const words = [...new Set(String(query ?? "").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].slice(0, 24);
+    if (!words.length) return [];
+    return db.prepare(`
+      SELECT r.ref, r.conversation_id, r.at, snippet(search_index, 0, '', '', '…', 40) AS excerpt
+      FROM search_index JOIN search_refs r ON r.id = search_index.rowid
+      WHERE search_index MATCH ? ORDER BY rank LIMIT ?
+    `).all(words.map((word) => `"${word}"`).join(" OR "), limit + exclude.length)
+      .filter((row) => !exclude.includes(row.ref)).slice(0, limit)
+      .map((row) => ({ ref: row.ref, conversationId: row.conversation_id, at: row.at, excerpt: row.excerpt }));
+  }
+
   return {
     db, path, tx, now, counter, bump, event, events, getEvent,
     receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, listTurns,
-    eraseMessage, eraseEvent, erased,
+    eraseMessage, eraseEvent, erased, search,
     close: () => db.close()
   };
 }
