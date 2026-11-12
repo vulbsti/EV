@@ -14,7 +14,7 @@ import { createTurn, lookups, workState } from "./lib/ev-tools.mjs";
 import { importSessions } from "./lib/outside-sessions.mjs";
 import { sessionHeader } from "./lib/ev-model.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
-import { MemoryLearner, memoryView } from "./lib/ev-memory.mjs";
+import { MemoryLearner, historyView, memoryView } from "./lib/ev-memory.mjs";
 import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
 import { StandingResponsibilityStore } from "./lib/standing-responsibility.mjs";
 import { StandingResponsibilityRunner } from "./lib/standing-runner.mjs";
@@ -277,7 +277,7 @@ async function handleItem(item) {
   let closing;
   try {
     ({ text: closing } = await takeTurn({
-      prompt: turnPrompt({ profile: memoryView(assistantMemory, assistantOwnerId, { audience: "ev" }).text, recent: recentConversation(conversationId, message.sequence), work, message: message.content }),
+      prompt: turnPrompt({ profile: memoryView(assistantMemory, assistantOwnerId, { audience: "ev" }).text, history: historyView(assistantMemory), recent: recentConversation(conversationId, message.sequence), work, message: message.content }),
       run: turn.run,
       session: sessionHeader(`ev:${message.messageId}`)
     }));
@@ -452,7 +452,12 @@ async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/assistant/memory") {
     const scope = url.searchParams.get("scope") ?? "global";
     if (!/^[A-Za-z0-9:._-]{1,128}$/.test(scope)) throw Object.assign(new Error("scope is invalid"), { statusCode: 400 });
-    return json(response, 200, { ownerId: assistantOwnerId, scope, claims: assistantMemory.recall({ ownerId: assistantOwnerId, scope, includeCandidates: true }) });
+    const claims = assistantMemory.recall({ ownerId: assistantOwnerId, scope, includeCandidates: true }).map((claim) => ({ ...claim, evidence: assistantMemory.evidence(claim.claimId) }));
+    return json(response, 200, { ownerId: assistantOwnerId, scope, claims });
+  }
+  if (request.method === "GET" && url.pathname === "/api/assistant/timeline") {
+    // Oldest first; each line lists the events it summarises, read through their links.
+    return json(response, 200, { lines: assistantMemory.timeline().map(({ id, period, startsAt, label, conversationId, text, events }) => ({ id, period, startsAt, label, conversationId, text, events })) });
   }
   if (request.method === "GET" && url.pathname.startsWith("/api/assistant/memory/manifests/")) {
     const manifestId = decodeURIComponent(url.pathname.slice("/api/assistant/memory/manifests/".length));

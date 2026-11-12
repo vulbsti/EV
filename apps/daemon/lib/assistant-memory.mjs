@@ -93,6 +93,35 @@ function mapManifest(row) {
   };
 }
 
+const DAY = 86_400_000;
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** The period (UTC) a moment falls in, with its first instant and its name in words. */
+export function period(at, kind) {
+  const date = new Date(at);
+  const day = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const named = (time, { month = true, year = true } = {}) => { const d = new Date(time); return [d.getUTCDate(), month ? MONTHS[d.getUTCMonth()] : "", year ? d.getUTCFullYear() : ""].filter(Boolean).join(" "); };
+  if (kind === "month") return { startsAt: new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)).toISOString(), label: `${MONTHS[date.getUTCMonth()]} ${date.getUTCFullYear()}` };
+  if (kind === "week") {
+    const monday = day - ((date.getUTCDay() + 6) % 7) * DAY;
+    const sunday = new Date(monday + 6 * DAY);
+    const first = new Date(monday);
+    const sameYear = first.getUTCFullYear() === sunday.getUTCFullYear();
+    return { startsAt: first.toISOString(), label: `Week of ${named(monday, { month: !(sameYear && first.getUTCMonth() === sunday.getUTCMonth()), year: !sameYear })} to ${named(sunday.getTime())}` };
+  }
+  return { startsAt: new Date(day).toISOString(), label: `${WEEKDAYS[new Date(day).getUTCDay()]} ${named(day)}` };
+}
+
+/** What a line rests on, counted: the plain fact of it, until the learner has put it in words. */
+function countedText(events, conversationId) {
+  const messages = events.filter((event) => event.ref.startsWith("message:")).length;
+  const work = events.length - messages;
+  const conversations = new Set(events.map((event) => event.conversation)).size;
+  const what = [messages ? `${messages} message${messages === 1 ? "" : "s"}` : "", work ? `${work} piece${work === 1 ? "" : "s"} of work settled` : ""].filter(Boolean).join(" and ");
+  return `${what} ${conversationId ? `in "${conversationId}"` : `across ${conversations} conversation${conversations === 1 ? "" : "s"}`}; not summarised yet.`;
+}
+
 /** The readable text of a memory value: plain strings (manual guidance) or `{ text, ... }` (learned). */
 export function memoryText(value) {
   if (typeof value === "string") return value;
@@ -324,13 +353,12 @@ export class AssistantMemoryStore {
    * retired claims and expired passing state never. Newest change first, so
    * a correction to an old claim counts as recent.
    */
-  recall({ ownerId, scope = "global", query = null, includeCandidates = false, excludedScopes = [], kinds = null } = {}) {
+  recall({ ownerId, scope = "global", query = null, includeCandidates = false, excludedScopes = [] } = {}) {
     required(ownerId, "ownerId"); required(scope, "scope");
     const queryText = query === null ? null : String(query).toLowerCase();
     const now = this._now();
     const rows = this.database.prepare("SELECT c.* FROM memory_claims c JOIN memory_revisions r ON r.revision_id = c.current_revision_id WHERE c.owner_id = ? ORDER BY r.created_at DESC, c.claim_id").all(ownerId);
     return rows.filter((claim) => {
-      if (kinds && !kinds.includes(claim.kind)) return false;
       if (!allowedScope(scope, claim.scope, excludedScopes)) return false;
       if (this._claimTombstoned(claim, scope)) return false;
       const current = this._revision(claim.current_revision_id);
@@ -349,10 +377,7 @@ export class AssistantMemoryStore {
     return this.correct({ claimId, expectedRevision, value: withReason, confidence: current.confidence, sourceIds, authorType, status: "retired", validUntil: this._now() });
   }
 
-  /**
-   * Adds supporting evidence to the current revision. Returns how many
-   * distinct sources now support it; a source counted twice is still one.
-   */
+  /** Adds an event to what the current revision rests on; the same event twice is still one. */
   addEvidence({ claimId, sourceId }) {
     const claim = this._requireClaim(claimId);
     this._transaction(() => {
@@ -360,7 +385,6 @@ export class AssistantMemoryStore {
       this.database.prepare("INSERT OR IGNORE INTO memory_revision_sources (revision_id, source_id) VALUES (?, ?)").run(claim.current_revision_id, sourceId);
       this._nextMemoryRevision();
     });
-    return this._evidenceSourceIds(claimId).length;
   }
 
   /** Distinct sources behind any revision of a claim. */
@@ -428,6 +452,151 @@ export class AssistantMemoryStore {
       INSERT INTO learning (event_id, attempts, analysed_at, last_error) VALUES (?, 1, ?, ?)
       ON CONFLICT(event_id) DO UPDATE SET attempts = attempts + 1, analysed_at = COALESCE(excluded.analysed_at, analysed_at), last_error = excluded.last_error
     `).run(eventId, error ? null : this._now(), error ? String(error).slice(0, 500) : null);
+  }
+
+  /**
+   * What a claim rests on, oldest first: each event behind any of its
+   * versions, with the person's own words (or the work, for an episode) read
+   * through the link, so erasing the event erases them here too.
+   */
+  evidence(claimId) {
+    return this.database.prepare(`
+      SELECT DISTINCT s.source_id, s.source_type, s.created_at, e.type, e.at, e.message_id, e.work_id, e.data_json, u.content AS said
+      FROM memory_revision_sources rs JOIN memory_revisions r ON r.revision_id = rs.revision_id
+      JOIN memory_sources s ON s.source_id = rs.source_id
+      LEFT JOIN events e ON e.event_id = s.source_id
+      LEFT JOIN messages u ON e.type = 'turn' AND u.message_id = e.message_id
+      WHERE r.claim_id = ? ORDER BY COALESCE(e.at, s.created_at)
+    `).all(claimId).map((row) => {
+      const data = parse(row.data_json, {});
+      if (data?.erased) return { at: row.at, forgotten: true };
+      if (row.type === "turn") return { at: row.at, ref: `message:${row.message_id}`, said: row.said };
+      if (row.type === "episode") return { at: row.at, ref: `work:${row.work_id}`, work: data.title ?? null };
+      return { at: row.at ?? row.created_at, entered: row.source_type };
+    });
+  }
+
+  // --------------------------------------------------------------- history
+
+  /** The line for one conversation's day, if it has one yet. */
+  historyLine({ conversationId, at }) {
+    const { startsAt } = period(at, "day");
+    const row = this.database.prepare("SELECT * FROM history_lines WHERE period = 'day' AND starts_at = ? AND conversation_id IS ?").get(startsAt, conversationId);
+    return row ? this._line(row) : null;
+  }
+
+  /**
+   * Adds a learner pass to its conversation's line for that day: links the
+   * events (never erased ones) and takes the learner's words, unless the line
+   * changed since the learner read it or the pass erased something it read
+   * (its words may then name what was forgotten); the line is then marked to
+   * be written again from what it rests on.
+   */
+  writeHistory({ conversationId, at, eventIds, summary = null, expectedRevision = null }) {
+    return this._transaction(() => {
+      const { startsAt, label } = period(at, "day");
+      let row = this.database.prepare("SELECT * FROM history_lines WHERE period = 'day' AND starts_at = ? AND conversation_id IS ?").get(startsAt, conversationId);
+      const live = eventIds.filter((eventId) => !parse(this.database.prepare("SELECT data_json FROM events WHERE event_id = ?").get(eventId)?.data_json ?? '{"erased":true}', {}).erased);
+      if (!row && !live.length) return null;
+      if (!row) {
+        const lineId = randomUUID();
+        this.database.prepare("INSERT INTO history_lines (line_id, period, starts_at, conversation_id, label, updated_at) VALUES (?, 'day', ?, ?, ?, ?)").run(lineId, startsAt, conversationId, label, this._now());
+        row = this.database.prepare("SELECT * FROM history_lines WHERE line_id = ?").get(lineId);
+      }
+      const link = this.database.prepare("INSERT OR IGNORE INTO history_events (line_id, event_id) VALUES (?, ?)");
+      for (const eventId of live) link.run(row.line_id, eventId);
+      const fresh = (expectedRevision ?? 1) === row.revision && live.length === eventIds.length;
+      const words = typeof summary === "string" ? summary.replace(/\s+/g, " ").trim().slice(0, 600) : "";
+      if (words && fresh) this.database.prepare("UPDATE history_lines SET summary = ?, rewrite = 0, revision = revision + 1, updated_at = ? WHERE line_id = ?").run(words, this._now(), row.line_id);
+      else if (words) this.database.prepare("UPDATE history_lines SET rewrite = 1, revision = revision + 1, updated_at = ? WHERE line_id = ?").run(this._now(), row.line_id);
+      return this._line(this.database.prepare("SELECT * FROM history_lines WHERE line_id = ?").get(row.line_id));
+    });
+  }
+
+  /** The whole history, oldest first, each line with the events it rests on. */
+  timeline() {
+    return this.database.prepare("SELECT * FROM history_lines ORDER BY starts_at, period DESC, conversation_id").all().map((row) => this._line(row));
+  }
+
+  getHistoryLine(lineId) {
+    const row = this.database.prepare("SELECT * FROM history_lines WHERE line_id = ?").get(lineId);
+    return row ? this._line(row) : null;
+  }
+
+  /** The events a line rests on, as the learner reads events. */
+  historyEvents(lineId) {
+    return this._learnable("e.event_id IN (SELECT event_id FROM history_events WHERE line_id = ?) ORDER BY e.seq", [lineId]);
+  }
+
+  /**
+   * Lines due to fold as they age, by date alone: a day's conversations into
+   * one line for the day, days older than a week into their week, weeks older
+   * than two months into their month. Each group is { period, startsAt,
+   * label, lines }; a group of one only needs relabelling.
+   */
+  historyFolds(now = this._now()) {
+    const today = period(now, "day").startsAt;
+    const ago = (days) => new Date(Date.parse(today) - days * DAY).toISOString();
+    const groups = new Map();
+    for (const line of this.timeline()) {
+      const target = line.startsAt < ago(60) ? "month" : line.startsAt < ago(7) ? "week" : line.startsAt < today ? "day" : null;
+      if (!target) continue;
+      const into = period(line.startsAt, target);
+      const key = `${target}:${into.startsAt}`;
+      if (!groups.has(key)) groups.set(key, { period: target, ...into, lines: [] });
+      groups.get(key).lines.push(line);
+    }
+    return [...groups.values()].filter((group) => group.lines.length > 1 || group.lines[0].period !== group.period || group.lines[0].conversationId !== null);
+  }
+
+  /**
+   * Replaces a group of lines with one line resting on all their events, in
+   * the learner's words. Refused (returns null) if any line changed since the
+   * learner read it, so an erase meanwhile always wins.
+   */
+  foldHistory({ period: target, startsAt, label, lines, summary = null }) {
+    return this._transaction(() => {
+      for (const line of lines) {
+        const row = this.database.prepare("SELECT revision FROM history_lines WHERE line_id = ?").get(line.lineId);
+        if (!row || row.revision !== line.revision) return null;
+      }
+      const lineId = randomUUID();
+      const words = typeof summary === "string" ? summary.replace(/\s+/g, " ").trim().slice(0, 800) : "";
+      this.database.prepare("INSERT INTO history_lines (line_id, period, starts_at, conversation_id, label, summary, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?)").run(lineId, target, startsAt, label, words || null, this._now());
+      for (const line of lines) {
+        this.database.prepare("INSERT OR IGNORE INTO history_events (line_id, event_id) SELECT ?, event_id FROM history_events WHERE line_id = ?").run(lineId, line.lineId);
+        this.database.prepare("DELETE FROM history_lines WHERE line_id = ?").run(line.lineId);
+      }
+      return this.getHistoryLine(lineId);
+    });
+  }
+
+  /** Lines that lost their words to an erase and wait to be written again. */
+  historyToRewrite() {
+    return this.database.prepare("SELECT * FROM history_lines WHERE rewrite = 1").all().map((row) => this._line(row));
+  }
+
+  /** Sets a line's words after an erase; refused if it changed again meanwhile. Clears the mark either way. */
+  rewriteHistory({ lineId, expectedRevision, summary = null }) {
+    const words = typeof summary === "string" ? summary.replace(/\s+/g, " ").trim().slice(0, 800) : "";
+    this.database.prepare(`UPDATE history_lines SET ${words ? "summary = ?, " : ""}rewrite = 0, revision = revision + 1, updated_at = ? WHERE line_id = ? AND revision = ?`)
+      .run(...(words ? [words] : []), this._now(), lineId, expectedRevision);
+  }
+
+  _line(row) {
+    const events = this.database.prepare(`
+      SELECT e.event_id, e.type, e.at, e.conversation_id, e.message_id, e.work_id, e.data_json, u.content AS said
+      FROM history_events h JOIN events e ON e.event_id = h.event_id
+      LEFT JOIN messages u ON e.type = 'turn' AND u.message_id = e.message_id
+      WHERE h.line_id = ? ORDER BY e.seq
+    `).all(row.line_id).map((event) => event.type === "turn"
+      ? { eventId: event.event_id, at: event.at, conversation: event.conversation_id, ref: `message:${event.message_id}`, said: event.said }
+      : { eventId: event.event_id, at: event.at, conversation: event.conversation_id, ref: `work:${event.work_id}`, work: parse(event.data_json, {}).title ?? null });
+    return {
+      lineId: row.line_id, id: `history:${row.line_id}`, period: row.period, startsAt: row.starts_at, label: row.label,
+      conversationId: row.conversation_id, revision: row.revision, summary: row.summary,
+      text: row.summary ?? countedText(events, row.conversation_id), events
+    };
   }
 
   buildContextManifest({ manifestId = randomUUID(), ownerId, taskId = null, conversationId = null, scope = "global", claimRevisionIds = [], sourceIds = [], excludedScopes = [], tokenBudget = 0 }) {
