@@ -137,7 +137,7 @@ npm run qa:arc -- --run sam-a --phases p1,p2,p3        # part of it; rerun with 
 npm run qa:arc -- --messages-per-session 20            # longer phases
 ```
 
-The simulated person and the judge need a model key: `OPENCODE_API`, or `EV_QA_API_KEY` with optional `EV_QA_MODEL_URL` / `EV_QA_MODEL`. EV needs its own key too. Simulator and judge are separate calls from EV, but by default they use the same model family, so a blind spot shared by all three could hide a failure. Spot-check `drift.md` against the transcripts, and consider pointing `EV_QA_MODEL` at a different model.
+The simulated person and the judge need a model key: `OPENCODE_API`, or `EV_QA_API_KEY` with optional `EV_QA_MODEL` (`provider/model`), `EV_QA_MODEL_URL` and `EV_QA_MODEL_API`. EV needs its own key too. Simulator and judge are separate calls from EV, but by default they use the same model family, so a blind spot shared by all three could hide a failure. Spot-check `drift.md` against the transcripts, and consider pointing `EV_QA_MODEL` at a different model.
 
 **Time and cost (estimates, not measured):** without tasks, a phase is about 16 EV turns plus 4 probes, each needing a model call, so a few minutes. Every message that becomes work adds 30 seconds to several minutes of OpenClaw and review time. The default arc's `workShare` of 25% means around 30 tasks, so a full arc is likely to run for an hour or more.
 

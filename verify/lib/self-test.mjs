@@ -1,39 +1,17 @@
 // Checks the harness itself. EV has no tool-calling loop yet, so the part of
 // the stand-in that speaks in tool calls is driven here by a minimal loop of
-// the kind EV1 will have, once per API dialect. It also documents, in running
-// code, what the stand-in expects from that loop.
+// the kind EV1 will have, built on EV's own model layer (pi-ai underneath),
+// once per API shape. It also documents, in running code, what the stand-in
+// expects from that loop.
 import assert from "node:assert/strict";
+import { modelTurn, toolResult, userMessage } from "../../apps/daemon/lib/ev-model.mjs";
 import { TOOLS } from "./protocol.mjs";
 import { startStandIn } from "./stand-in.mjs";
 
-const toolNames = [TOOLS.search.name, TOOLS.read.name, TOOLS.startWork.name, TOOLS.reply.name];
+const tools = [TOOLS.search.name, TOOLS.read.name, TOOLS.startWork.name, TOOLS.reply.name].map((name) => ({ name, description: name, parameters: { type: "object", properties: {} } }));
 
 /** What EV would do for each tool; here, canned results. */
 const run = { search: () => JSON.stringify({ hits: [{ id: "turn:41", text: "a hit" }] }), read: ({ id }) => `full text of ${id}`, start_work: ({ title }) => `started ${title}`, reply: () => "sent" };
-
-const wire = {
-  messages: {
-    path: "/v1/messages",
-    first: (text) => ({ system: "You are EV.", tools: toolNames.map((name) => ({ name, input_schema: { type: "object" } })), messages: [{ role: "user", content: text }] }),
-    calls: (reply) => reply.content.filter((part) => part.type === "tool_use").map((part) => ({ id: part.id, name: part.name, args: part.input })),
-    text: (reply) => reply.content.filter((part) => part.type === "text").map((part) => part.text).join(""),
-    extend: (body, reply, results) => { body.messages.push({ role: "assistant", content: reply.content }, { role: "user", content: results.map(({ id, output }) => ({ type: "tool_result", tool_use_id: id, content: output })) }); }
-  },
-  chat: {
-    path: "/v1/chat/completions",
-    first: (text) => ({ tools: toolNames.map((name) => ({ type: "function", function: { name, parameters: { type: "object" } } })), messages: [{ role: "system", content: "You are EV." }, { role: "user", content: text }] }),
-    calls: (reply) => (reply.choices[0].message.tool_calls ?? []).map((call) => ({ id: call.id, name: call.function.name, args: JSON.parse(call.function.arguments) })),
-    text: (reply) => reply.choices[0].message.content ?? "",
-    extend: (body, reply, results) => { body.messages.push(reply.choices[0].message, ...results.map(({ id, output }) => ({ role: "tool", tool_call_id: id, content: output }))); }
-  },
-  responses: {
-    path: "/v1/responses",
-    first: (text) => ({ instructions: "You are EV.", tools: toolNames.map((name) => ({ type: "function", name, parameters: { type: "object" } })), input: [{ role: "user", content: text }] }),
-    calls: (reply) => reply.output.filter((item) => item.type === "function_call").map((item) => ({ id: item.call_id, name: item.name, args: JSON.parse(item.arguments) })),
-    text: (reply) => reply.output.filter((item) => item.type === "message").flatMap((item) => item.content).map((part) => part.text).join(""),
-    extend: (body, reply, results) => { body.input.push(...reply.output, ...results.map(({ id, output }) => ({ type: "function_call_output", call_id: id, output }))); }
-  }
-};
 
 export async function selfTest() {
   const standIn = await startStandIn({
@@ -44,28 +22,34 @@ export async function selfTest() {
       return turn.reply(`${opened.text}; ${started.text}`);
     }
   });
+  const quiet = console.log;
+  console.log = () => {}; // the model layer logs every call
   try {
-    for (const [dialect, api] of Object.entries(wire)) {
-      const body = api.first("what was the cabin wifi password?");
+    // The three shapes as a custom endpoint, then EV's default model as the catalogue describes it
+    // (a Responses model that is given its tools inside the input).
+    const setups = [...["anthropic-messages", "openai-completions", "openai-responses"].map((api) => ({ EV_MODEL: `stand-in/${api}`, EV_MODEL_API: api })), {}];
+    for (const setup of setups) {
+      const env = { ...setup, EV_MODEL_URL: standIn.url };
+      const api = setup.EV_MODEL_API ?? "default model";
+      const context = { systemPrompt: "You are EV.", messages: [userMessage("what was the cabin wifi password?")], tools };
       const used = [];
       let said = null;
       for (let step = 0; step < 8 && said === null; step++) {
-        const response = await fetch(`${standIn.url}${api.path}`, { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "ev-main-agent/0.2" }, body: JSON.stringify(body) });
-        const reply = await response.json();
-        const calls = api.calls(reply);
-        if (!calls.length) { said = api.text(reply); break; }
-        used.push(...calls.map((call) => call.name));
-        const replyCall = calls.find((call) => call.name === TOOLS.reply.name);
-        if (replyCall) { said = replyCall.args.text; break; }
-        api.extend(body, reply, calls.map((call) => ({ id: call.id, output: run[call.name](call.args) })));
+        const turn = await modelTurn({ context, env, apiKey: "self-test", session: "self-test", code: "SELF_TEST", label: "main-agent", retryDelaysMs: [] });
+        context.messages.push(turn.message);
+        if (!turn.toolCalls.length) { said = turn.text; break; }
+        used.push(...turn.toolCalls.map((call) => call.name));
+        const replyCall = turn.toolCalls.find((call) => call.name === TOOLS.reply.name);
+        if (replyCall) { said = replyCall.arguments.text; break; }
+        context.messages.push(...turn.toolCalls.map((call) => toolResult(call, run[call.name](call.arguments))));
       }
-      assert.deepEqual(used, ["search", "read", "start_work", "reply"], `${dialect}: the scripted turn did not come through as the expected tool calls`);
-      assert.equal(said, "full text of turn:41; started Trip", `${dialect}: tool results did not get back to the script`);
+      assert.deepEqual(used, ["search", "read", "start_work", "reply"], `${api}: the scripted turn did not come through as the expected tool calls`);
+      assert.equal(said, "full text of turn:41; started Trip", `${api}: tool results did not get back to the script`);
     }
-    assert.equal(standIn.calls("ev").length, 3, "A request carrying a tool result was counted as a new turn");
+    assert.equal(standIn.calls("ev").length, setups.length, "A request carrying a tool result was counted as a new turn");
     assert.match(standIn.calls("ev")[0].text, /cabin wifi password/, "The stand-in did not read what the model was shown");
     assert.deepEqual(standIn.errors, [], "The stand-in recorded script errors");
-  } finally { await standIn.stop(); }
+  } finally { console.log = quiet; await standIn.stop(); }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) { await selfTest(); console.log("The stand-in speaks all three tool-calling dialects."); }
+if (import.meta.url === `file://${process.argv[1]}`) { await selfTest(); console.log("The stand-in speaks all three tool-calling API shapes."); }

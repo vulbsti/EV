@@ -7,7 +7,7 @@
 import { createServer } from "node:http";
 import {
   NotBuilt, TOOLS, decisionToday, dialectOf, learnerView, offeredTools, personMessage, roleOf, shownText,
-  textResponse, today, toolCallResponse, toolResults, workerReport, workerTurnKind
+  streamEvents, textResponse, today, toolCallResponse, toolResults, workerReport, workerTurnKind
 } from "./protocol.mjs";
 
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
@@ -107,7 +107,7 @@ export async function startStandIn(script = {}) {
       pending.delete(waitingId);
       turn.step = deferred();
       result.resolve(results.get(waitingId));
-      return send(response, 200, await turn.step.promise);
+      return stream(response, dialect, await turn.step.promise);
     }
     const text = shownText(dialect, body);
     const role = roleOf({ userAgent: request.headers["user-agent"], text });
@@ -116,7 +116,7 @@ export async function startStandIn(script = {}) {
     const status = outage.get(role) ?? outage.get("*");
     if (status) { call.refused = status; return send(response, status, { error: "stand-in outage" }); }
     const turn = beginTurn(role, call, dialect);
-    send(response, 200, await turn.step.promise);
+    stream(response, dialect, await turn.step.promise);
   }
 
   async function workerJob(request, response) {
@@ -136,6 +136,13 @@ export async function startStandIn(script = {}) {
     if (typeof plan === "string") plan = helpers.done(plan);
     job.plan = plan;
     send(response, 200, plan ?? helpers.done());
+  }
+
+  /** A model reply, streamed the way a provider sends it. */
+  function stream(response, dialect, reply) {
+    if (response.writableEnded || response.destroyed) return;
+    response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+    response.end(streamEvents(dialect, reply).join(""));
   }
 
   function send(response, status, value) {

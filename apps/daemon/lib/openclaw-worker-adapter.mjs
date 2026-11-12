@@ -3,18 +3,16 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { modelSettings } from "./ev-model.mjs";
 import { ensurePrivateDirectorySync } from "./file-permissions.mjs";
 import { publicUsage } from "./pi-worker-adapter.mjs";
 import { readTranscript } from "./openclaw-transcript.mjs";
 import { TailBuffer, addCallUsage, emptyUsage, exceededBudget, writeDiagnosticsLog } from "./worker-usage.mjs";
 
-const PROVIDER = "opencode-go";
 const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
-// EV_OPENCLAW_MODEL / EV_OPENCLAW_API choose the worker model and the API
-// OpenClaw speaks to it with (openai-responses, openai-completions or
-// anthropic-messages), matching what OpenCode Go serves for that model.
-const workerModel = () => process.env.EV_OPENCLAW_MODEL || "gpt-6-luna";
-const workerApi = () => process.env.EV_OPENCLAW_API || "openai-responses";
+// Agents use the model EV_MODEL names (its API shape and base URL come from
+// the same record as EV's own calls); EV_OPENCLAW_MODEL picks a different one.
+const workerModel = () => modelSettings(process.env, process.env.EV_OPENCLAW_MODEL || undefined);
 
 // Key-free web search. The ev-openclaw image bakes the DuckDuckGo plugin in;
 // on the host, EV_OPENCLAW_SEARCH_PLUGIN names an npm-installed copy
@@ -34,6 +32,7 @@ function stableSessionHeader(taskId) {
 
 export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null }) {
   const model = workerModel();
+  const primary = `${model.provider}/${model.id}`;
   const port = 24000 + (createHash("sha256").update(`browser:${taskId}`).digest().readUInt16BE(0) % 18000);
   return {
     gateway: { port },
@@ -51,19 +50,19 @@ export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null 
         // is checked before each model call inside a turn.
         contextPruning: { mode: "cache-ttl", ttl: "5m" },
         compaction: { midTurnPrecheck: { enabled: true } },
-        model: { primary: `${PROVIDER}/${model}` }
+        model: { primary }
       },
-      entries: { "ev-worker": { workspace: workspacePath, model: { primary: `${PROVIDER}/${model}` } } }
+      entries: { "ev-worker": { workspace: workspacePath, model: { primary } } }
     },
     models: {
       mode: "merge",
       providers: {
-        [PROVIDER]: {
-          baseUrl: workerApi() === "anthropic-messages" ? "https://opencode.ai/zen/go" : "https://opencode.ai/zen/go/v1",
+        [model.provider]: {
+          baseUrl: model.baseUrl,
           apiKey: "${OPENCODE_API}",
-          api: workerApi(),
+          api: model.api,
           headers: { "x-opencode-session": stableSessionHeader(taskId), "User-Agent": "ev-openclaw-prototype/0.1" },
-          models: [{ id: model, name: `${model} (OpenCode Go)`, reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272000, maxTokens: 16000, ...(workerApi().startsWith("openai") ? { compat: { supportsPromptCacheKey: true } } : {}) }]
+          models: [{ id: model.id, name: model.name ?? model.id, reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272000, maxTokens: 16000, ...(model.api.startsWith("openai") ? { compat: { supportsPromptCacheKey: true } } : {}) }]
         }
       }
     }
@@ -82,8 +81,9 @@ export function parseOpenClawOutput(stdout) {
     return { status: "failed", code: "OPENCLAW_PROVIDER_ERROR", message: text.slice(0, 500) };
   }
   const actual = envelope.meta?.agentMeta ?? {};
-  if (actual.provider !== PROVIDER || actual.model !== workerModel()) {
-    return { status: "failed", code: "OPENCLAW_MODEL_MISMATCH", message: "OpenClaw did not use the selected OpenCode Go model" };
+  const model = workerModel();
+  if (actual.provider !== model.provider || actual.model !== model.id) {
+    return { status: "failed", code: "OPENCLAW_MODEL_MISMATCH", message: "OpenClaw did not use the selected model" };
   }
   return { status: "completed", text, usage: actual.usage ?? null, events: [] };
 }

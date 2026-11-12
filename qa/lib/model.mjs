@@ -1,7 +1,8 @@
 // The simulated user and the judges are model calls separate from EV, made
-// through EV's own client. EV_QA_MODEL / EV_QA_MODEL_API pick a different model
-// for them (recommended, so EV is not graded by its own blind spots); they
-// default to EV_MODEL / EV_MODEL_API.
+// through EV's own client. EV_QA_MODEL (provider/model, as EV_MODEL) picks a
+// different model for them (recommended, so EV is not graded by its own blind
+// spots); it defaults to EV_MODEL. EV_QA_MODEL_URL / EV_QA_MODEL_API send
+// them to another endpoint, as EV_MODEL_URL / EV_MODEL_API do for EV.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -18,7 +19,8 @@ function dotEnvKey(name) {
 export function qaModelEnv(env = process.env) {
   return {
     EV_MODEL: env.EV_QA_MODEL || env.EV_MODEL || dotEnvKey("EV_QA_MODEL") || dotEnvKey("EV_MODEL") || "",
-    EV_MODEL_API: env.EV_QA_MODEL_API || env.EV_MODEL_API || dotEnvKey("EV_QA_MODEL_API") || dotEnvKey("EV_MODEL_API") || ""
+    EV_MODEL_URL: env.EV_QA_MODEL_URL || dotEnvKey("EV_QA_MODEL_URL") || "",
+    EV_MODEL_API: env.EV_QA_MODEL_API || dotEnvKey("EV_QA_MODEL_API") || ""
   };
 }
 
@@ -29,8 +31,6 @@ export async function askModelJson(input, { maxOutputTokens = 3_000, timeoutMs =
     input, apiKey, label, code: "QA_MODEL_UNAVAILABLE", maxOutputTokens, timeoutMs,
     session: `qa-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     env: qaModelEnv(),
-    // EV_QA_MODEL_URL redirects the calls (e.g. to a local stand-in for smoke tests).
-    ...(process.env.EV_QA_MODEL_URL ? { fetchImpl: (url, init) => fetch(String(url).replace("https://opencode.ai/zen/go/v1", process.env.EV_QA_MODEL_URL.replace(/\/$/, "")), init) } : {}),
     parse: (text) => parseModelJson(text, `QA model returned unreadable JSON: ${String(text).slice(0, 200)}`)
   });
 }

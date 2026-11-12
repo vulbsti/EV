@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { understandMessage } from "../lib/ev-main-agent.mjs";
+import { modelReply } from "./model-reply.mjs";
 
-const answering = (value) => async () => ({ ok: true, json: async () => ({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify(value) }] }] }) });
+const answering = (value) => async () => modelReply(JSON.stringify(value));
 
 test("EV asks at most one round of questions, then works with what it assumed", async () => {
   const decision = { action: "clarify", message: "Quick check:", questions: ["Live-action edit or fully animated?"], request: "Edit the video in a K-pop anime style" };
@@ -16,7 +17,7 @@ test("EV asks at most one round of questions, then works with what it assumed", 
 });
 
 test("model calls retry provider blips and unreadable replies, but not client errors", async () => {
-  const replies = [new Response("busy", { status: 503 }), { ok: true, json: async () => ({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "not json" }] }] }) }];
+  const replies = [new Response("busy", { status: 503 }), modelReply("not json")];
   let calls = 0;
   const flaky = async (...args) => (calls++ < replies.length ? replies[calls - 1] : answering({ action: "reply", message: "Hi" })(...args));
   const understood = await understandMessage({ message: "hi", apiKey: "test", fetchImpl: flaky, retryDelaysMs: [0, 0] });
