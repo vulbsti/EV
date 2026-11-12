@@ -1,6 +1,6 @@
 # Memory types: what EV should remember, and how each kind changes over time
 
-Research note, 2026-10-15. Based on EV `main` at `0568960`, EV's own design docs (`docs/assistant/PERSONAL_MODEL.md`, `docs/assistant/MEMORY_RESEARCH.md`), the xiryn reviews in `/mnt/project-files/reviews/xiryn/`, and published agent-memory work. Status: built in `apps/daemon/lib/ev-memory.mjs` (steps 1-3 of the suggested order below; episode summaries, step 4, are not built yet).
+Research note, 2026-10-15. Based on EV `main` at `0568960`, EV's own design docs (`docs/assistant/PERSONAL_MODEL.md`, `docs/assistant/MEMORY_RESEARCH.md`), the xiryn reviews in `/mnt/project-files/reviews/xiryn/`, and published agent-memory work. Status: built in `apps/daemon/lib/ev-memory.mjs` (steps 1-3 of the suggested order below). Step 4 is built as the dated history (see "What was built" at the end). One rule here changed when it was built: a guess (a hypothesis or a candidate lesson) is no longer made active by a count of supporting episodes; the learner judges when its evidence is enough and gives a reason, which is kept and shown (decided 2026-11-12).
 
 ## The short answer
 
@@ -85,7 +85,7 @@ This is the "failed event" memory from the question, and it needs the most care,
 
 A lesson carries what it applies to (task type, project, tool and version), how many separate episodes support it, the last time it was confirmed, and links to those episodes. Its rules:
 
-- **One failure makes a candidate, not a rule.** It becomes active after it recurs in a different task, or immediately if the person states it ("never use that API again").
+- **One failure makes a candidate, not a rule.** It becomes active when the learner judges that it has held up (typically when it recurs in a different task), with its reason kept, or immediately if the person states it ("never use that API again").
 - **A later counterexample weakens or retires it.** If a task succeeds doing the thing the lesson warned against, the lesson is narrowed or dropped. That stops EV from becoming superstitious.
 - **Environment lessons expire with the environment.** "OpenClaw's browser can't log into X" is reviewed when OpenClaw or the site changes, not kept forever (`MEMORY_RESEARCH.md` §10 already says procedures must be revalidated when tools change).
 - **Lessons about the work never become traits of the person.** "Three tasks needed four review rounds" is about EV's briefs, not evidence that the person is demanding.
@@ -168,3 +168,20 @@ What the arc does **not** test yet is lessons. It would need a phase where a tas
 - Zep / Graphiti (arXiv 2501.13956): facts with valid-time intervals that are closed rather than deleted when superseded.
 - Hindsight (arXiv 2512.12818): separates facts, experiences, observations and beliefs; already listed in `MEMORY_RESEARCH.md` as a backend candidate.
 - The paper references are from prior knowledge and EV's own docs; they were not re-fetched for this note.
+
+## What was built
+
+How a memory moves, as built in `ev-memory.mjs` and `assistant-memory.mjs`:
+
+| State | How it is stored | How it gets there |
+| --- | --- | --- |
+| Heard | `active`, written by the person | Their own words, checked verbatim against what they typed (the learner, or EV's `remember`) |
+| A guess | `candidate` | Anything inferred, or saved without their words. It rests on the events it came from; each `confirm` adds the confirming event to its evidence |
+| Relied on | `active`, written by EV, with `reliedBecause` | The learner answers `confirm` with `rely: true` and a `reason`. No count promotes anything. A guess that later changes without their words is a guess again |
+| Past | `retired`, or an earlier revision | A change or a retirement keeps the old words with dates |
+| Forgotten | erased | The words of every revision, the events and messages behind it, and every history line that rested on them |
+
+The learner is shown each guess with its evidence (date and the person's words, or the work), and each relied-on memory with its reason. EV's `read` on a memory shows the same, and the memory page lists the evidence and the reason.
+
+The dated history (`history_lines`, `history_events` in the store) is the summary of episodes the note above asked for, kept as a view on the events rather than a kind of memory. The learner writes one line per conversation and day in the same pass that reads those events (`history` in its answer), and the line links to every event it summarises. As lines age they fold, by date alone: a day's conversations into one line for the day, days older than a week into their week, weeks older than two months into their month, each merge written by the learner. A line has its own entry in the one search index, holding its words and its dates. Erasing an event removes it from every line: a line that rested only on it is deleted, any other line loses its words and is written again from the events it still rests on.
+
