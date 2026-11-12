@@ -72,14 +72,17 @@ export function revisionPrompt({ request, brief, review, round, sharedPath = nul
 }
 
 /**
- * Sent to the same agent session to carry on after it waited for input, or
- * when the person said something about the work while it was running.
+ * Sent to the same agent session to carry on: after it waited for input,
+ * when the person said something about the work while it was running, or
+ * when they came back to it (`cameBack`) after it was held or delivered.
  */
-export function continuationPrompt({ request, brief, answers = [], instructions = [] }) {
+export function continuationPrompt({ request, brief, answers = [], instructions = [], cameBack = null }) {
+  const listed = (items) => items.map((item) => `- ${item}`).join("\n");
   return [
-    answers.length ? `Answer to your question:\n${answers.map((item) => `- ${item}`).join("\n")}` : "",
-    instructions.length ? `While you were working, the person told EV this about the task (it updates the brief where they differ):\n${instructions.map((item) => `- ${item}`).join("\n")}` : "",
-    answers.length || instructions.length ? "Take this into account and carry on from where you are. Keep the work that still fits, change what no longer does, and check the actual result again." : "You were interrupted. Check what is already in your workspace and carry on from where you left off.",
+    cameBack ? `The person came back to this work after ${cameBack.after === "held" ? "it was put on hold and you were stopped" : "your result was delivered to them"}. What they said (it updates the brief where they differ):\n${listed(cameBack.said)}` : "",
+    answers.length ? `Answer to your question:\n${listed(answers)}` : "",
+    instructions.length ? `While you were working, the person told EV this about the task (it updates the brief where they differ):\n${listed(instructions)}` : "",
+    cameBack || answers.length || instructions.length ? "Take this into account and carry on from where you are. Keep the work that still fits, change what no longer does, and check the actual result again." : "You were interrupted. Check what is already in your workspace and carry on from where you left off.",
     `Original request:\n${request}`,
     `EV's brief:\n${briefSummary(brief)}`,
     NEEDS_INPUT,

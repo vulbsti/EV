@@ -111,12 +111,12 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 Most of what people say after a result is a follow-up, and "stop" often means "not now" or "not like that". So work that has finished or been stopped keeps what it knows and made, and EV can send the person back into it. A run is watched for progress, not for the time on a clock, and a run that dies is resumed instead of failing the task. The reviewer opens and tries the real output before the person ever sees it, and can reach nothing outside the task it is reviewing.
 
-- ✗ **R-01** EV can send a follow-up into work that has finished: the same agent picks it up, with what it knows and its files, instead of a new task starting from nothing.
-- ✗ **R-07** Stopping work does not destroy it. When the person comes back to it, even with a change, the same agent continues from where it stood.
+- ✓ **R-01** EV can send a follow-up into work that has finished: the same agent picks it up, with what it knows and its files, instead of a new task starting from nothing.
+- ✓ **R-07** Stopping work does not destroy it. When the person comes back to it, even with a change, the same agent continues from where it stood.
 - ✓ **R-02** An agent that keeps making progress is left to finish, however long it takes.
-- ✗ **R-03** An agent that goes silent is noticed within the stall limit, and its task is resumed, not failed.
-- ✗ **R-04** After EV crashes, the agent it left behind is stopped before a new one takes over the same work.
-- ✗ **R-05** The reviewer can see all of the delivered file, not just what the agent says about it.
+- ✓ **R-03** An agent that goes silent is noticed within the stall limit, and its task is resumed, not failed.
+- ✓ **R-04** After EV crashes, the agent it left behind is stopped before a new one takes over the same work.
+- ✓ **R-05** The reviewer can see all of the delivered file, not just what the agent says about it.
 - ✓ **R-06** The reviewer is never shown a file outside the task it is reviewing, even when the agent's report points at one.
 
 Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):

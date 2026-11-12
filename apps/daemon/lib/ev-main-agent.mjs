@@ -43,10 +43,10 @@ export const TOOLS = [
     title: string("A few plain words naming the work."),
     request: string("The brief, self-contained: what they want and why, with references resolved from the conversation, what a good result is for this person, and what to assume where they left something open.")
   }),
-  tool("message_task", "Tell an existing piece of work something: a change, more detail, or the answer to its question. The same agent gets it and keeps what it has made. With stop, that work is stopped and nothing else is touched.", {
+  tool("message_task", "Tell an existing piece of work something, whatever its state: a change, more detail, the answer to its question, or a follow-up. It steers running work, carries on work that is on hold, and reopens work already delivered; the same agent gets it, in its own session with everything it knows and has made. With stop, that one piece of work is put on hold: its agent stops, what it made is kept, and nothing else is touched.", {
     task: string("The work's id, such as work:…."),
     text: string("What to tell it. May be empty when only stopping."),
-    stop: { type: "boolean", description: "True to stop this work." }
+    stop: { type: "boolean", description: "True to put this work on hold." }
   }, ["task"]),
   tool("remember", "Save something the person has just told you about themselves, so EV knows it from now on. EV also learns from every conversation in the background; use this when it should hold from the next message.", {
     text: string("One short sentence in the third person, such as \"Prefers metric units.\""),
@@ -108,13 +108,6 @@ export function taskUpdate(task) {
   if (task.status === "waiting") {
     const question = task.history?.findLast((event) => event.type === "input_needed")?.question;
     return question ? `I need one thing from you to carry on with "${title}": ${question}` : null;
-  }
-  if (task.status === "failed" && task.error?.code === "QUALITY_REVIEW_UNAVAILABLE") {
-    return `"${title}" is finished, but my quality check couldn't run, so I've held it back instead of calling it done. The unchecked result is on the task card if you want to look.`;
-  }
-  if (task.status === "failed") {
-    const reason = (task.error?.message ?? "The agent stopped before producing a result").trim().replace(/([^.!?])$/, "$1.");
-    return `I couldn't finish "${title}". ${reason} Tell me if you want me to try a different way.`;
   }
   if (task.status !== "completed") return null;
   const report = task.result?.report;
