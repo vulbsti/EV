@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permissions.mjs";
 
 import { reviewOpenClawReport } from "./ev-quality-gate.mjs";
-import { OpenClawWorkerAdapter } from "./openclaw-worker-adapter.mjs";
+import { OpenClawWorkerAdapter, stopLeftoverRun } from "./openclaw-worker-adapter.mjs";
 import { readTranscript } from "./openclaw-transcript.mjs";
 import { validateOpenClawTaskReport } from "./openclaw-task-report.mjs";
 import { continuationPrompt, executionPrompt, revisionPrompt, workBrief, wrapUpPrompt } from "./ev-work-prompts.mjs";
@@ -15,11 +15,14 @@ import { ScopedWorkspace } from "./scoped-workspace.mjs";
 import { renderBrief, renderReviews, sharedLayout, writeSharedFiles } from "./shared-workspace.mjs";
 import { emptyUsage, exceededBudget, mergeUsage } from "./worker-usage.mjs";
 
-// Worker failures that say nothing about the work itself. Workspace-only
-// profiles have no external side effects, so one fresh attempt is safe.
 // A loop that has gone this many rounds without an accept is treated as stuck.
 const ROUNDS_BEFORE_ASKING = 8;
-const TRANSIENT_WORKER_CODES = new Set(["PI_PROCESS_EXIT", "PI_PROCESS_START", "PI_EMPTY_RESULT", "PI_TIMEOUT"]);
+// An agent that crashes or goes silent is restarted in its own session this
+// many times in a row; after that the person is asked, and nothing is lost.
+const RESTARTS_BEFORE_ASKING = 3;
+// Worker failures that say nothing about the work itself. Workspace-only
+// profiles have no external side effects, so one fresh attempt is safe.
+const TRANSIENT_WORKER_CODES = new Set(["PI_PROCESS_EXIT", "PI_PROCESS_START", "PI_EMPTY_RESULT", "PI_STALLED"]);
 // Admission order: finish work already under way before starting new work,
 // and let what the user is waiting on go ahead of background preparation.
 const PRIORITY = Object.freeze({ continuing: 0, interactive: 1, background: 2 });
@@ -32,6 +35,17 @@ function codedError(code, message, details = {}) {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+/**
+ * What the person is asked when work cannot get past a problem on its own.
+ * Work never ends on a problem: it waits for their answer with everything
+ * it made, and carries on in the same session.
+ */
+function problemQuestion(error) {
+  if (error.code === "QUALITY_REVIEW_UNAVAILABLE") return "The work is finished, but my quality check couldn't run, so I've held the result back instead of handing it over unchecked. Shall I try again?";
+  const reason = String(error.message ?? "it stopped unexpectedly").trim().replace(/[.!?]$/, "");
+  return `The agent couldn't get past a problem (${reason}). Everything it made so far is kept. Shall it try again, or go about it differently?`;
 }
 
 async function waitForWorkerExit(run) {
@@ -47,14 +61,6 @@ function abortableDelay(ms, signal) {
     const timer = setTimeout(resolve, ms);
     signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
   });
-}
-
-function workerError(result) {
-  return {
-    code: result.code ?? "WORKER_ERROR",
-    message: result.message ?? "Worker failed",
-    ...(result.diagnosticsLog ? { diagnosticsLog: result.diagnosticsLog } : {})
-  };
 }
 
 /** Accepts both the review shape and the older {pass, issues} verdict. */
@@ -141,7 +147,6 @@ export function createFixedCapabilityProfiles({ projectRoot = PROJECT_ROOT } = {
       skillPaths: Object.freeze([]),
       requireContext: true,
       requireArtifact: false,
-      timeoutMs: 300_000,
       budget: Object.freeze({ maxTotalTokens: 0, maxCostUsd: 0, maxToolCalls: -1 }),
     }),
   });
@@ -188,7 +193,8 @@ export class AssistantWorkerService {
     provider = process.env.EV_WORKER_PROVIDER ?? "opencode-go",
     model = process.env.EV_WORKER_MODEL ?? "deepseek-v4.1-flash",
     expectedVersion = process.env.EV_PI_VERSION ?? "0.84.4",
-    timeoutMs = Number(process.env.EV_WORKER_TIMEOUT_MS ?? 120_000),
+    // The watchdog: an agent that shows no progress for this long is restarted.
+    stallMs = Number(process.env.EV_WORKER_STALL_MS ?? 600_000),
     settlementDelayMs = Number(process.env.EV_WORKER_SETTLEMENT_DELAY_MS ?? 0),
     reviewHoldMs = (process.env.EV_REVIEW_HOLD_MS ?? "30000,120000").split(",").map(Number).filter((ms) => ms >= 0),
     // Every OpenClaw turn runs in a container (image EV_OPENCLAW_IMAGE, built
@@ -210,7 +216,7 @@ export class AssistantWorkerService {
     this.provider = provider;
     this.model = model;
     this.expectedVersion = expectedVersion;
-    this.timeoutMs = timeoutMs;
+    this.stallMs = stallMs;
     this.settlementDelayMs = Math.max(0, settlementDelayMs);
     this.reviewHoldMs = reviewHoldMs;
     this.openClawSandbox = openClawSandbox;
@@ -225,14 +231,14 @@ export class AssistantWorkerService {
     this.stopping = false;
     this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => profile.capability === "openclaw-general-v1"
       ? new OpenClawWorkerAdapter({
-        taskId: task.taskId, workspacePath, sessionDir, timeoutMs: profile.timeoutMs, homeDir: this._home(task.taskId),
+        taskId: task.taskId, workspacePath, sessionDir, stallMs: this.stallMs, homeDir: this._home(task.taskId),
         sandbox: this.openClawSandbox && { ...this.openClawSandbox, mountRoot: task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath }
       })
       : new PiWorkerAdapter({
       executable: this.executable,
       sessionDir,
       cwd: workspacePath,
-      timeoutMs: profile.timeoutMs ?? this.timeoutMs,
+      stallMs: this.stallMs,
       provider: this.provider,
       model: this.model,
       expectedVersion: this.expectedVersion,
@@ -292,31 +298,34 @@ export class AssistantWorkerService {
     return task;
   }
 
-  async cancelTask({ taskId, reason = "user-requested", commandId = null, expectedRevision = null }) {
-    // Persist cancellation before touching the child process. This revokes the
-    // fencing token so a late worker result cannot commit after cancellation.
+  /**
+   * Puts work on hold. The hold is stored before the agent is touched: that
+   * revokes the run's fencing token, so nothing it hands in later can land.
+   * Its session, workspace and files stay, ready to carry on.
+   */
+  async holdTask({ taskId, reason = "user-requested", commandId = null, expectedRevision = null }) {
     const command = commandId
-      ? await this.supervisor.commandTask({ taskId, commandId, type: "cancel", expectedRevision, reason })
-      : { replayed: false, task: await this.supervisor.cancelTask({ taskId, reason }) };
-    await this.stopRun(taskId, reason);
-    const task = await this.supervisor.getTask(taskId);
-    return { ...task, replayed: command.replayed, task };
+      ? await this.supervisor.commandTask({ taskId, commandId, type: "hold", expectedRevision, reason })
+      : { replayed: false, held: this.supervisor.hold(taskId, { reason }) };
+    await this.stopRun(taskId);
+    return { replayed: command.replayed, task: await this.supervisor.getTask(taskId) };
   }
 
-  /** Ends the agent run of work already marked stopped, and waits for it to wind down. */
-  async stopRun(taskId, reason = "user-requested") {
+  /** Ends the agent run of work already put on hold, and waits for it to wind down. */
+  async stopRun(taskId) {
     const active = this.activeRuns.get(taskId);
     if (!active) return;
-    active.cancelRequested = true;
+    active.stopRequested = true;
     active.controller?.abort();
     this._pumpWorkers();
-    if (active.run) await active.adapter.cancel(active.run, { reason });
+    if (active.run) await active.adapter.stop(active.run);
     await active.promise;
   }
 
   /**
-   * Passes something the person said to unfinished work. A running agent gets
-   * it at its next step in the same session; a waiting one resumes with it.
+   * Passes something the person said to a piece of work. A running agent gets
+   * it at its next step in the same session; waiting, held or delivered work
+   * carries on with it.
    */
   async instructTask({ taskId, text, source = null }) {
     if (typeof text !== "string" || !text.trim()) throw codedError("INVALID_INSTRUCTION", "instruction text is required");
@@ -367,6 +376,12 @@ export class AssistantWorkerService {
     if (this.activeRuns.size) {
       return { recoveredTaskIds: [], skippedActiveTaskIds: [...this.activeRuns.keys()] };
     }
+    // A run with no recorded end was live when EV died: its agent may still
+    // be running. It is stopped before anything else takes over that work.
+    for (const run of this.supervisor.liveRuns()) {
+      await stopLeftoverRun(run).catch(() => {});
+      this.supervisor.endRun(run.runId, "EV restarted");
+    }
     const recovery = await this.supervisor.recover();
     for (const taskId of recovery.recoveredTaskIds) this.dispatch(taskId);
     return recovery;
@@ -398,7 +413,7 @@ export class AssistantWorkerService {
           if (error.code !== "STALE_FENCING_TOKEN" && error.code !== "INVALID_TASK_TRANSITION") throw error;
         });
       }
-      if (entry.run) await entry.adapter.cancel(entry.run, { reason: "daemon-shutdown" });
+      if (entry.run) await entry.adapter.stop(entry.run);
       if (entry.releaseSettlement) {
         clearTimeout(entry.settlementTimer);
         entry.releaseSettlement();
@@ -450,9 +465,12 @@ export class AssistantWorkerService {
   /** Starts (or queues for a free agent) work that is stored and queued. */
   dispatch(taskId) {
     if (this.activeRuns.has(taskId)) return this.activeRuns.get(taskId).promise;
-    const active = { taskId, run: null, runId: null, lease: null, adapter: null, cancelRequested: false, shutdownRequested: false, settlementTimer: null, releaseSettlement: null, promise: null };
+    const active = { taskId, run: null, runId: null, lease: null, adapter: null, stopRequested: false, shutdownRequested: false, settlementTimer: null, releaseSettlement: null, promise: null };
     active.promise = this._execute(active).finally(() => {
       this.activeRuns.delete(taskId);
+      // Work put on hold and sent something again before its old run had
+      // wound down is queued once more: it starts now, in the same session.
+      if (active.lease && !this.stopping) this.supervisor.getTask(taskId).then((task) => { if (task.status === "queued") this.dispatch(taskId); }).catch(() => {});
     });
     // EV's main agent tells the person when work settles; a failing listener
     // must never affect the task itself.
@@ -463,7 +481,7 @@ export class AssistantWorkerService {
 
   _pumpWorkers() {
     this.workerQueue = this.workerQueue.filter((entry) => {
-      if (!entry.active.cancelRequested && !entry.active.shutdownRequested) return true;
+      if (!entry.active.stopRequested && !entry.active.shutdownRequested) return true;
       entry.resolve(null);
       return false;
     });
@@ -496,31 +514,64 @@ export class AssistantWorkerService {
     };
   }
 
-  async _runWorker(active, prompt, { reuseCompleted = true, sessionId = active.runId, budget: budgetOverride = null } = {}) {
+  /**
+   * One prompt to the agent. An agent that crashes or goes silent past the
+   * stall limit is restarted in the same session, with its files, a few
+   * times; if it still cannot get on, its last result goes back to the
+   * caller, which puts the problem to the person.
+   */
+  async _runWorker(active, prompt, options = {}) {
+    let result = await this._runOnce(active, prompt, options);
+    for (let restart = 1; active.isGeneral && ["failed", "stalled"].includes(result?.status) && restart <= RESTARTS_BEFORE_ASKING; restart++) {
+      if (active.stopRequested || active.shutdownRequested) break;
+      await this._progress(active, { phase: "working", message: `The agent stopped (${result.message ?? result.status}); restarting it in the same session.`, code: result.code ?? null }, "worker_retry");
+      result = await this._runOnce(active, `You were interrupted while working on this. Check what is already in your workspace and carry on from where you left off.\n\n${prompt}`, { ...options, reuseCompleted: false });
+    }
+    return result;
+  }
+
+  async _runOnce(active, prompt, { reuseCompleted = true, sessionId = active.runId, budget: budgetOverride = null } = {}) {
     if (active.isGeneral) await this._progress(active, { phase: "waiting", message: "Waiting for an available agent." });
     const release = await new Promise((resolve) => {
       this.workerQueue.push({ active, resolve, priority: this._priority(active), sequence: this.queueSequence++ });
       this._pumpWorkers();
     });
-    if (!release) return { status: "cancelled" };
+    if (!release) return { status: "stopped" };
     let result;
+    // The run's own row: its process, its last sign of progress, how it ended.
+    const runRow = randomUUID();
+    let opened = false;
+    let notedAt = 0;
+    const onProgress = () => {
+      if (!opened || Date.now() - notedAt < 2_000) return;
+      notedAt = Date.now();
+      try { this.supervisor.runProgress(runRow); } catch {}
+    };
     try {
-      if (active.shutdownRequested || active.cancelRequested) return { status: "cancelled" };
+      if (active.shutdownRequested || active.stopRequested) return { status: "stopped" };
       const budget = budgetOverride ?? this._remainingBudget(active, active.profile);
-      active.run = await active.adapter.start({ runId: active.runId, sessionId, prompt, reuseCompleted: reuseCompleted && !active.reuseBlocked, budget });
-      if (active.shutdownRequested || active.cancelRequested) await active.adapter.cancel(active.run, { reason: "stopped" });
-      if (active.isGeneral && !active.shutdownRequested && !active.cancelRequested) await this._progress(active, { phase: "working", message: active.round > 1 ? "The agent is revising its work from EV's review." : "An agent is carrying out the request.", workerPid: active.run.child?.pid ?? null });
+      active.run = await active.adapter.start({ runId: active.runId, sessionId, prompt, reuseCompleted: reuseCompleted && !active.reuseBlocked, budget, onProgress });
+      if (active.run.child?.pid) {
+        this.supervisor.openRun({ runId: runRow, taskId: active.taskId, pid: active.run.child.pid, container: active.run.sandboxed ? active.run.containerName : null });
+        opened = true;
+      }
+      if (active.shutdownRequested || active.stopRequested) await active.adapter.stop(active.run);
+      if (active.isGeneral && !active.shutdownRequested && !active.stopRequested) await this._progress(active, { phase: "working", message: active.round > 1 ? "The agent is revising its work from EV's review." : "An agent is carrying out the request.", workerPid: active.run.child?.pid ?? null });
       result = await active.run.completion;
       await waitForWorkerExit(active.run);
     } catch (error) {
-      if (active.run) { await active.adapter.cancel(active.run, { reason: "worker-interrupted" }); await waitForWorkerExit(active.run); }
+      if (active.run) { await active.adapter.stop(active.run); await waitForWorkerExit(active.run); }
       throw error;
-    } finally { active.run = null; release(); }
+    } finally {
+      if (opened) { try { this.supervisor.endRun(runRow, result ? `${result.status}${result.code ? ` (${result.code})` : ""}` : "interrupted"); } catch {} }
+      active.run = null;
+      release();
+    }
     if (result?.usage) {
       mergeUsage(active.usage, result.usage);
       if (active.isGeneral) await this._progress(active, { usage: { ...active.usage } }, "usage").catch(() => {});
     }
-    if (active.isGeneral && result?.status === "budget_exceeded" && !active.wrappingUp && !active.cancelRequested && !active.shutdownRequested) {
+    if (active.isGeneral && result?.status === "budget_exceeded" && !active.wrappingUp && !active.stopRequested && !active.shutdownRequested) {
       return { ...result, text: (await this._wrapUp(active)) ?? result.text };
     }
     return result;
@@ -546,7 +597,7 @@ export class AssistantWorkerService {
   /** One fresh attempt after a failure that says nothing about the work. */
   async _runWorkerWithRetry(active, prompt, options = {}) {
     const result = await this._runWorker(active, prompt, options);
-    if (active.isGeneral || !TRANSIENT_WORKER_CODES.has(result?.code) || active.cancelRequested || active.shutdownRequested) return result;
+    if (active.isGeneral || !TRANSIENT_WORKER_CODES.has(result?.code) || active.stopRequested || active.shutdownRequested) return result;
     await this._progress(active, { message: "The worker stopped unexpectedly; trying once more.", code: result.code }, "worker_retry");
     return this._runWorker(active, `${prompt}\n\nA previous attempt at this task stopped unexpectedly. Check what is already in the workspace before continuing.`, { ...options, sessionId: `${active.runId}-retry` });
   }
@@ -572,22 +623,26 @@ export class AssistantWorkerService {
   }
 
   /**
-   * Carries on a task that waited for the person. The OpenClaw session is keyed
-   * by task id, so the agent resumes with its own context and files.
+   * Carries on work that has run before, in the same session (keyed by task
+   * id) with its own context and files: after the person answered its
+   * question, after it was held or delivered and they came back to it, or
+   * after EV restarted under it. Spend, rounds and reviews come from its
+   * recorded events (see _restoreRunState).
    */
-  async _resumeParked(active, task, parked) {
+  async _carryOn(active, task) {
     const request = task.input.metadata.sourceRequest;
-    // Recorded spend already includes what was spent before the pause.
-    if (!active.restoredUsage) mergeUsage(active.usage, parked.state?.usage);
-    active.round = parked.state?.round ?? active.round;
-    // The person has just answered, so the stuck check starts over from here.
-    active.reviews = parked.state?.reviews ?? [];
-    active.askedAt = { reviews: active.reviews.length, round: active.round };
-    active.lastUnresolved = null;
     active.brief = workBrief(task.input.metadata, this._appliedUpdates(task));
-    const answers = await this._takeInstructions(active);
-    await this._progress(active, { phase: "working", message: answers.length ? "The agent is carrying on with your answer." : "The agent is carrying on where it left off." });
-    return this._runWorker(active, continuationPrompt({ request, brief: active.brief, answers }), { reuseCompleted: false });
+    // Where it stood before this run: waiting for an answer, resting, or interrupted.
+    const stood = task.history.findLast((event) => ["input_needed", "held", "completed", "recovered", "interrupted"].includes(event.type))?.type;
+    const asked = stood === "input_needed";
+    const resting = stood === "held" || stood === "completed";
+    // The person has just answered, so the stuck check starts over from here.
+    if (asked || resting) active.askedAt = { reviews: active.reviews?.length ?? 0, round: active.round };
+    const said = await this._takeInstructions(active);
+    await this._progress(active, { phase: "working", message: asked ? "The agent is carrying on with your answer." : resting ? "The agent is picking this work back up." : "The agent is carrying on where it left off." });
+    const prompt = continuationPrompt({ request, brief: active.brief, answers: asked ? said : [], instructions: asked || resting ? [] : said, cameBack: resting ? { after: stood, said } : null });
+    // Only an interrupted run may hand in an answer it finished while EV was down.
+    return this._runWorker(active, prompt, { reuseCompleted: !asked && !resting && !said.length });
   }
 
   /**
@@ -613,7 +668,7 @@ export class AssistantWorkerService {
     active.round = 1;
     if (!active.isGeneral) return;
     const spent = task.history.findLast((event) => event.type === "usage")?.usage;
-    if (spent) { Object.assign(active.usage, spent); active.restoredUsage = true; }
+    if (spent) Object.assign(active.usage, spent);
     const reviews = task.history.filter((event) => event.type === "review");
     if (!reviews.length) return;
     active.reviews = reviews.map(({ round, verdict, intentMatch, summary, missing, feedback, progress, askPerson, unavailable }) => ({
@@ -652,22 +707,18 @@ export class AssistantWorkerService {
       const contextPath = profile.requireContext ? join(workspacePath, "CONTEXT.md") : null;
       active.adapter = await this.adapterFactory({ profile, task, workspacePath, sessionDir, contextPath });
       const artifactBefore = await this._artifactDigest(task, workspacePath);
-      const parked = active.isGeneral ? task.history.findLast((event) => event.type === "input_needed") : null;
-      let result = parked
-        ? await this._resumeParked(active, task, parked)
+      let result = active.isGeneral && task.history.some((event) => event.type === "started")
+        ? await this._carryOn(active, task)
         : active.isGeneral && task.input.metadata?.briefed
           ? await this._runBriefed(active, task)
           : await this._runWorkerWithRetry(active, task.input.prompt);
       if (active.shutdownRequested) return this.supervisor.getTask(taskId);
-      if (result.status === "cancelled") {
-        return await this.supervisor.cancelTask({ taskId, reason: result.message ?? "worker-cancelled" });
-      }
+      // Stopped because it was put on hold: the hold already says so.
+      if (result.status === "stopped") return await this.supervisor.getTask(taskId);
       // A general agent stopped at its budget keeps whatever it produced;
-      // review decides whether that is usable. Other profiles fail closed.
+      // review decides whether that is usable.
       const stoppedAtBudget = result.status === "budget_exceeded" && active.isGeneral && result.text;
-      if (result.status !== "completed" && !stoppedAtBudget) {
-        return await this.supervisor.failTask({ taskId, runId, fencingToken: lease.fencingToken, error: workerError(result) });
-      }
+      if (result.status !== "completed" && !stoppedAtBudget) throw codedError(result.code ?? "WORKER_ERROR", result.message ?? "The agent stopped before finishing");
       const exceeded = active.isGeneral ? null : exceededBudget(active.usage, profile.budget);
       if (exceeded) {
         throw codedError("WORKER_BUDGET_EXCEEDED", "The worker exceeded its reviewed task budget", { totalTokens: active.usage.budgetTokens, totalCost: active.usage.costUsd, toolCalls: active.usage.toolCalls });
@@ -698,23 +749,15 @@ export class AssistantWorkerService {
         artifacts: receipts,
       });
     } catch (error) {
-      const current = await this.supervisor.getTask(taskId).catch(() => null);
-      if (current?.status === "cancelled" || error?.code === "STALE_FENCING_TOKEN") return current;
-      if (error?.code === "NEEDS_INPUT" && lease && runId) {
-        return await this.supervisor.waitForInput({
-          taskId, runId, fencingToken: lease.fencingToken, question: error.question,
-          state: { usage: active.usage, round: active.round, reviews: active.reviews ?? [], answerSoFar: String(error.answerSoFar ?? "").slice(0, 4_000) }
-        }).catch(() => this.supervisor.getTask(taskId));
-      }
-      if (lease && runId) {
-        return await this.supervisor.failTask({
-          taskId,
-          runId,
-          fencingToken: lease.fencingToken,
-          error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed", ...(error.heldAnswer ? { heldAnswer: error.heldAnswer } : {}) },
-        }).catch(() => this.supervisor.getTask(taskId));
-      }
-      return current ?? { taskId, status: "failed", error: { code: error.code ?? "WORKER_SERVICE_ERROR", message: error.message ?? "Worker service failed" } };
+      // Held or restarted under it: nothing more to record.
+      if (error?.code === "STALE_FENCING_TOKEN" || !lease || !runId) return this.supervisor.getTask(taskId).catch(() => null);
+      // Its question, or a problem it could not get past: either way the
+      // person is asked, and the work waits with everything it made.
+      const question = error?.code === "NEEDS_INPUT" ? error.question : problemQuestion(error ?? {});
+      return await this.supervisor.waitForInput({
+        taskId, runId, fencingToken: lease.fencingToken, question,
+        state: { answerSoFar: String(error?.answerSoFar ?? error?.heldAnswer ?? "").slice(0, 4_000), ...(error?.code === "NEEDS_INPUT" ? {} : { problem: error?.code ?? "WORKER_ERROR" }) }
+      }).catch(() => this.supervisor.getTask(taskId));
     }
   }
 
@@ -744,7 +787,7 @@ export class AssistantWorkerService {
         review = { ...normalizeReviewShape(review), round };
         break;
       } catch (error) {
-        if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+        if (active.stopRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
         if (attempt >= this.reviewHoldMs.length) {
           throw codedError("QUALITY_REVIEW_UNAVAILABLE", "The agent finished, but EV's quality check could not run, so the result was held back instead of delivered unchecked.", { heldAnswer: String(report.answer ?? "").slice(0, 6_000), cause: error.message });
         }
@@ -810,7 +853,7 @@ export class AssistantWorkerService {
         report: { goal: brief.goal, outcome: contents ? "completed" : "blocked", answer: contents.slice(0, 12_000) || result.text || "", evidence: [], deliverables: [{ path: task.input.artifact.sourcePath, title: "Deliverable" }], checks: [], limitations: [] }
       });
       if (review.pass && contents) break;
-      if (active.round >= active.maxRounds || active.cancelRequested || active.shutdownRequested) {
+      if (active.round >= active.maxRounds || active.stopRequested || active.shutdownRequested) {
         if (!contents) throw codedError("DELIVERABLE_MISSING", "The worker did not produce its deliverable");
         if (!review.pass) throw codedError("QUALITY_NOT_REACHED", `EV's review did not accept the result: ${review.summary || review.missing.join("; ")}`.slice(0, 500));
         break;
@@ -881,7 +924,7 @@ export class AssistantWorkerService {
     // One follow-up run in the same session; a budget stop keeps its text.
     const followUp = async (prompt) => {
       const next = await this._runWorker(active, prompt, { reuseCompleted: false });
-      if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+      if (active.shutdownRequested || active.stopRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
       if (next.status === "budget_exceeded" && next.text) stopReason = "budget";
       else if (next.status !== "completed") throw codedError(next.code ?? "WORKER_ERROR", next.message ?? "The agent stopped before finishing");
       return next;
@@ -899,15 +942,15 @@ export class AssistantWorkerService {
       try { report = validateOpenClawTaskReport(result.text, { ...task.input.metadata?.verification, strictEvidence: false }); }
       catch (error) { if (error.code !== "TASK_REPORT_INVALID") throw error; }
       if (report?.outcome === "needs_input") {
-        if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+        if (active.stopRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
         throw codedError("NEEDS_INPUT", report.question, { question: report.question, answerSoFar: report.answer });
       }
       if (!report) {
         // Format, not quality: one chance to restate the result as a report.
-        if (formatFixUsed || stopReason || active.cancelRequested || active.shutdownRequested) break;
+        if (formatFixUsed || stopReason || active.stopRequested || active.shutdownRequested) break;
         formatFixUsed = true;
         const repaired = await this._runWorker(active, revisionPrompt({ request, brief: active.brief, formatOnly: true, round: active.round, sharedPath }), { reuseCompleted: false });
-        if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+        if (active.shutdownRequested || active.stopRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
         if (repaired.status === "budget_exceeded") stopReason = "budget";
         else if (repaired.status !== "completed") break;
         result = repaired;
@@ -944,12 +987,12 @@ export class AssistantWorkerService {
         stopReason ??= "budget";
         break;
       }
-      if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+      if (active.stopRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
       const question = this._stuckQuestion(active, review, unresolved);
       if (question) throw codedError("NEEDS_INPUT", question, { question, answerSoFar: report.answer });
       await this._sendBack(active, task);
       const revised = await this._runWorker(active, revisionPrompt({ request, brief: active.brief, review: review ?? { missing: hostNotes }, round: active.round - 1, sharedPath }), { reuseCompleted: false });
-      if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+      if (active.shutdownRequested || active.stopRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
       if (revised.status === "budget_exceeded" && revised.text) { stopReason = "budget"; result = revised; continue; }
       if (revised.status !== "completed") {
         best.issues.push(`The revision round did not finish: ${revised.message ?? revised.status}.`);

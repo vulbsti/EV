@@ -15,7 +15,8 @@ import { codedError } from "./store.mjs";
  * the result of a lookup.
  */
 
-const ENDED = new Set(["completed", "failed", "cancelled"]);
+// Work at rest: no agent is on it, and its session and files are kept.
+const RESTING = new Set(["held", "completed"]);
 const READ_LIMIT = 60_000;
 
 const clip = (value, max) => {
@@ -37,9 +38,8 @@ export function workState(task) {
     case "leased": case "running": return task.history?.some((event) => event.type === "revision_requested") ? "running, revising after review" : "running";
     case "verifying": return "running, its result is being reviewed";
     case "waiting": return "waiting for the person's answer to its question";
-    case "completed": return `finished and delivered${report?.outcome && report.outcome !== "completed" ? ` (${report.outcome})` : ""}`;
-    case "cancelled": return "stopped";
-    case "failed": return "failed";
+    case "completed": return `finished and delivered${report?.outcome && report.outcome !== "completed" ? ` (${report.outcome})` : ""}; anything sent to it reopens it with the same agent`;
+    case "held": return "on hold: its agent is stopped, its session and files are kept, and anything sent to it carries it on";
     default: return task.status;
   }
 }
@@ -114,7 +114,6 @@ export function lookups({ store, supervisor, memory }) {
       progress.length ? `Progress, newest last:\n${progress.map((event) => `- [${when(event.at)}] ${event.message}`).join("\n")}` : "",
       reviews.length ? `Reviews:\n${reviews.map((event) => `- Round ${event.round}: ${event.verdict === "accept" ? "accepted" : "sent back"}. ${event.summary ?? ""}${event.missing?.length ? ` Missing: ${event.missing.join(" ")}` : ""}${event.feedback?.length ? ` Asked for: ${event.feedback.join(" ")}` : ""}`).join("\n")}` : "",
       question ? `Its question to the person: ${question}` : "",
-      task.error?.message ? `Why it ${task.status === "failed" ? "failed" : "ended"}: ${task.error.message}` : "",
       report ? `Result (${report.outcome}):\n${clip(report.answer, READ_LIMIT)}` : "",
       report?.limitations?.length ? `Limitations:\n${report.limitations.map((item) => `- ${item}`).join("\n")}` : "",
       task.artifacts?.length ? `Files delivered: ${task.artifacts.map((file) => file.title ?? file.relativePath).join(", ")}` : ""
@@ -208,20 +207,19 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       const task = await findWork(id);
       const title = task.input?.metadata?.title ?? "untitled";
       const words = typeof text === "string" ? text.trim() : "";
-      const ended = ENDED.has(task.status) || stopped.some((entry) => entry.taskId === task.taskId);
+      const heldNow = stopped.some((entry) => entry.taskId === task.taskId);
+      const resting = RESTING.has(task.status) || heldNow;
       const answer = (outcome, note) => JSON.stringify({ work: `work:${task.taskId}`, title, outcome, state: workState(task), note });
-      if (ended) {
-        const how = task.status === "completed" ? "had already finished and been delivered" : task.status === "cancelled" || !ENDED.has(task.status) ? "had already been stopped" : "had already failed";
-        return answer("nothing done", `This work ${how}, so no agent is working on it. Nothing was ${stop ? "stopped" : "sent"}.`);
-      }
       if (stop === true) {
+        if (resting) return answer("nothing done", `This work ${task.status === "completed" ? "had already finished and been delivered" : "was already on hold"}, so no agent is working on it. Nothing was stopped.`);
         stopped.push({ taskId: task.taskId, reason: words || "the person asked to stop it" });
-        done.push(`stopped work:${task.taskId} "${title}"`);
-        return answer("stopped", "Its agent stops when this turn ends. What it made is kept, and no other work is touched.");
+        done.push(`put work:${task.taskId} "${title}" on hold`);
+        return answer("on hold", "Its agent stops when this turn ends. Its session and files are kept, no other work is touched, and anything you send it later carries it on with the same agent.");
       }
       if (!words) throw codedError("INVALID_TOOL_INPUT", "text is required unless stop is true");
       told.push({ taskId: task.taskId, text: words.slice(0, 4_000) });
-      done.push(`told work:${task.taskId} "${title}": ${words.slice(0, 300)}`);
+      done.push(`${resting ? "reopened" : "told"} work:${task.taskId} "${title}": ${words.slice(0, 300)}`);
+      if (resting) return answer("reopened", `It ${task.status === "completed" ? "was delivered" : "was on hold"}; when this turn ends the same agent picks it up again in its own session, with its files and this message, and its new result is reviewed before the person sees it.`);
       return answer("passed on", task.status === "waiting"
         ? "It was waiting for the person; it carries on with this in the same session when this turn ends."
         : "The same agent gets it at its next step, in the same session, and it is taken into account before the result is reviewed.");
@@ -258,15 +256,8 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       const queued = [];
       store.tx(() => {
         for (const work of started) supervisor.insertTask(work);
-        for (const { taskId, reason } of stopped) supervisor.cancel(taskId, { reason, source: message.messageId });
-        for (const { taskId, text } of told) {
-          try { if (supervisor.instruct({ taskId, text, source: message.clientMessageId }) === "queued") queued.push(taskId); }
-          catch (error) {
-            // It ended while EV was still thinking; what it made stands.
-            if (error.code !== "TASK_NOT_ACTIVE") throw error;
-            log(`[${new Date().toISOString()}] work:${taskId} ended before EV's message reached it`);
-          }
-        }
+        for (const { taskId, reason } of stopped) supervisor.hold(taskId, { reason, source: message.messageId });
+        for (const { taskId, text } of told) if (supervisor.instruct({ taskId, text, source: message.clientMessageId }) === "queued") queued.push(taskId);
         const { eventId } = store.handled(item.itemId, { reply, workId, data: { action: done.join("; ") || "reply", recentWork } });
         if (remembered.length) {
           // What EV saved rests on this turn, so forgetting it later follows the link back here.

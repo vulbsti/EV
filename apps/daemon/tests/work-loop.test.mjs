@@ -29,7 +29,7 @@ test("minor concerns do not discard a useful result", async () => {
   const f = await fixture(); let starts = 0;
   const service = new AssistantWorkerService({ ...f.options,
     reviewer: async () => ({ pass: true, issues: [], caveats: ["An incidental detail is unconfirmed."], summary: "Useful" }),
-    adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
+    adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async stop() {} })
   });
   try {
     await submit(service); const final = await service.waitForTask("parent");
@@ -43,15 +43,18 @@ test("an unavailable reviewer holds the result and retries; it never ships unche
     const f = await fixture(); let reviews = 0;
     const service = new AssistantWorkerService({ ...f.options, reviewHoldMs: [0, 0],
       reviewer: async () => { reviews++; if (!recovers || reviews < 3) throw new Error("Unavailable"); return { verdict: "accept", summary: "Useful" }; },
-      adapterFactory: async () => ({ async start() { return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
+      adapterFactory: async () => ({ async start() { return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async stop() {} })
     });
     try {
       await submit(service); const final = await service.waitForTask("parent");
-      assert.equal(reviews, 3, JSON.stringify(final.error));
+      assert.equal(reviews, 3);
       if (recovers) assert.equal(final.status, "completed");
       else {
-        assert.equal(final.status, "failed"); assert.equal(final.error.code, "QUALITY_REVIEW_UNAVAILABLE");
-        assert.match(final.error.heldAnswer, /Useful result/);
+        // Held back and put to the person, never delivered unchecked and never lost.
+        assert.equal(final.status, "waiting"); assert.equal(final.result, null);
+        const asked = final.history.at(-1);
+        assert.equal(asked.state.problem, "QUALITY_REVIEW_UNAVAILABLE"); assert.match(asked.state.answerSoFar, /Useful result/);
+        assert.match(taskUpdate(final), /quality check couldn't run/);
       }
     } finally { await service.shutdown(); await f.close(); }
   }
@@ -63,7 +66,7 @@ test("EV sends review feedback back to the same agent until the result is accept
     reviewer: async ({ round }) => { reviews++; return round < 2
       ? { verdict: "revise", missing: ["The comparison table"], feedback: ["Add a table comparing the three options"], summary: "Missing the table" }
       : { verdict: "accept", summary: "Meets the brief" }; },
-    adapterFactory: async () => ({ async start({ prompt }) { prompts.push(prompt); return { completion: Promise.resolve({ status: "completed", text: report(`answer ${prompts.length}`) }) }; }, async cancel() {} })
+    adapterFactory: async () => ({ async start({ prompt }) { prompts.push(prompt); return { completion: Promise.resolve({ status: "completed", text: report(`answer ${prompts.length}`) }) }; }, async stop() {} })
   });
   try {
     await submit(service); const final = await service.waitForTask("parent");
@@ -80,7 +83,7 @@ test("a review loop that stops making progress asks the person instead of delive
   const f = await fixture(); let starts = 0;
   const service = new AssistantWorkerService({ ...f.options,
     reviewer: async ({ round }) => ({ verdict: "revise", missing: [`A requested part is missing (${round}).`], feedback: [], summary: "Incomplete", progress: "stalled" }),
-    adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
+    adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async stop() {} })
   });
   try {
     await submit(service); const final = await service.waitForTask("parent");
@@ -94,7 +97,7 @@ test("EV's brief reaches the agent and BRIEF.md, and EV tells the person what wa
   const service = new AssistantWorkerService({ ...f.options,
     reviewer: async () => ({ verdict: "accept", summary: "Clear", handoff: "I compared both quotes and recommend B: same scope, two weeks sooner." }),
     onTaskSettled: (task) => settled.push(task),
-    adapterFactory: async () => ({ async start({ prompt }) { prompts.push(prompt); return { completion: Promise.resolve({ status: "completed", text: report("Go with B") }) }; }, async cancel() {} })
+    adapterFactory: async () => ({ async start({ prompt }) { prompts.push(prompt); return { completion: Promise.resolve({ status: "completed", text: report("Go with B") }) }; }, async stop() {} })
   });
   try {
     await service.submitTask({ taskId: "goal", capability: "openclaw-general-v1", layout: "shared", context: "# User request", prompt: "unused",
@@ -119,7 +122,7 @@ test("work already under way is admitted before new requests, and background wor
     order.push(task.taskId);
     if (task.taskId === "first") return { completion: new Promise((resolve) => { releaseFirst = () => resolve({ status: "completed", text: "ok" }); }) };
     return { completion: Promise.resolve({ status: "completed", text: "ok" }) };
-  }, async cancel() {} }) });
+  }, async stop() {} }) });
   try {
     await service.submitTask({ taskId: "first", capability: "plain-v1", prompt: "p" });
     await until(async () => order.length === 1);
@@ -136,7 +139,7 @@ test("work already under way is admitted before new requests, and background wor
 test("a claimed file that does not exist is never delivered as done, even when the review accepts", async () => {
   const f = await fixture();
   const service = new AssistantWorkerService({ ...f.options, reviewer: pass,
-    adapterFactory: async () => ({ async start() { return { completion: Promise.resolve({ status: "completed", text: report("Created it", { deliverables: [{ path: "missing.md" }] }) }) }; }, async cancel() {} })
+    adapterFactory: async () => ({ async start() { return { completion: Promise.resolve({ status: "completed", text: report("Created it", { deliverables: [{ path: "missing.md" }] }) }) }; }, async stop() {} })
   });
   try {
     await submit(service); const final = await service.waitForTask("parent");
@@ -149,7 +152,7 @@ test("an honest blocker is delivered without a forced post link or a correction 
   const f = await fixture(); let starts = 0;
   const service = new AssistantWorkerService({ ...f.options,
     reviewer: async () => { assert.fail("Blocked outcomes do not require a publication review"); },
-    adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report("Access denied; no posts verified", { outcome: "blocked" }) }) }; }, async cancel() {} })
+    adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report("Access denied; no posts verified", { outcome: "blocked" }) }) }; }, async stop() {} })
   });
   try {
     await service.submitTask({ taskId: "blocked", capability: "openclaw-general-v1", prompt: "Read posts", context: "Read posts", metadata: { sourceRequest: "Read @tibo posts", verification: { needsSources: true, expectedAccount: "tibo" } } });
@@ -165,7 +168,7 @@ test("an agent that needs the person parks without a worker slot, survives a res
       prompts.push(prompt);
       const text = prompts.length === 1 ? report("Drafted both options", { outcome: "needs_input", question: "Which account should I post from?" }) : report("Posted from the work account");
       return { completion: Promise.resolve({ status: "completed", text }) };
-    }, async cancel() {} })
+    }, async stop() {} })
   };
   let service = new AssistantWorkerService(options);
   try {
@@ -193,7 +196,7 @@ test("an instruction sent while an agent runs reaches it in the same task before
       prompts.push(prompt);
       if (prompts.length === 1) return { completion: new Promise((resolve) => { release = () => resolve({ status: "completed", text: report("Formal draft") }); }) };
       return { completion: Promise.resolve({ status: "completed", text: report("Casual draft") }) };
-    }, async cancel() {} })
+    }, async stop() {} })
   });
   try {
     await submit(service);
@@ -203,7 +206,10 @@ test("an instruction sent while an agent runs reaches it in the same task before
     const final = await service.waitForTask("parent");
     assert.equal(final.status, "completed"); assert.match(final.result.report.answer, /Casual/);
     assert.equal(prompts.length, 2); assert.match(prompts[1], /Make it casual/);
-    await assert.rejects(service.instructTask({ taskId: "parent", text: "too late" }), (error) => error.code === "TASK_NOT_ACTIVE");
+    // Telling delivered work something reopens it in the same session.
+    await service.instructTask({ taskId: "parent", text: "Shorter, please." });
+    const reopened = await service.waitForTask("parent");
+    assert.equal(reopened.status, "completed"); assert.equal(prompts.length, 3); assert.match(prompts[2], /^The person came back[\s\S]*Shorter, please/);
   } finally { await service.shutdown(); await f.close(); }
 });
 
@@ -214,7 +220,7 @@ test("an instruction sent while EV reviews reaches the agent before delivery, ev
     adapterFactory: async () => ({ async start({ prompt }) {
       prompts.push(prompt);
       return { completion: Promise.resolve({ status: "completed", text: report(prompts.length === 1 ? "Formal draft" : "Casual draft") }) };
-    }, async cancel() {} })
+    }, async stop() {} })
   });
   try {
     await submit(service);
@@ -238,10 +244,10 @@ test("a restart carries on the review loop: same round, earlier reviews and spen
       async start({ reuseCompleted }) {
         starts.push({ reuseCompleted });
         // The second run (the revision) hangs until the daemon stops.
-        if (starts.length === 2) return { completion: new Promise((resolve) => { this.stop = () => resolve({ status: "cancelled" }); }) };
+        if (starts.length === 2) return { completion: new Promise((resolve) => { this.halt = () => resolve({ status: "stopped" }); }) };
         return { completion: Promise.resolve({ status: "completed", text: report(`Answer ${starts.length}`), usage: { input: 1_000, output: 500 } }) };
       },
-      async cancel() { this.stop?.(); }
+      async stop() { this.halt?.(); }
     })
   };
   let service = new AssistantWorkerService(options);
@@ -256,5 +262,25 @@ test("a restart carries on the review loop: same round, earlier reviews and spen
     assert.deepEqual(reviews, [{ round: 1, earlier: 0 }, { round: 2, earlier: 1 }]);
     assert.equal(starts[2].reuseCompleted, false);
     assert.equal(final.result.usage.budgetTokens, 3_000);
+  } finally { await service.shutdown(); await f.close(); }
+});
+
+test("an agent that keeps dying is restarted in its session a few times, then the person is asked; nothing ends the work", async () => {
+  const f = await fixture(); const prompts = [];
+  const service = new AssistantWorkerService({ ...f.options, reviewer: pass,
+    adapterFactory: async () => ({ async start({ prompt }) {
+      prompts.push(prompt);
+      return { completion: Promise.resolve(prompts.length < 6 ? { status: "stalled", code: "AGENT_STALLED", message: "The agent showed no progress for 1 s" } : { status: "completed", text: report("Finally done") }) };
+    }, async stop() {} })
+  });
+  try {
+    await submit(service);
+    const asked = await service.waitForTask("parent");
+    assert.equal(asked.status, "waiting"); assert.equal(prompts.length, 4);
+    assert.ok(prompts.slice(1).every((prompt) => /^You were interrupted/.test(prompt)));
+    assert.match(taskUpdate(asked), /no progress/);
+    await service.instructTask({ taskId: "parent", text: "Try again." });
+    const final = await service.waitForTask("parent");
+    assert.equal(final.status, "completed"); assert.match(prompts.at(-1), /Answer to your question[\s\S]*Try again/);
   } finally { await service.shutdown(); await f.close(); }
 });

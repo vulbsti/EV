@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { modelSettings } from "./ev-model.mjs";
@@ -10,6 +10,9 @@ import { readTranscript } from "./openclaw-transcript.mjs";
 import { TailBuffer, addCallUsage, emptyUsage, exceededBudget, writeDiagnosticsLog } from "./worker-usage.mjs";
 
 const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
+// OpenClaw has a clock of its own per turn (600 s unless told otherwise). EV
+// watches progress instead (stallMs), so that clock is set out of the way.
+const OPENCLAW_TURN_SECONDS = 7 * 24 * 60 * 60;
 // Agents use the model EV_MODEL names (its API shape and base URL come from
 // the same record as EV's own calls); EV_OPENCLAW_MODEL picks a different one.
 const workerModel = () => modelSettings(process.env, process.env.EV_OPENCLAW_MODEL || undefined);
@@ -38,7 +41,7 @@ export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null 
     gateway: { port },
     browser: { enabled: true, headless: true, noSandbox: true },
     // EV owns child tasks and their lifecycle; nested OpenClaw sessions would
-    // bypass the manager's worker limit, cancellation, and durable task state.
+    // bypass the manager's worker limit, holds, and durable task state.
     tools: { deny: ["sessions_spawn"], ...(searchPlugin ? { web: { search: { provider: "duckduckgo" } } } : {}) },
     // A plugin loaded by path has no install record; allow names it as trusted.
     ...(searchPlugin ? { plugins: { load: { paths: [searchPlugin] }, entries: { duckduckgo: { enabled: true } }, allow: ["duckduckgo"] } } : {}),
@@ -141,7 +144,7 @@ export function openClawCommand({ executable, args, sandbox, workspacePath, sess
 }
 
 /** Removes containers left by an earlier run of this task (a crash or restart). */
-function removeTaskContainers(taskId) {
+export function removeTaskContainers(taskId) {
   return new Promise((resolve) => {
     const list = spawn("docker", ["ps", "-aq", "--filter", `label=ev.task=${taskId}`], { stdio: ["ignore", "pipe", "ignore"] });
     let ids = "";
@@ -167,6 +170,26 @@ function terminate(run, signal = "SIGTERM") {
   } catch {}
 }
 
+/** The command line of a live process, or null when there is none. */
+function commandLine(pid) {
+  try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " "); } catch {}
+  try { return execFileSync("ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null; } catch { return null; }
+}
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
+
+/**
+ * Stops what a run left behind when EV died under it: its process group (only
+ * if that pid still belongs to this work's agent, since a pid can be reused)
+ * and its container. Resolves once the process is gone.
+ */
+export async function stopLeftoverRun({ taskId, pid, container }) {
+  if (container) await new Promise((resolve) => spawn("docker", ["rm", "-f", container], { stdio: "ignore" }).on("close", resolve).on("error", resolve));
+  if (!pid || !commandLine(pid)?.includes(taskId)) return;
+  for (const target of [-pid, pid]) { try { process.kill(target, "SIGKILL"); } catch {} }
+  for (let waited = 0; alive(pid) && waited < 5_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
 function workerEnvironment(configPath, homeDir) {
   const allowed = ["PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"];
   return {
@@ -178,17 +201,22 @@ function workerEnvironment(configPath, homeDir) {
 }
 
 export class OpenClawWorkerAdapter {
-  constructor({ taskId, workspacePath, sessionDir, homeDir, timeoutMs = 300_000, executable = "openclaw", sandbox = null }) {
+  /**
+   * stallMs is the watchdog: an agent whose session shows nothing new for
+   * that long is stopped and reported as stalled. One that keeps making
+   * progress is never stopped for taking long.
+   */
+  constructor({ taskId, workspacePath, sessionDir, homeDir, stallMs = 600_000, executable = "openclaw", sandbox = null }) {
     this.taskId = taskId;
     this.homeDir = homeDir;
     this.sandbox = sandbox;
     this.workspacePath = workspacePath;
     this.sessionDir = sessionDir;
-    this.timeoutMs = timeoutMs;
+    this.stallMs = stallMs;
     this.executable = executable;
   }
 
-  async start({ runId, prompt, reuseCompleted = true, budget = null, onUsage = null }) {
+  async start({ runId, prompt, reuseCompleted = true, budget = null, onUsage = null, onProgress = null }) {
     if (!process.env.OPENCODE_API) {
       return { runId, completion: Promise.resolve({ status: "failed", code: "OPENCODE_KEY_MISSING", message: "OPENCODE_API is not configured" }) };
     }
@@ -207,7 +235,7 @@ export class OpenClawWorkerAdapter {
     const containerName = `ev-openclaw-${runId.slice(0, 12)}-${randomBytes(3).toString("hex")}`;
     const { command, args } = openClawCommand({
       containerName, executable: this.executable, sandbox: this.sandbox, workspacePath: this.workspacePath, sessionDir: this.sessionDir, homeDir: this.homeDir, runId, taskId: this.taskId,
-      args: ["agent", "--local", "--agent", "ev-worker", "--session-id", this.taskId, "--message", prompt, "--json", "--timeout", String(Math.ceil(this.timeoutMs / 1000))]
+      args: ["agent", "--local", "--agent", "ev-worker", "--session-id", this.taskId, "--message", prompt, "--json", "--timeout", String(OPENCLAW_TURN_SECONDS)]
     });
     const child = spawn(command, args, {
       cwd: this.workspacePath,
@@ -215,7 +243,7 @@ export class OpenClawWorkerAdapter {
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32"
     });
-    const run = { runId, child, cancelled: false, timedOut: false, budgetExceeded: null, taskId: this.taskId, sandboxed: Boolean(this.sandbox), containerName };
+    const run = { runId, child, stopped: false, budgetExceeded: null, taskId: this.taskId, sandboxed: Boolean(this.sandbox), containerName };
     // The final answer is normally read from the session file; stdout is only a
     // fallback envelope. If it overflows, say so instead of failing to parse it.
     let stdout = "";
@@ -227,25 +255,20 @@ export class OpenClawWorkerAdapter {
     const stderr = new TailBuffer();
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     // Only this turn's events count: usage, and the answer it finished with.
-    const live = { seq: earlier.lastSeq, usage: emptyUsage(), lastText: null, events: [] };
+    // Anything new in the session is a sign of progress.
+    const live = { seq: earlier.lastSeq, usage: emptyUsage(), lastText: null, events: [], progressAt: Date.now() };
     const readNew = () => {
       const { events, lastSeq } = transcript(live.seq);
       live.seq = lastSeq;
       live.events.push(...events);
       accumulateUsage(events, live);
+      if (events.length) { live.progressAt = Date.now(); onProgress?.(); }
     };
-    const timer = setTimeout(() => {
-      run.timedOut = true;
-      terminate(run);
-      setTimeout(() => terminate(run, "SIGKILL"), 2_000).unref?.();
-    }, this.timeoutMs);
-    timer.unref?.();
     run.completion = new Promise((resolve) => {
       let settled = false;
       const finish = async (value) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
         clearInterval(sessionPoll);
         try { readNew(); } catch {}
         const diagnosticsLog = value.status === "completed" ? null : await writeDiagnosticsLog(this.sessionDir, runId, stderr);
@@ -270,16 +293,19 @@ export class OpenClawWorkerAdapter {
             finish(parsed);
             terminate(run);
             setTimeout(() => terminate(run, "SIGKILL"), 2_000).unref?.();
+          } else if (Date.now() - live.progressAt > this.stallMs) {
+            terminate(run);
+            setTimeout(() => terminate(run, "SIGKILL"), 2_000).unref?.();
+            return finish({ status: "stalled", code: "AGENT_STALLED", message: `The agent showed no progress for ${Math.round(this.stallMs / 1000)} s` });
           }
         } catch { finish({ status: "failed", code: "OPENCLAW_SESSION_READ", message: "Could not inspect the OpenClaw session" }); }
         finally { readingSession = false; }
       };
-      const sessionPoll = setInterval(() => { void checkSession(); }, 1_000);
+      const sessionPoll = setInterval(() => { void checkSession(); }, Math.min(1_000, Math.max(100, this.stallMs / 4)));
       sessionPoll.unref?.();
       child.on("error", () => finish({ status: "failed", code: "OPENCLAW_PROCESS_START", message: "OpenClaw could not start" }));
       child.on("close", async (code) => {
-        if (run.cancelled) return finish({ status: "cancelled", code: "OPENCLAW_CANCELLED", message: "OpenClaw task was cancelled" });
-        if (run.timedOut) return finish({ status: "timed_out", code: "OPENCLAW_TIMEOUT", message: "OpenClaw exceeded the task time budget" });
+        if (run.stopped) return finish({ status: "stopped", code: "OPENCLAW_STOPPED", message: "The agent was stopped" });
         let sessionResult = null;
         try { readNew(); sessionResult = completedResult(live.events); } catch {}
         if (sessionResult) return finish(sessionResult);
@@ -291,10 +317,9 @@ export class OpenClawWorkerAdapter {
     return run;
   }
 
-  async cancel(run) {
-    run.cancelled = true;
+  async stop(run) {
+    run.stopped = true;
     terminate(run);
     setTimeout(() => terminate(run, "SIGKILL"), 2_000).unref?.();
-    return { status: "cancelled" };
   }
 }

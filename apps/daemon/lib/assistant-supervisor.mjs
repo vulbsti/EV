@@ -6,8 +6,10 @@ import { ensurePrivateDirectorySync, securePrivateTreeSync } from "./file-permis
 import { codedError, parse } from "./store.mjs";
 
 // A run is live while the agent works and while EV reviews its result.
+// Work has no final state: held and completed work keep their session and
+// files, and anything said to them carries them on (see instruct).
 const ACTIVE_RUN_STATES = Object.freeze(["running", "verifying"]);
-const TERMINAL = Object.freeze(["completed", "failed", "cancelled"]);
+const RESTING = Object.freeze(["held", "completed"]);
 
 async function verifyReceipt(artifactRoot, receipt) {
   let handle;
@@ -88,7 +90,6 @@ export class AssistantSupervisor {
       run: row.run_id ? { runId: row.run_id, workerId: row.worker_id, startedAt: row.started_at } : null,
       result: result ? parse(result.result_json) : null,
       artifacts: result ? this.db.prepare("SELECT * FROM files WHERE result_id = ? ORDER BY rowid").all(result.result_id).map(receiptOf) : [],
-      error: parse(row.error_json),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       revision: row.revision,
@@ -178,15 +179,6 @@ export class AssistantSupervisor {
     return this._task(taskId);
   }
 
-  async failTask({ taskId, runId, fencingToken, error }) {
-    const failure = error ?? { code: "WORKER_ERROR", message: "Worker failed" };
-    this.store.tx(() => {
-      this._assertRun(this._requireRow(taskId), fencingToken, runId, "fail");
-      this._change(taskId, "failed", { runId, code: failure.code }, { status: "failed", error_json: JSON.stringify(failure) });
-    });
-    return this._task(taskId);
-  }
-
   async recordProgress({ taskId, runId, fencingToken, type = "progress", data = {} }) {
     if (!["progress", "worker_retry", "review", "usage", "instructions_applied"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
     this.store.tx(() => {
@@ -223,8 +215,9 @@ export class AssistantSupervisor {
 
   /**
    * running/verifying -> waiting: the agent needs something only the person
-   * can give. The lease is released, so a waiting task holds no worker slot
-   * and survives restarts as is; `state` is what the next run restores.
+   * can give, or a problem the work could not get past on its own is put to
+   * them as a question. The lease is released, so a waiting task holds no
+   * worker slot and survives restarts as is.
    */
   async waitForInput({ taskId, runId, fencingToken, question, state = {} }) {
     this.store.tx(() => {
@@ -235,16 +228,16 @@ export class AssistantSupervisor {
   }
 
   /**
-   * Records something the person said about unfinished work. A running task
-   * picks it up at its next step; a waiting task goes back to the queue.
-   * Returns the work's state after it. Can run inside a caller's transaction.
+   * Records something the person said about a piece of work, in any state. A
+   * running task picks it up at its next step; waiting, held and delivered
+   * work goes back to the queue and carries on in the same session. Returns
+   * the work's state after it. Can run inside a caller's transaction.
    */
   instruct({ taskId, text, source = null }) {
     return this.store.tx(() => {
       const row = this._requireRow(taskId);
-      if (TERMINAL.includes(row.status)) throw codedError("TASK_NOT_ACTIVE", `Task ${taskId} is ${row.status}`);
-      const status = row.status === "waiting" ? "queued" : row.status;
-      this._change(taskId, "instruction", { text, source }, { status });
+      const status = row.status === "waiting" || RESTING.includes(row.status) ? "queued" : row.status;
+      this._change(taskId, "instruction", { text, source, ...(RESTING.includes(row.status) ? { reopened: row.status } : {}) }, { status });
       return status;
     });
   }
@@ -254,25 +247,25 @@ export class AssistantSupervisor {
     return this._task(taskId);
   }
 
-  /** Stops unfinished work; returns false when it had already ended. Can run inside a caller's transaction. */
-  cancel(taskId, data) {
+  /**
+   * Puts work on hold: its run's lease is revoked, so nothing the agent hands
+   * in later can land, while its session, workspace and files stay. Returns
+   * false when it was already resting (held or delivered). Can run inside a
+   * caller's transaction.
+   */
+  hold(taskId, data) {
     return this.store.tx(() => {
       const row = this._requireRow(taskId);
-      if (TERMINAL.includes(row.status)) return false;
-      this._change(taskId, "cancelled", data, { status: "cancelled", lease_id: null, fencing_token: null, worker_id: null });
+      if (RESTING.includes(row.status)) return false;
+      this._change(taskId, "held", data, { status: "held", lease_id: null, fencing_token: null, worker_id: null, run_id: null, started_at: null });
       return true;
     });
   }
 
-  async cancelTask({ taskId, reason }) {
-    this.cancel(taskId, { reason: reason ?? null });
-    return this._task(taskId);
-  }
-
-  /** A cancel the page sent, replay-safe by its command id. */
+  /** A hold the page sent, replay-safe by its command id. */
   async commandTask({ taskId, commandId, type, expectedRevision = null, reason = null }) {
     if (typeof commandId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(commandId)) throw codedError("INVALID_COMMAND_ID", "A safe commandId is required");
-    if (type !== "cancel") throw codedError("UNSUPPORTED_TASK_COMMAND", `Unsupported task command: ${type}`);
+    if (type !== "hold") throw codedError("UNSUPPORTED_TASK_COMMAND", `Unsupported task command: ${type}`);
     const replayed = this.store.tx(() => {
       const earlier = this.db.prepare("SELECT work_id FROM events WHERE type = 'command' AND json_extract(data_json, '$.commandId') = ?").get(commandId);
       if (earlier) {
@@ -284,7 +277,7 @@ export class AssistantSupervisor {
         throw codedError("TASK_REVISION_CONFLICT", `Expected task revision ${expectedRevision}, found ${row.revision}`);
       }
       this.store.event({ type: "command", workId: taskId, data: { commandId, type, expectedRevision, reason } });
-      this.cancel(taskId, { reason, commandId });
+      this.hold(taskId, { reason, commandId });
       return false;
     });
     return { replayed, task: this._task(taskId) };
@@ -292,11 +285,38 @@ export class AssistantSupervisor {
 
   async readArtifact(artifactId) {
     if (typeof artifactId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(artifactId)) throw codedError("INVALID_ARTIFACT_ID", "A safe artifact id is required");
-    const row = this.db.prepare("SELECT f.* FROM files f JOIN work w ON w.work_id = f.work_id WHERE f.file_id = ? AND w.status = 'completed'").get(artifactId);
+    // Only accepted results have files, and they stay readable when the work is reopened.
+    const row = this.db.prepare("SELECT * FROM files WHERE file_id = ?").get(artifactId);
     if (!row) throw codedError("ARTIFACT_NOT_FOUND", `Unknown artifact: ${artifactId}`);
     const receipt = receiptOf(row);
     const contents = await verifyReceipt(this.artifactRoot, receipt);
     return { taskId: row.work_id, receipt, filename: basename(receipt.relativePath), contents };
+  }
+
+  // ------------------------------------------------------------------ runs
+  // One row per execution of an agent. These are plain facts for the
+  // watchdog and for clean-up after a crash, not states of the work.
+
+  openRun({ runId, taskId, pid = null, container = null }) {
+    const at = this.store.now();
+    this.db.prepare("INSERT INTO runs (run_id, work_id, started_at, progress_at, pid, container) VALUES (?, ?, ?, ?, ?, ?)").run(runId, taskId, at, at, pid, container);
+  }
+
+  runProgress(runId) {
+    this.db.prepare("UPDATE runs SET progress_at = ? WHERE run_id = ? AND ended_at IS NULL").run(this.store.now(), runId);
+  }
+
+  endRun(runId, how) {
+    this.db.prepare("UPDATE runs SET ended_at = ?, ended = ? WHERE run_id = ? AND ended_at IS NULL").run(this.store.now(), String(how).slice(0, 200), runId);
+  }
+
+  /** Runs with no end recorded: after a crash, what EV left behind. */
+  liveRuns() {
+    return this.db.prepare("SELECT run_id AS runId, work_id AS taskId, pid, container FROM runs WHERE ended_at IS NULL ORDER BY started_at").all();
+  }
+
+  runs(taskId) {
+    return this.db.prepare("SELECT run_id AS runId, started_at AS startedAt, progress_at AS progressAt, ended_at AS endedAt, ended FROM runs WHERE work_id = ? ORDER BY started_at, rowid").all(taskId);
   }
 
   /** After a restart, every run that was live goes back to the queue. */

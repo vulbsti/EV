@@ -187,7 +187,7 @@ export class StandingResponsibilityRunner {
       confirmed = await this.store.confirmPreparedTaskSubmission({ taskId: preparedTask.taskId, supervisorTaskId: submitted.taskId ?? taskId });
     } catch (error) {
       if (error?.code === "PREPARED_TASK_AUTHORITY_REVOKED") {
-        await this.workerService.cancelTask({ taskId, reason: "standing-authority-revoked-before-confirmation" }).catch(() => {});
+        await this.workerService.holdTask({ taskId, reason: "standing-authority-revoked-before-confirmation" }).catch(() => {});
       }
       throw error;
     }

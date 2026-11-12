@@ -37,7 +37,7 @@ if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) location.replace("/");
 
 let messages = [];
 const tasks = new Map();
-const cancelCommands = new Map();
+const holdCommands = new Map();
 const pending = new Map();
 let revision = 0;
 let taskRevision = 0;
@@ -107,11 +107,14 @@ function mergeTasks(incoming) {
   for (const task of incoming) tasks.set(task.taskId, task);
 }
 
+// The six states of a piece of work, in the person's words.
 function taskLabel(status) {
   if (status === "leased" || status === "running") return "working";
-  if (status === "verifying") return "checking quality";
-  if (status === "waiting") return "needs your answer";
-  return status?.replaceAll("_", " ") ?? "queued";
+  if (status === "verifying") return "in review";
+  if (status === "waiting") return "waiting on you";
+  if (status === "held") return "on hold";
+  if (status === "completed") return "delivered";
+  return "queued";
 }
 
 function reviewSummary(verification) {
@@ -124,14 +127,13 @@ function reviewSummary(verification) {
 
 function renderTask(task) {
   if (!task) return "";
-  const terminal = ["completed", "failed", "cancelled"].includes(task.status);
+  const resting = ["completed", "held"].includes(task.status);
   const artifact = task.artifacts?.[0];
   const isR1 = task.capability === "r1-content-package-v1";
   const isOpenClaw = task.capability === "openclaw-general-v1";
   const report = isOpenClaw && task.status === "completed" ? task.result?.report : null;
   const displayStatus = report?.outcome === "partial" ? "partial result" : report?.outcome === "blocked" ? "blocked" : taskLabel(task.status);
-  const detail = task.status === "failed" ? task.error?.message ?? "The worker could not complete this task." :
-    task.status === "cancelled" ? "Stopped. No late worker result can replace this state." :
+  const detail = task.status === "held" ? "On hold. Everything it made is kept; tell EV to carry on and the same agent picks it up." :
     task.status === "completed" ? task.result?.summary ?? (isOpenClaw ? report?.outcome === "blocked" ? "The agent could not achieve the requested outcome. The reason is below." : report?.outcome === "partial" ? "Useful work is ready, with unfinished parts or material concerns listed below." : "The requested work is ready." : isR1 ? "Finished with a draft, review receipt, and materially different final." : "Finished and verified.") :
     task.status === "queued" ? "Saved and waiting for its agent." :
     task.status === "waiting" ? `Paused until you answer: ${task.history?.findLast((event) => event.type === "input_needed")?.question ?? "see the conversation."}` : task.progress?.message ?? (isOpenClaw ? "OpenClaw is working in this task’s workspace." : "The reviewed worker is using its task workspace.");
@@ -144,7 +146,6 @@ function renderTask(task) {
     ${task.artifacts?.length ? `<ul class="task-deliverables">${task.artifacts.map((file) => `<li><a href="/api/assistant/artifacts/${encodeURIComponent(file.artifactId)}" download>${escapeHtml(file.title || file.relativePath.split("/").at(-1))}</a></li>`).join("")}</ul>` : ""}
     <small>${report.verification?.qualityGate?.unavailable ? "Separate review unavailable." : report.verification?.qualityGate?.skipped ? "Agent outcome and file checks recorded." : "EV reviewed the result against its brief."} ${report.verification?.deliverables?.filter((item) => item.verified).length ?? 0} files checked.${reviewSummary(report.verification)}</small>
   </div>` : "";
-  const heldMarkup = task.status === "failed" && task.error?.heldAnswer ? `<details class="task-report"><summary>Unchecked result</summary><p class="task-answer">${renderAnswer(task.error.heldAnswer)}</p></details>` : "";
   return `<section class="task-card ${escapeHtml(report?.outcome ?? task.status)}" data-task-id="${escapeHtml(task.taskId)}" aria-label="Background task">
     <div class="task-card-head"><span class="task-status ${escapeHtml(report?.outcome ?? task.status)}">${escapeHtml(displayStatus)}</span><span class="task-time">${escapeHtml(task.updatedAt ? new Date(task.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "")}</span></div>
     <h3>${escapeHtml(task.title ?? "Background task")}</h3>
@@ -152,12 +153,12 @@ function renderTask(task) {
     ${!task.brief && task.request ? `<details class="task-brief"><summary>EV's brief</summary><p>${escapeHtml(task.request)}</p></details>` : ""}
     ${task.brief?.successCriteria?.length ? `<details class="task-brief"><summary>Success criteria and boundaries</summary><ul>${task.brief.successCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul><p><strong>Authority:</strong> prepare only</p><p><strong>Memory:</strong> what EV has learned about you that applies to this task</p>${task.contextManifestId ? `<p><strong>Context manifest:</strong> <code>${escapeHtml(task.contextManifestId)}</code></p>` : ""}</details>` : ""}
     <p>${escapeHtml(detail)}</p>
-    ${reportMarkup}${heldMarkup}
+    ${reportMarkup}
     <div class="task-actions">
       ${artifact && !isOpenClaw ? isR1
         ? `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(artifact.artifactId)}?preview=1" target="_blank" rel="noopener">Open reviewed content package</a>`
         : `<a class="task-artifact" href="/api/assistant/artifacts/${encodeURIComponent(artifact.artifactId)}" download="${escapeHtml(artifact.relativePath.split("/").at(-1))}">Download verified brief</a>` : ""}
-      ${!terminal ? `<button type="button" class="task-cancel" data-command="cancel">Cancel</button>` : ""}
+      ${!resting ? `<button type="button" class="task-hold" data-command="hold">Hold</button>` : ""}
     </div>
   </section>`;
 }
@@ -362,22 +363,22 @@ async function loadTasks({ incremental = false } = {}) {
   render();
 }
 
-async function cancelTask(taskId, retryOnConflict = true) {
+async function holdTask(taskId, retryOnConflict = true) {
   const task = tasks.get(taskId);
-  if (!task || ["completed", "failed", "cancelled"].includes(task.status)) return;
-  const commandId = cancelCommands.get(taskId) ?? crypto.randomUUID();
-  cancelCommands.set(taskId, commandId);
+  if (!task || ["completed", "held"].includes(task.status)) return;
+  const commandId = holdCommands.get(taskId) ?? crypto.randomUUID();
+  holdCommands.set(taskId, commandId);
   const response = await fetch(`/api/assistant/tasks/${encodeURIComponent(taskId)}/commands`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ commandId, type: "cancel", expectedRevision: task.revision })
+    body: JSON.stringify({ commandId, type: "hold", expectedRevision: task.revision })
   });
   const body = await response.json().catch(() => ({}));
   if (response.status === 409 && retryOnConflict) {
     await loadTasks({ incremental: true });
-    return cancelTask(taskId, false);
+    return holdTask(taskId, false);
   }
-  if (!response.ok) throw new Error(body.error ?? `Cancel failed: HTTP ${response.status}`);
+  if (!response.ok) throw new Error(body.error ?? `Hold failed: HTTP ${response.status}`);
   mergeTasks([body.task]);
   taskRevision = Math.max(taskRevision, body.revision ?? body.task?.revision ?? 0);
   render();
@@ -502,12 +503,12 @@ elements.input.addEventListener("keydown", (event) => {
 });
 
 elements.messages.addEventListener("click", (event) => {
-  const button = event.target.closest("button.task-cancel");
+  const button = event.target.closest("button.task-hold");
   if (!button) return;
   const taskId = button.closest("[data-task-id]")?.dataset.taskId;
   if (!taskId) return;
   button.disabled = true;
-  void cancelTask(taskId).catch((error) => {
+  void holdTask(taskId).catch((error) => {
     elements.composerStatus.textContent = error.message;
     button.disabled = false;
   });

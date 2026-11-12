@@ -13,7 +13,7 @@ import { PiWorkerAdapter } from "../lib/pi-worker-adapter.mjs";
  *
  *   const run = await adapter.start({ runId, sessionId, prompt });
  *   const result = await run.completion;
- *   await adapter.cancel(run);
+ *   await adapter.stop(run);
  *
  * `run.argv` is retained by the adapter for receipt/debugging; the fake also
  * records it so the restrictive launch boundary is directly asserted.
@@ -44,7 +44,7 @@ process.stdout.write(JSON.stringify({ type: "agent_end", messages: [{ role: "ass
   await chmod(fake, 0o755);
   return {
     root, sessionDir, workspaceDir, argvPath, fake,
-    adapter: new PiWorkerAdapter({ executable: fake, sessionDir, cwd: workspaceDir, timeoutMs: 500, ...adapterOptions, env: { FAKE_PI_MODE: mode, ...(adapterOptions.env ?? {}) } }),
+    adapter: new PiWorkerAdapter({ executable: fake, sessionDir, cwd: workspaceDir, stallMs: 500, ...adapterOptions, env: { FAKE_PI_MODE: mode, ...(adapterOptions.env ?? {}) } }),
     async close() { await rm(root, { recursive: true, force: true }); }
   };
 }
@@ -90,22 +90,21 @@ test("refuses to start when the installed Pi version does not match the pin", as
   } finally { await f.close(); }
 });
 
-test("times out and supports cancellation without leaking child stderr", async () => {
+test("a silent worker is stopped as stalled, and a run can be stopped, without leaking child stderr", async () => {
   const f = await fixture("hang");
   try {
-    const run = await f.adapter.start({ runId: "run-timeout", sessionId: "session-timeout", prompt: "hang" });
+    const run = await f.adapter.start({ runId: "run-stall", sessionId: "session-stall", prompt: "hang" });
     const result = await run.completion;
-    assert.equal(result.status, "timed_out");
+    assert.equal(result.status, "stalled");
     assert.doesNotMatch(JSON.stringify(result), /test-secret-value|Authorization|Bearer/);
   } finally { await f.close(); }
 
   const c = await fixture("hang");
   try {
-    const run = await c.adapter.start({ runId: "run-cancel", sessionId: "session-cancel", prompt: "cancel" });
-    const cancelled = await c.adapter.cancel(run, { reason: "user-requested" });
-    assert.equal(cancelled.status, "cancelled");
+    const run = await c.adapter.start({ runId: "run-stop", sessionId: "session-stop", prompt: "stop" });
+    await c.adapter.stop(run);
     const result = await run.completion;
-    assert.equal(result.status, "cancelled");
+    assert.equal(result.status, "stopped");
   } finally { await c.close(); }
 });
 
@@ -132,7 +131,7 @@ for (let call = 1; call <= 50; call++) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 `, "utf8");
-    const adapter = new PiWorkerAdapter({ executable: fake, sessionDir: join(root, "sessions"), cwd: root, timeoutMs: 5_000 });
+    const adapter = new PiWorkerAdapter({ executable: fake, sessionDir: join(root, "sessions"), cwd: root, stallMs: 5_000 });
     const run = await adapter.start({ runId: "run-budget", prompt: "loop", budget: { maxTotalTokens: 1_500, maxCostUsd: 0, maxToolCalls: -1 } });
     const result = await run.completion;
     assert.equal(result.status, "budget_exceeded");

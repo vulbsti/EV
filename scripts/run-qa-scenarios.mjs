@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { askModelJson } from "../qa/lib/model.mjs";
-import { TERMINAL, api, memoryOf, memoryView, projectRoot, say, settle, startServer, tasksIn } from "../qa/lib/ev-harness.mjs";
+import { RESTING, api, memoryOf, memoryView, projectRoot, say, settle, startServer, tasksIn } from "../qa/lib/ev-harness.mjs";
 
 const scenarioDir = join(projectRoot, "qa", "scenarios");
 
@@ -76,10 +76,11 @@ async function runAction(baseUrl, step, conversationId, timeoutMs) {
     return api(baseUrl, "/api/assistant/memory", { action, claimId: claim.claimId, value: step.value, expectedRevision: claim.current.revision, expiresAt: step.expiresAt });
   }
   if (step.do === "task.cancel") {
-    const running = (await tasksIn(baseUrl, conversationId)).filter((task) => !task.parentTaskId && !TERMINAL.has(task.status));
+    const running = (await tasksIn(baseUrl, conversationId)).filter((task) => !task.parentTaskId && !RESTING.has(task.status));
     const task = running.at(-1);
-    if (!task) return { note: "No running task to cancel" };
-    return api(baseUrl, `/api/assistant/tasks/${encodeURIComponent(task.taskId)}/commands`, { commandId: `qa-cancel-${Date.now()}`, type: "cancel", expectedRevision: task.revision });
+    // The page's stop control puts the work on hold.
+    if (!task) return { note: "No running task to hold" };
+    return api(baseUrl, `/api/assistant/tasks/${encodeURIComponent(task.taskId)}/commands`, { commandId: `qa-hold-${Date.now()}`, type: "hold", expectedRevision: task.revision });
   }
   throw new Error(`Unknown action: ${step.do}`);
 }
@@ -299,7 +300,7 @@ for (const name of (await readdir(runRoot)).sort()) {
   const checks = sessions.flatMap((session) => session.steps.map((record) => record.autoCheck).filter(Boolean));
   const tasks = sessions.flatMap((session) => session.finalTasks);
   const judged = result.judge ? `${result.judge.pass ? "pass" : "FAIL"} (${result.judge.checks.filter((check) => check.verdict === "met" || check.verdict === "avoided").length}/${result.judge.checks.length})` : result.judgeError ? "error" : "-";
-  rows.push(`| ${name} | ${result.scenario.title} | ${judged} | ${sessions.length}/${result.scenario.sessions.length} | ${checks.filter((check) => check.pass).length}/${checks.length} | ${tasks.length} (${tasks.filter((task) => task.status === "failed").length} failed) | ${sessions.map((session) => session.memory.length).join(" → ")} | ${sessions.flatMap((session) => session.steps).filter((record) => record.error).length} |`);
+  rows.push(`| ${name} | ${result.scenario.title} | ${judged} | ${sessions.length}/${result.scenario.sessions.length} | ${checks.filter((check) => check.pass).length}/${checks.length} | ${tasks.length} (${tasks.filter((task) => task.status === "waiting").length} waiting on the person) | ${sessions.map((session) => session.memory.length).join(" → ")} | ${sessions.flatMap((session) => session.steps).filter((record) => record.error).length} |`);
 }
 await writeFile(join(runRoot, "summary.md"), [
   `# QA run ${runId}`, "",
