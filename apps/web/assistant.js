@@ -423,11 +423,10 @@ async function sendPending(item) {
       const body = await response.json().catch(() => ({}));
       throw new Error(body.error ?? `HTTP ${response.status}`);
     }
+    // Saved; EV's answer arrives through the conversation.
     const body = await response.json();
     pending.delete(item.clientMessageId);
-    mergeMessages(body.messages);
-    revision = Math.max(revision, ...body.messages.map((message) => message.sequence));
-    document.getElementById("conversation").dataset.revision = String(revision);
+    mergeMessages([body.message]);
     elements.status.textContent = "Saved locally";
     elements.status.className = "online";
     elements.composerStatus.textContent = "Replies survive reload and daemon restart.";

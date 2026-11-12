@@ -43,7 +43,6 @@ const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSuper
 await assistantWorkers.start();
 const standingStore = StandingResponsibilityStore.open({ store });
 const githubStandingConnector = new GitHubPullRequestConnector();
-const assistantTurnInFlight = new Map();
 
 const config = {
   host: configuredHost,
@@ -175,25 +174,13 @@ async function publicConversation(conversationId = "default", afterSequence = 0)
   const messages = store.listMessages(conversationId);
   const tasks = new Map();
   for (const taskId of new Set(messages.map((message) => message.taskId).filter(Boolean))) tasks.set(taskId, await assistantSupervisor.getTask(taskId).catch(() => null));
-  const all = messages.map(({ intent, replyTo, ...message }) => {
+  const all = messages.map(({ intent, ...message }) => {
     const task = tasks.get(message.taskId) ?? null;
-    const status = message.role === "user" ? "received" : replyTo ? task?.status ?? "answered" : "update";
+    const status = message.role === "user" ? "received" : message.replyTo ? task?.status ?? "answered" : "update";
     return { ...message, status, taskId: task?.taskId ?? null, taskStatus: task?.status ?? null };
   });
-  return { messages: all.filter((message) => message.sequence > afterSequence), revision: all.at(-1)?.sequence ?? 0 };
-}
-
-async function publicTurn(turn) {
-  const task = turn.workId ? await assistantSupervisor.getTask(turn.workId).catch(() => null) : null;
-  const strip = ({ intent, replyTo, ...message }) => message;
-  return {
-    replayed: turn.replayed,
-    messages: [
-      { ...strip(turn.userMessage), status: "received" },
-      { ...strip(turn.assistantMessage), status: task?.status ?? "answered", taskId: task?.taskId ?? null, taskStatus: task?.status ?? null }
-    ],
-    task: publicTask(task)
-  };
+  // EV is thinking while anything waits in this conversation's inbox.
+  return { messages: all.filter((message) => message.sequence > afterSequence), revision: all.at(-1)?.sequence ?? 0, thinking: store.nextItem(conversationId) !== null };
 }
 
 function verificationForRequest(request) {
@@ -207,8 +194,8 @@ function verificationForRequest(request) {
  * same for the other one", "make it shorter") from what came before. EV's own
  * updates are part of the conversation too.
  */
-async function recentConversation(conversationId, clientMessageId, limit = 6) {
-  const turns = store.listTurns(conversationId).filter((turn) => turn.userMessage.clientMessageId !== clientMessageId).slice(-limit);
+async function recentConversation(conversationId, before, limit = 6) {
+  const turns = store.listTurns(conversationId, { before }).slice(-limit);
   const entries = [];
   for (const turn of turns) {
     const lines = [`User: ${String(turn.userMessage.content ?? "").slice(0, 800)}`];
@@ -246,12 +233,12 @@ async function workInProgress(conversationId) {
 }
 
 /**
- * EV's main agent reads the message before anything runs. When it is
- * unavailable even after retries, the caller starts nothing.
+ * EV's main agent reads the message, with what came before it, before
+ * anything runs. When it is unavailable even after retries, nothing starts.
  */
-async function understandTurn({ clientMessageId, conversationId, text }) {
+async function understandTurn({ clientMessageId, conversationId, content: text, sequence }) {
   try {
-    const last = store.listTurns(conversationId).at(-1);
+    const last = store.listTurns(conversationId, { before: sequence }).at(-1);
     // An update EV posted after its question means the question is no longer the last word.
     const alreadyAsked = last?.intent?.kind === "clarify" && !(updates(conversationId).at(-1)?.sequence > last.assistantMessage.sequence);
     const work = await workInProgress(conversationId);
@@ -262,7 +249,7 @@ async function understandTurn({ clientMessageId, conversationId, text }) {
       messageId: clientMessageId,
       message: text,
       guidance: memoryView(assistantMemory, assistantOwnerId, { audience: "ev", query: text }).text,
-      recent: await recentConversation(conversationId, clientMessageId),
+      recent: await recentConversation(conversationId, sequence),
       work: work.text,
       alreadyAsked
     });
@@ -271,22 +258,6 @@ async function understandTurn({ clientMessageId, conversationId, text }) {
   } catch (error) {
     console.error(`[${new Date().toISOString()}] EV's main agent is unavailable: ${error.message}`);
     return { action: "unavailable", status: error.status ?? null };
-  }
-}
-
-/**
- * Passes the person's message to work that is still running or waiting for
- * them. Returns false when that work has already finished, so the message
- * is handled as new work instead.
- */
-async function reviseTask(understanding, clientMessageId) {
-  try {
-    if (understanding.stop) await assistantWorkers.cancelTask({ taskId: understanding.taskId, reason: "user-requested" });
-    else await assistantWorkers.instructTask({ taskId: understanding.taskId, text: understanding.instruction, source: clientMessageId });
-    return true;
-  } catch (error) {
-    if (error.code === "TASK_NOT_ACTIVE") return false;
-    throw error;
   }
 }
 
@@ -302,8 +273,8 @@ function postTaskUpdate(task) {
   store.recordUpdate({ conversationId, key: `settled:${task.taskId}:${task.revision}`, content, workId: task.taskId });
 }
 
-async function startGeneralTask({ clientMessageId, conversationId = "default", request: message, understanding = null }) {
-  const taskId = randomUUID();
+/** Starts work for a message; `alongside` runs in the transaction that creates it. */
+async function startGeneralTask({ taskId, conversationId, sequence, request: message, understanding = null, alongside }) {
   // Agents work to EV's settled reading of the message; the person's own
   // words stay in the brief as what they literally asked.
   const request = understanding?.request || message;
@@ -316,7 +287,7 @@ async function startGeneralTask({ clientMessageId, conversationId = "default", r
     ownerId: assistantOwnerId, taskId, conversationId, scope: "global", claimRevisionIds, sourceIds, tokenBudget: 0
   });
   const verification = verificationForRequest(request);
-  const recent = await recentConversation(conversationId, clientMessageId);
+  const recent = await recentConversation(conversationId, sequence);
   const context = [
     "# EV delegated goal",
     `Task ID: ${taskId}`,
@@ -342,69 +313,79 @@ async function startGeneralTask({ clientMessageId, conversationId = "default", r
     prompt,
     layout: "shared",
     context,
-    metadata: { conversationId, sourceRequest: request, understanding, title: (understanding?.title || message).slice(0, 140), contextManifestId: manifest.manifestId, verification, memoryMode: "learned-ev-memory", reviewerMemory: forReview.text, managerMode: true }
+    metadata: { conversationId, sourceRequest: request, understanding, title: (understanding?.title || message).slice(0, 140), contextManifestId: manifest.manifestId, verification, memoryMode: "learned-ev-memory", reviewerMemory: forReview.text, managerMode: true },
+    alongside
   });
 }
 
-async function createAssistantTurn({ clientMessageId, conversationId, text }) {
-  let planned;
-  const understanding = await understandTurn({ clientMessageId, conversationId, text });
-  if (understanding?.action === "reply" && understanding.message) {
-    planned = { classification: "conversation", route: "companion", response: understanding.message };
-  } else if (understanding?.action === "revise" && understanding.taskId && await reviseTask(understanding, clientMessageId)) {
-    planned = { classification: "revise", route: "companion", understanding, response: understanding.message || (understanding.stop ? "Stopped." : "Passed on.") };
-  } else if (understanding?.action === "clarify") {
-    planned = { classification: "clarify", route: "companion", understanding, response: clarifyingMessage(understanding) };
-  } else if (understanding.action !== "unavailable") {
-    planned = {
-      classification: "action",
-      route: "worker",
-      capability: "openclaw-general-v1",
-      understanding,
-      response: understanding.message || "I’m working on this now. I’ll check the result before showing it here. You can send another request while this runs."
-    };
-  } else {
-    // Fail closed: work started without understanding the message is the
-    // half-baked work EV exists to avoid.
-    planned = {
-      classification: "unavailable",
-      route: "companion",
-      response: !process.env.OPENCODE_API
-        ? "My model isn’t configured (OPENCODE_API is not set), so I can’t work on anything yet."
-        : understanding.status >= 400 && understanding.status < 500 && understanding.status !== 429
-          ? `My model is rejecting requests (HTTP ${understanding.status}), which looks like a setup problem rather than a blip, so I haven’t started anything. The daemon log has the details.`
-          : "I couldn’t think this through just now because my model didn’t answer, so I haven’t started anything. Send it again in a moment."
-    };
-  }
-  // The message links to the work it started, or the work it was sent into.
-  const started = planned.route === "worker"
-    ? await startGeneralTask({ clientMessageId, conversationId, request: text, understanding: planned.understanding ?? null })
-    : null;
-  const turn = store.recordTurn({
-    conversationId,
-    clientMessageId,
-    userText: text,
-    assistantText: planned.response,
-    workId: started?.taskId ?? (planned.classification === "revise" ? understanding.taskId : null),
-    intent: { kind: planned.classification, route: planned.route, capability: planned.capability ?? null, understanding: planned.understanding ?? null },
-    // The learner reads this turn with the work EV had in view.
-    data: { action: planned.classification, recentWork: (await workInProgress(conversationId)).text }
-  });
-  memoryLearner.kick();
-  return turn;
+function unavailableReply(status) {
+  if (!process.env.OPENCODE_API) return "My model isn’t configured (OPENCODE_API is not set), so I can’t work on anything yet.";
+  if (status >= 400 && status < 500 && status !== 429) return `My model is rejecting requests (HTTP ${status}), which looks like a setup problem rather than a blip, so I haven’t started anything. The daemon log has the details.`;
+  return "I couldn’t think this through just now because my model didn’t answer, so I haven’t started anything. Send it again in a moment.";
 }
 
 /**
- * Messages in one conversation are handled one at a time, in arrival order,
- * so "research X" followed a moment later by "actually Y" is read with the
- * first message (and any work it started) already in view.
+ * EV's turn on one inbox item. Whatever it does (a reply, work started, an
+ * instruction passed on) is recorded in the same transaction that marks the
+ * item handled, so a crash before that point means the item is handled again,
+ * and after it, never.
  */
-const conversationQueues = new Map();
-function inConversationOrder(conversationId, run) {
-  const next = (conversationQueues.get(conversationId) ?? Promise.resolve()).catch(() => {}).then(run);
-  conversationQueues.set(conversationId, next);
-  next.finally(() => { if (conversationQueues.get(conversationId) === next) conversationQueues.delete(conversationId); }).catch(() => {});
-  return next;
+async function handleItem({ itemId, conversationId, message }) {
+  const understanding = await understandTurn(message);
+  // The learner reads this turn with the work EV had in view.
+  const recentWork = (await workInProgress(conversationId)).text;
+  const record = (kind, reply, { workId = null, route = "companion", capability = null } = {}) => () => store.handled(itemId, {
+    reply, workId,
+    intent: { kind, route, capability, understanding: ["conversation", "unavailable"].includes(kind) ? null : understanding },
+    data: { action: kind, recentWork }
+  });
+  const { action, taskId } = understanding;
+  if (action === "reply" && understanding.message) return record("conversation", understanding.message)();
+  if (action === "revise" && taskId) {
+    const handled = record("revise", understanding.message || (understanding.stop ? "Stopped." : "Passed on."), { workId: taskId });
+    try {
+      if (understanding.stop) { await assistantWorkers.cancelTask({ taskId, reason: "user-requested" }); return handled(); }
+      return await assistantWorkers.instructTask({ taskId, text: understanding.instruction, source: message.clientMessageId, alongside: handled });
+    } catch (error) {
+      // Work that already finished takes the message as new work instead.
+      if (error.code !== "TASK_NOT_ACTIVE") throw error;
+    }
+  }
+  if (action === "clarify") return record("clarify", clarifyingMessage(understanding))();
+  // Fail closed: work started without understanding the message is the
+  // half-baked work EV exists to avoid.
+  if (action === "unavailable") return record("unavailable", unavailableReply(understanding.status))();
+  const workId = randomUUID();
+  const reply = understanding.message || "I’m working on this now. I’ll check the result before showing it here. You can send another request while this runs.";
+  return startGeneralTask({
+    taskId: workId, conversationId, sequence: message.sequence, request: message.content, understanding,
+    alongside: record("action", reply, { workId, route: "worker", capability: "openclaw-general-v1" })
+  });
+}
+
+/**
+ * One inbox per conversation, handled one item at a time in arrival order, so
+ * "research X" followed a moment later by "actually Y" is read with the first
+ * message (and any work it started) already in view. Conversations do not wait
+ * for each other.
+ */
+const handling = new Set();
+async function drainInbox(conversationId) {
+  if (handling.has(conversationId)) return;
+  handling.add(conversationId);
+  try {
+    for (let item = store.nextItem(conversationId); item && !stopping; item = store.nextItem(conversationId)) {
+      try { await handleItem(item); }
+      catch (error) {
+        if (stopping) return;
+        // Tell the person once rather than retrying a message that cannot be handled.
+        console.error(`[${new Date().toISOString()}] Could not handle message ${item.message.messageId}: ${error.stack ?? error.message}`);
+        try { store.handled(item.itemId, { reply: `Something went wrong on my side while handling this (${error.message}), so I haven’t started anything. Send it again if you still want it.`, intent: { kind: "failed", route: "companion" }, data: { action: "failed" } }); }
+        catch (failure) { console.error(`[${new Date().toISOString()}] Inbox for ${conversationId} stopped: ${failure.message}`); return; }
+      }
+      memoryLearner.kick();
+    }
+  } finally { handling.delete(conversationId); }
 }
 
 async function readBody(request, limit) {
@@ -614,28 +595,13 @@ async function handleApi(request, response, url) {
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
     if (!text) throw Object.assign(new Error("text is required"), { statusCode: 400 });
     if (text.length > 8000) throw Object.assign(new Error("text must not exceed 8000 characters"), { statusCode: 400 });
-    const existing = store.findTurn(clientMessageId);
-    if (existing) {
-      if (existing.userMessage.conversationId !== conversationId) throw Object.assign(new Error("clientMessageId belongs to another conversation"), { statusCode: 409 });
-      if (existing.userMessage.content !== text) throw Object.assign(new Error("clientMessageId belongs to different message text"), { statusCode: 409 });
-      return json(response, 200, await publicTurn({ ...existing, replayed: true }));
-    }
-    const inFlight = assistantTurnInFlight.get(clientMessageId);
-    if (inFlight) {
-      if (inFlight.conversationId !== conversationId || inFlight.text !== text) {
-        throw Object.assign(new Error("clientMessageId is already processing different input"), { statusCode: 409 });
-      }
-      const turn = await inFlight.promise;
-      return json(response, 200, await publicTurn({ ...turn, replayed: true }));
-    }
-    const entry = { conversationId, text, promise: inConversationOrder(conversationId, () => createAssistantTurn({ clientMessageId, conversationId, text })) };
-    assistantTurnInFlight.set(clientMessageId, entry);
-    try {
-      const turn = await entry.promise;
-      return json(response, 201, await publicTurn(turn));
-    } finally {
-      if (assistantTurnInFlight.get(clientMessageId) === entry) assistantTurnInFlight.delete(clientMessageId);
-    }
+    // Saved and acknowledged before EV reads it; the reply arrives in the conversation.
+    const { message, replayed } = store.receive({ conversationId, clientMessageId, text });
+    if (message.conversationId !== conversationId) throw Object.assign(new Error("clientMessageId belongs to another conversation"), { statusCode: 409 });
+    if (message.content !== text) throw Object.assign(new Error("clientMessageId belongs to different message text"), { statusCode: 409 });
+    void drainInbox(conversationId);
+    const { intent, ...saved } = message;
+    return json(response, replayed ? 200 : 202, { replayed, message: { ...saved, status: "received" } });
   }
   return false;
 }
@@ -702,12 +668,14 @@ const server = createServer(async (request, response) => {
   }
 });
 
+let stopping = false;
 server.listen(config.port, config.host, async () => {
   console.log(`EV: http://${config.host}:${config.port}/?token=${daemonToken.token}`);
   console.log(`Standing responsibility poll: ${config.standingPollMs} ms`);
+  // What arrived before a crash or stop and was not handled yet.
+  for (const conversationId of store.waitingConversations()) void drainInbox(conversationId);
 });
 
-let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {
     if (stopping) return;

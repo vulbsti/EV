@@ -10,7 +10,7 @@ Every user message goes to EV's **main agent** first (`ev-main-agent.mjs`, GPT-6
 
 The planner then only decides how agents carry the work out (one executor or 2-3 parallel assignments, and how many review rounds it deserves); it cannot redefine the understanding. The resulting **brief** keeps the person's own words, EV's reading of them, and the plan. It is stored in the task history and written to the goal's shared `BRIEF.md`. If the main agent is unavailable, nothing is started: EV says its model did not answer, because work started without understanding the message is the half-baked work EV exists to avoid.
 
-Messages in one conversation are handled one at a time, in arrival order, so a quick follow-up is read with the first message and any work it started already in view.
+Each conversation has an inbox. `POST /api/assistant/messages` saves the message and returns it at once (`202 {message}`); EV handles the inbox one message at a time, in arrival order, so a quick follow-up is read with the first message and any work it started already in view. Its reply arrives in `GET /api/assistant/conversation` as a message whose `replyTo` is the person's message, and `thinking` is true while anything waits. Messages saved before a crash are handled on the next start.
 
 When the work settles, EV posts an update to the conversation in its own voice: what was done (the reviewer's hand-off note), or what is still missing, or why it could not finish. The full result stays on the task card.
 

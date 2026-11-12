@@ -109,7 +109,8 @@ export class AssistantSupervisor {
     if (!ACTIVE_RUN_STATES.includes(row.status) || row.run_id !== runId) throw codedError("INVALID_TASK_TRANSITION", `Only the current run can ${what}`);
   }
 
-  async createTask({ taskId, input }) {
+  /** `alongside` runs in the same transaction, to record what started the work. */
+  async createTask({ taskId, input, alongside = null }) {
     if (typeof taskId !== "string" || !taskId) throw codedError("INVALID_TASK_ID", "taskId is required");
     const encoded = JSON.stringify(input ?? null);
     this.store.tx(() => {
@@ -122,6 +123,7 @@ export class AssistantSupervisor {
       this.db.prepare("INSERT INTO work (work_id, conversation_id, parent_id, input_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)")
         .run(taskId, input?.metadata?.conversationId ?? null, input?.metadata?.parentTaskId ?? null, encoded, at, at);
       this._change(taskId, "created", {});
+      alongside?.();
     });
     return this._task(taskId);
   }
@@ -232,12 +234,14 @@ export class AssistantSupervisor {
   /**
    * Records something the person said about unfinished work. A running task
    * picks it up at its next step; a waiting task goes back to the queue.
+   * `alongside` runs in the same transaction.
    */
-  async addInstruction({ taskId, text, source = null }) {
+  async addInstruction({ taskId, text, source = null, alongside = null }) {
     this.store.tx(() => {
       const row = this._requireRow(taskId);
       if (TERMINAL.includes(row.status)) throw codedError("TASK_NOT_ACTIVE", `Task ${taskId} is ${row.status}`);
       this._change(taskId, "instruction", { text, source }, { status: row.status === "waiting" ? "queued" : row.status });
+      alongside?.();
     });
     return this._task(taskId);
   }

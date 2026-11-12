@@ -72,6 +72,21 @@ export const tasksIn = async (baseUrl, conversationId) => (await api(baseUrl, `/
 export const memoryOf = async (baseUrl) => (await api(baseUrl, "/api/assistant/memory")).claims;
 export const conversationOf = async (baseUrl, conversationId, after = 0) => (await api(baseUrl, `/api/assistant/conversation?conversationId=${encodeURIComponent(conversationId)}&after=${after}`)).messages;
 
+/**
+ * Sends one message and waits for EV's reply to it. EV saves the message and
+ * acknowledges it at once; the reply arrives in the conversation.
+ */
+export async function say(baseUrl, conversationId, clientMessageId, text, timeoutMs = 300_000) {
+  const { message } = await api(baseUrl, "/api/assistant/messages", { clientMessageId, conversationId, text });
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const reply = (await conversationOf(baseUrl, conversationId)).find((candidate) => candidate.replyTo === message.messageId);
+    if (reply) return reply;
+    if (Date.now() > deadline) throw new Error(`EV did not answer "${text.slice(0, 60)}" within ${timeoutMs} ms`);
+    await new Promise((done) => setTimeout(done, 250));
+  }
+}
+
 export async function settle(baseUrl, conversationId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -88,8 +103,7 @@ export async function settle(baseUrl, conversationId, timeoutMs) {
  */
 export async function converse(baseUrl, conversationId, clientMessageId, text, timeoutMs) {
   const before = new Set((await tasksIn(baseUrl, conversationId)).map((task) => task.taskId));
-  const turn = await api(baseUrl, "/api/assistant/messages", { clientMessageId, conversationId, text });
-  const reply = turn.messages?.find((message) => message.role === "assistant") ?? turn.messages?.at(-1);
+  const reply = await say(baseUrl, conversationId, clientMessageId, text);
   const settled = await settle(baseUrl, conversationId, timeoutMs);
   const later = (await conversationOf(baseUrl, conversationId, reply?.sequence ?? 0))
     .filter((message) => message.role === "assistant").map((message) => message.content);
