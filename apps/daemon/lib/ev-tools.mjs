@@ -246,6 +246,9 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       return said.length ? said.join("\n\n") : closing.trim() || null;
     },
 
+    /** Whether this turn decided to do anything besides talk. */
+    acted: () => done.length > 0,
+
     /**
      * Carries out the turn's actions and marks the item handled, all in one
      * transaction, then sets the agents going.

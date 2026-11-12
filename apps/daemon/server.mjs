@@ -286,7 +286,11 @@ async function handleItem(item) {
     const reply = error.code === "TURN_TOO_LONG" ? "I went round in circles on this and stopped without doing anything. Could you say it another way?" : unavailableReply(error.status ?? null);
     return store.handled(item.itemId, { reply, data: { action: "nothing (EV could not think it through)", recentWork: work } });
   }
-  turn.commit({ reply: turn.reply(closing), recentWork: work });
+  const reply = turn.reply(closing);
+  // A message from the person is never met with silence: a turn that said
+  // nothing and did nothing is a model that gave no answer.
+  if (!reply && !turn.acted()) return store.handled(item.itemId, { reply: "I didn’t come up with an answer to this, so I haven’t started anything. Send it again, or say it another way.", data: { action: "nothing (EV gave no answer)", recentWork: work } });
+  turn.commit({ reply, recentWork: work });
 }
 
 /**
