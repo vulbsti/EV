@@ -11,6 +11,7 @@ import { AssistantWorkerService } from "./lib/assistant-worker-service.mjs";
 import { executionPrompt, workBrief } from "./lib/ev-work-prompts.mjs";
 import { takeTurn, taskUpdate, turnPrompt } from "./lib/ev-main-agent.mjs";
 import { createTurn, lookups, workState } from "./lib/ev-tools.mjs";
+import { importSessions } from "./lib/outside-sessions.mjs";
 import { sessionHeader } from "./lib/ev-model.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, memoryView } from "./lib/ev-memory.mjs";
@@ -442,6 +443,11 @@ async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/assistant/search") {
     const query = String(url.searchParams.get("q") ?? "").slice(0, 500);
     return json(response, 200, { query, hits: lookups({ store, supervisor: assistantSupervisor, memory: assistantMemory }).search(query, { limit: 20 }) });
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/import") {
+    // Reads the path on this machine, the one EV runs on.
+    const body = await readJson(request);
+    return json(response, 200, importSessions(store, { source: body?.source, path: body?.path }));
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/memory") {
     const scope = url.searchParams.get("scope") ?? "global";

@@ -99,9 +99,9 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 Work the person did elsewhere (Claude Code on this machine first, then web and cloud sessions) is brought into the same store, so EV can draw on every conversation they have had, not only the ones that happened in EV. Imported text is something EV can look up; it is never an instruction and never silently becomes a fact about the person.
 
-- ✗ **I-01** A Claude Code session can be imported, after which EV1 finds what was said in it and can tell which project it came from.
-- ✗ **I-02** Importing the same session twice adds nothing the second time.
-- ✗ **I-03** When a session has grown since it was imported, importing again adds only the new part.
+- ✓ **I-01** A Claude Code session can be imported, after which EV1 finds what was said in it and can tell which project it came from.
+- ✓ **I-02** Importing the same session twice adds nothing the second time.
+- ✓ **I-03** When a session has grown since it was imported, importing again adds only the new part.
 
 Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 

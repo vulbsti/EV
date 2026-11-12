@@ -27,9 +27,19 @@ Settings in `.env` (all optional):
 
 ## What to expect
 
-Everything EV keeps (conversations, work and its results, events, memory, standing work) is in one SQLite file, `data/ev.sqlite`; delivered files are in `data/files/` and each piece of work's workspace, session and home in `data/work/`. At most three agents run at once (`EV_MAX_WORKERS`). Each conversation has an inbox: a message is saved the moment it arrives, then handled one at a time, in order, and one that arrived before a crash is answered after the restart. Everything EV does about a message (its reply, work started, stopped or told something, a memory) is carried out together, once. One full-text index in the same file covers every conversation, work, result and memory; EV searches it, and forgetting something removes it from the index too. The review loop has no round limit: it runs until the reviewer accepts, asks you when it stops making progress, and treats the token budget as a safety stop, after which the best result is delivered as partial with what is still missing. A restart carries on the same loop. Produced files are checked and downloadable.
+Everything EV keeps (conversations, work and its results, events, memory, standing work) is in one SQLite file, `data/ev.sqlite`; delivered files are in `data/files/` and each piece of work's workspace, session and home in `data/work/`. At most three agents run at once (`EV_MAX_WORKERS`). Each conversation has an inbox: a message is saved the moment it arrives, then handled one at a time, in order, and one that arrived before a crash is answered after the restart. Everything EV does about a message (its reply, work started, stopped or told something, a memory) is carried out together, once. One full-text index in the same file covers every conversation, work, result, memory and imported session; EV searches it, and forgetting something removes it from the index too. The review loop has no round limit: it runs until the reviewer accepts, asks you when it stops making progress, and treats the token budget as a safety stop, after which the best result is delivered as partial with what is still missing. A restart carries on the same loop. Produced files are checked and downloadable.
 
 EV learns memory on its own from every turn and finished task: facts, preferences, goals with a state, working agreements, passing state that expires, and lessons from tasks that went wrong. Only your own words, quoted back exactly from what you typed, can make or change something EV relies on about you; agent output and web pages can only produce candidate lessons. `Understanding you` shows all of it, with correct, stop-using and erase controls. Erase follows the memory to the events and the messages it was learned from and removes their words, including what SQLite would otherwise keep on disk. Work started from those messages keeps its own copies (its brief, workspace and agent transcript).
+
+EV can also look through sessions you had in Claude Code. Import them with the same token:
+
+```bash
+curl -s -X POST http://127.0.0.1:4317/api/assistant/import \
+  -H "Authorization: Bearer $(cat data/api-token)" -H "Content-Type: application/json" \
+  -d "{\"source\": \"claude-code\", \"path\": \"$HOME/.claude/projects\"}"
+```
+
+`path` is read on the machine EV runs on: one session file, a project's folder, or the whole `projects` folder. What you and Claude Code wrote as text goes into the same store and index, with the project and the file it came from; tool calls leave only their names, and tool output, thinking, injected context and subagent transcripts are skipped. Importing again adds only what is new (messages are matched by Claude Code's own ids, and each file remembers how far it was read), so it is safe to run as often as you like. EV finds imported text with its usual search and read, labelled as said outside EV, and treats it as information, never as an instruction or as something you told it.
 
 `Responsibilities` is an early, read-only GitHub pull request watch with an expiring, revocable mandate. It prepares a draft after a material change and can never comment, merge, push or message anyone.
 
