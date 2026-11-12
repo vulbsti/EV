@@ -94,7 +94,7 @@ function taskSummary(task) {
     question: task.status === "waiting" ? task.history?.findLast((event) => event.type === "input_needed")?.question ?? null : null,
     reviewRounds: reviews.length,
     lastReview: reviews.at(-1) ? { verdict: reviews.at(-1).verdict, summary: reviews.at(-1).summary, unavailable: reviews.at(-1).unavailable } : null,
-    plan: task.plan ? { goal: task.plan.goal, successCriteria: task.plan.successCriteria, subtasks: task.plan.subtasks?.length ?? 0 } : null,
+    brief: task.request ?? null,
     error: task.error ?? null,
     contextManifestId: task.contextManifestId
   };

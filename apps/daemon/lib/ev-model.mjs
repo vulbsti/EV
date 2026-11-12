@@ -6,7 +6,7 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 
 /**
- * One way for EV's own model calls (main agent, planner, reviewer, memory) to
+ * One way for EV's own model calls (main agent, reviewer, memory) to
  * reach a model, through pi-ai. Transient failures (429, 5xx, timeouts,
  * dropped connections) are retried with backoff, so one blip does not turn a
  * chat message into a task or skip a review. A failed, cut-off or empty
@@ -127,7 +127,8 @@ export async function modelTurn({ context, parse = (text) => text, session, code
       if (status >= 400 && !transient(status)) { log("rejected", attempt + 1, { status }); throw failure; }
       continue;
     }
-    if (message.stopReason === "length" || (!text && !toolCalls.length)) {
+    // With tools on offer, a turn may end with nothing left to say.
+    if (message.stopReason === "length" || (!text && !toolCalls.length && !context.tools?.length)) {
       failure = Object.assign(new Error(message.stopReason === "length" ? `${label} reply was cut off at ${maxOutputTokens} tokens` : `${label} returned an empty reply`), { code });
       continue;
     }

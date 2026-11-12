@@ -6,13 +6,8 @@ import { join } from "node:path";
 import { AssistantSupervisor } from "../lib/assistant-supervisor.mjs";
 import { openStore } from "../lib/store.mjs";
 import { AssistantWorkerService } from "../lib/assistant-worker-service.mjs";
-import { normalizeTaskPlan } from "../lib/ev-task-manager.mjs";
 import { taskUpdate } from "../lib/ev-main-agent.mjs";
 
-const plan = { goal: "Produce a combined report", successCriteria: ["Both assignments are covered"], subtasks: [
-  { title: "Research", instruction: "Research the requested topic", retrySafe: true },
-  { title: "Inspect", instruction: "Inspect the requested system", retrySafe: true }
-] };
 const report = (answer = "Useful result", overrides = {}) => JSON.stringify({ goal: "Produce a report", outcome: "completed", answer, evidence: [], deliverables: [], checks: [], limitations: [], ...overrides });
 const pass = async () => ({ pass: true, issues: [], caveats: [], summary: "Goal met" });
 
@@ -22,61 +17,17 @@ async function fixture() {
   const supervisor = await AssistantSupervisor.open({ store, artifactRoot: join(root, "artifacts") });
   return { root, supervisor, options: { supervisor, workerRoot: root }, async close() { store.close(); await rm(root, { recursive: true, force: true }); } };
 }
-/** A piece of work by its assignment: children have random ids. */
-function name(task) {
-  const metadata = task.input.metadata ?? {};
-  return metadata.parentTaskId ? `${metadata.title}${metadata.attempt ? "-retry" : ""}` : task.taskId;
-}
-async function child(f, wanted, parentId = "parent") {
-  return (await f.supervisor.listTasks({ parentId })).find((task) => name(task) === wanted) ?? null;
-}
 async function submit(service, taskId = "parent") {
-  return service.submitTask({ taskId, capability: "openclaw-general-v1", context: "# User request\n\nProduce a report", prompt: "unused initial prompt", metadata: { managerMode: true, sourceRequest: "Produce a report", conversationId: "test" } });
+  return service.submitTask({ taskId, capability: "openclaw-general-v1", context: "# User request\n\nProduce a report", prompt: "unused initial prompt", metadata: { briefed: true, sourceRequest: "Produce a report", conversationId: "test" } });
 }
 async function until(check) {
   for (let i = 0; i < 100; i++) { if (await check()) return; await new Promise((resolve) => setTimeout(resolve, 5)); }
   assert.fail("Expected state was not reached");
 }
 
-test("one parent runs independent children concurrently, retries a failed child, and delivers one checked artifact", async () => {
-  const f = await fixture();
-  const starts = [];
-  let running = 0, peak = 0, plans = 0;
-  const service = new AssistantWorkerService({ ...f.options, maxConcurrentWorkers: 2,
-    planner: async () => { plans++; return plan; }, reviewer: pass,
-    adapterFactory: async ({ task, workspacePath }) => ({
-      async start({ prompt }) {
-        starts.push({ taskId: task.taskId, workspacePath, prompt }); running++; peak = Math.max(peak, running);
-        return { completion: new Promise((resolve) => setTimeout(async () => {
-          running--;
-          if (name(task) === "Inspect") return resolve({ status: "failed", code: "OPENCLAW_PROCESS_EXIT", message: "Temporary failure" });
-          if (task.taskId === "parent") {
-            assert.match(prompt, /Research/); assert.match(prompt, /Inspect-retry/);
-            await writeFile(join(workspacePath, "combined.md"), "Both assignments were combined.\n");
-          }
-          resolve({ status: "completed", text: report(name(task), task.taskId === "parent" ? { deliverables: [{ path: "combined.md", title: "Combined report" }] } : {}) });
-        }, 25)) };
-      }, async cancel() {}
-    })
-  });
-  try {
-    await submit(service);
-    const final = await service.waitForTask("parent");
-    assert.equal(final.status, "completed"); assert.equal(final.result.report.outcome, "completed");
-    assert.equal(peak, 2); assert.equal(plans, 1);
-    assert.equal(starts.length, 4); assert.equal(new Set(starts.map((start) => start.workspacePath)).size, 4);
-    assert.equal((await child(f, "Inspect")).status, "failed");
-    assert.equal((await child(f, "Inspect-retry")).status, "completed");
-    assert.equal(final.history.filter((event) => event.type === "worker_retry").length, 1);
-    assert.equal(final.artifacts.length, 1);
-    assert.equal(final.result.report.verification.deliverables[0].verified, true);
-    assert.equal((await f.supervisor.readArtifact(final.artifacts[0].artifactId)).contents.toString(), "Both assignments were combined.\n");
-  } finally { await service.shutdown(); await f.close(); }
-});
-
 test("minor concerns do not discard a useful result", async () => {
   const f = await fixture(); let starts = 0;
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
+  const service = new AssistantWorkerService({ ...f.options,
     reviewer: async () => ({ pass: true, issues: [], caveats: ["An incidental detail is unconfirmed."], summary: "Useful" }),
     adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
   });
@@ -90,7 +41,7 @@ test("minor concerns do not discard a useful result", async () => {
 test("an unavailable reviewer holds the result and retries; it never ships unchecked", async () => {
   for (const recovers of [false, true]) {
     const f = await fixture(); let reviews = 0;
-    const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewHoldMs: [0, 0],
+    const service = new AssistantWorkerService({ ...f.options, reviewHoldMs: [0, 0],
       reviewer: async () => { reviews++; if (!recovers || reviews < 3) throw new Error("Unavailable"); return { verdict: "accept", summary: "Useful" }; },
       adapterFactory: async () => ({ async start() { return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
     });
@@ -108,7 +59,7 @@ test("an unavailable reviewer holds the result and retries; it never ships unche
 
 test("EV sends review feedback back to the same agent until the result is accepted", async () => {
   const f = await fixture(); const prompts = []; let reviews = 0;
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
+  const service = new AssistantWorkerService({ ...f.options,
     reviewer: async ({ round }) => { reviews++; return round < 2
       ? { verdict: "revise", missing: ["The comparison table"], feedback: ["Add a table comparing the three options"], summary: "Missing the table" }
       : { verdict: "accept", summary: "Meets the brief" }; },
@@ -127,7 +78,7 @@ test("EV sends review feedback back to the same agent until the result is accept
 
 test("a review loop that stops making progress asks the person instead of delivering half-done work", async () => {
   const f = await fixture(); let starts = 0;
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), answerer: async () => null,
+  const service = new AssistantWorkerService({ ...f.options,
     reviewer: async ({ round }) => ({ verdict: "revise", missing: [`A requested part is missing (${round}).`], feedback: [], summary: "Incomplete", progress: "stalled" }),
     adapterFactory: async () => ({ async start() { starts++; return { completion: Promise.resolve({ status: "completed", text: report() }) }; }, async cancel() {} })
   });
@@ -138,55 +89,26 @@ test("a review loop that stops making progress asks the person instead of delive
   } finally { await service.shutdown(); await f.close(); }
 });
 
-test("agents on one goal share a brief and team board, each working in its own directory", async () => {
-  const f = await fixture(); const seen = [];
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => plan, reviewer: pass,
-    adapterFactory: async ({ task, workspacePath }) => ({ async start({ prompt }) {
-      seen.push({ taskId: task.taskId, workspacePath, prompt });
-      return { completion: Promise.resolve({ status: "completed", text: report(task.taskId) }) };
-    }, async cancel() {} })
-  });
-  try {
-    await service.submitTask({ taskId: "goal", capability: "openclaw-general-v1", layout: "shared", context: "# User request\n\nProduce a report", prompt: "unused", metadata: { managerMode: true, sourceRequest: "Produce a report", conversationId: "test" } });
-    const final = await service.waitForTask("goal");
-    assert.equal(final.status, "completed");
-    const shared = join(f.root, "workspaces", "goal", "shared");
-    assert.match(await readFile(join(shared, "BRIEF.md"), "utf8"), /Both assignments are covered/);
-    const team = await readFile(join(shared, "TEAM.md"), "utf8");
-    for (const task of await f.supervisor.listTasks({ parentId: "goal" })) assert.match(team, new RegExp(task.taskId));
-    assert.match(team, /## Research/); assert.match(team, /## Inspect/);
-    for (const item of seen) {
-      assert.equal(item.workspacePath, join(f.root, "workspaces", "goal", "tasks", item.taskId));
-      assert.match(item.prompt, new RegExp(`${shared}/BRIEF.md`));
-    }
-  } finally { await service.shutdown(); await f.close(); }
-});
-
-test("EV's settled reading of the ask reaches the agents unchanged, and EV tells the person what was done", async () => {
-  const f = await fixture(); const prompts = []; const settled = []; let plannerSaw = null;
-  const understanding = { request: "Compare the two quotes in quotes/ and recommend one", literalAsk: "which one should i go with", title: "Pick a quote",
-    intent: "Choose the better-value quote for the kitchen job", servesGoal: "Renovate the kitchen this spring", successCriteria: ["Names one quote and why"], qualityBar: ["Short, plain answer"], assumptions: ["Price and timeline matter most"], unknowns: [] };
+test("EV's brief reaches the agent and BRIEF.md, and EV tells the person what was done", async () => {
+  const f = await fixture(); const prompts = []; const settled = [];
   const service = new AssistantWorkerService({ ...f.options,
-    planner: async (input) => { plannerSaw = input.understanding; return { goal: "Recommend a quote", intent: "Something else entirely", reviewRounds: 2, subtasks: [] }; },
     reviewer: async () => ({ verdict: "accept", summary: "Clear", handoff: "I compared both quotes and recommend B: same scope, two weeks sooner." }),
     onTaskSettled: (task) => settled.push(task),
     adapterFactory: async () => ({ async start({ prompt }) { prompts.push(prompt); return { completion: Promise.resolve({ status: "completed", text: report("Go with B") }) }; }, async cancel() {} })
   });
   try {
     await service.submitTask({ taskId: "goal", capability: "openclaw-general-v1", layout: "shared", context: "# User request", prompt: "unused",
-      metadata: { managerMode: true, sourceRequest: understanding.request, understanding, title: understanding.title, conversationId: "test" } });
+      metadata: { briefed: true, sourceRequest: "Compare the two kitchen quotes in quotes/ and recommend the better value", literalAsk: "which one should i go with", title: "Pick a quote", conversationId: "test" } });
     const final = await service.waitForTask("goal");
-    assert.equal(plannerSaw.intent, understanding.intent);
-    const brief = await readFile(join(f.root, "workspaces", "goal", "shared", "BRIEF.md"), "utf8");
-    assert.match(brief, /which one should i go with/); assert.match(brief, /better-value quote/); assert.doesNotMatch(brief, /Something else entirely/);
-    assert.match(brief, /Review: until EV accepts/);
-    assert.match(prompts[0], /better-value quote/);
+    const shared = join(f.root, "workspaces", "goal", "shared");
+    const brief = await readFile(join(shared, "BRIEF.md"), "utf8");
+    assert.match(brief, /recommend the better value/); assert.match(brief, /Review: until EV accepts/);
+    assert.match(prompts[0], /recommend the better value/); assert.match(prompts[0], new RegExp(`${shared}/BRIEF.md`));
     await until(() => settled.length === 1);
     assert.match(taskUpdate(settled[0]), /"Pick a quote" is done\. I compared both quotes and recommend B/);
     assert.equal(final.status, "completed");
   } finally { await service.shutdown(); await f.close(); }
 });
-
 test("work already under way is admitted before new requests, and background work goes last", async () => {
   const f = await fixture(); const order = [];
   let releaseFirst;
@@ -211,75 +133,15 @@ test("work already under way is admitted before new requests, and background wor
   } finally { await service.shutdown(); await f.close(); }
 });
 
-test("cancelling a parent stops both an active child and a child waiting for capacity", async () => {
-  const f = await fixture(); const cancelled = [];
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => plan, reviewer: pass, maxConcurrentWorkers: 1,
-    adapterFactory: async ({ task }) => ({
-      async start() { let finish; return { completion: new Promise((resolve) => { finish = resolve; }), finish: (result) => finish(result) }; },
-      async cancel(run) { cancelled.push(task.taskId); run.finish({ status: "cancelled" }); }
-    })
-  });
-  try {
-    await submit(service);
-    await until(async () => (await f.supervisor.listTasks()).length === 3 && service.runningWorkers === 1 && service.workerQueue.length === 1);
-    await service.cancelTask({ taskId: "parent", reason: "user-requested" });
-    assert.deepEqual((await f.supervisor.listTasks()).map((task) => task.status), ["cancelled", "cancelled", "cancelled"]);
-    assert.equal(cancelled.length, 1); assert.equal(service.runningWorkers, 0); assert.equal(service.workerQueue.length, 0);
-  } finally { await service.shutdown(); await f.close(); }
-});
-
-test("restart preserves the plan and completed child, then resumes interrupted work and combines it", async () => {
-  const f = await fixture(); const starts = [];
-  const first = new AssistantWorkerService({ ...f.options, planner: async () => plan, reviewer: pass,
-    adapterFactory: async ({ task }) => ({
-      async start() {
-        starts.push(name(task));
-        if (name(task) === "Research") return { completion: Promise.resolve({ status: "completed", text: report("first child") }) };
-        let finish; return { completion: new Promise((resolve) => { finish = resolve; }), finish: (value) => finish(value) };
-      }, async cancel(run) { run.finish({ status: "cancelled" }); }
-    })
-  });
-  let second;
-  try {
-    await submit(first);
-    await until(async () => (await child(f, "Research"))?.status === "completed");
-    await first.shutdown();
-    second = new AssistantWorkerService({ ...f.options, planner: async () => { assert.fail("A saved plan must be reused"); }, reviewer: pass,
-      adapterFactory: async ({ task }) => ({ async start() { starts.push(name(task)); return { completion: Promise.resolve({ status: "completed", text: report(task.taskId) }) }; }, async cancel() {} })
-    });
-    await second.start(); const final = await second.waitForTask("parent");
-    assert.equal(final.status, "completed");
-    assert.equal(starts.filter((id) => id === "Research").length, 1);
-    assert.equal(starts.filter((id) => id === "Inspect").length, 2);
-    assert.equal(final.history.filter((event) => event.type === "manager_plan").length, 1);
-  } finally { await second?.shutdown(); await f.close(); }
-});
-
 test("a claimed file that does not exist is never delivered as done, even when the review accepts", async () => {
   const f = await fixture();
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Create a file"), reviewer: pass, answerer: async () => null,
+  const service = new AssistantWorkerService({ ...f.options, reviewer: pass,
     adapterFactory: async () => ({ async start() { return { completion: Promise.resolve({ status: "completed", text: report("Created it", { deliverables: [{ path: "missing.md" }] }) }) }; }, async cancel() {} })
   });
   try {
     await submit(service); const final = await service.waitForTask("parent");
     assert.equal(final.status, "waiting"); assert.equal(final.artifacts.length, 0);
     assert.match(final.history.findLast((event) => event.type === "input_needed").question, /does not exist/);
-  } finally { await service.shutdown(); await f.close(); }
-});
-
-test("an assignment with uncertain side effects is not automatically repeated after a crash", async () => {
-  const f = await fixture(); const starts = [];
-  const service = new AssistantWorkerService({ ...f.options, reviewer: pass,
-    planner: async () => ({ ...plan, subtasks: plan.subtasks.map((task) => ({ ...task, retrySafe: false })) }),
-    adapterFactory: async ({ task }) => ({ async start() {
-      starts.push(name(task));
-      return { completion: Promise.resolve(name(task) === "Inspect" ? { status: "failed", code: "OPENCLAW_PROCESS_EXIT", message: "Unknown action outcome" } : { status: "completed", text: report("Successful contribution retained", task.taskId === "parent" ? { outcome: "partial" } : {}) }) };
-    }, async cancel() {} })
-  });
-  try {
-    await submit(service); const final = await service.waitForTask("parent");
-    assert.equal(starts.length, 3); assert.equal(starts.some((id) => id.endsWith("retry")), false);
-    assert.equal(final.result.report.outcome, "partial"); assert.equal(final.result.report.verification.childTasks[1].status, "failed");
   } finally { await service.shutdown(); await f.close(); }
 });
 
@@ -297,9 +159,8 @@ test("an honest blocker is delivered without a forced post link or a correction 
 });
 
 test("an agent that needs the person parks without a worker slot, survives a restart, and resumes in its session", async () => {
-  const f = await fixture(); const prompts = []; const reviewedBriefs = []; let asked = 0;
-  const options = { ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewer: async ({ brief }) => { reviewedBriefs.push(brief); return pass(); },
-    answerer: async () => { asked++; return null; },
+  const f = await fixture(); const prompts = []; const reviewedBriefs = [];
+  const options = { ...f.options, reviewer: async ({ brief }) => { reviewedBriefs.push(brief); return pass(); },
     adapterFactory: async () => ({ async start({ prompt }) {
       prompts.push(prompt);
       const text = prompts.length === 1 ? report("Drafted both options", { outcome: "needs_input", question: "Which account should I post from?" }) : report("Posted from the work account");
@@ -310,7 +171,7 @@ test("an agent that needs the person parks without a worker slot, survives a res
   try {
     await submit(service);
     const parked = await service.waitForTask("parent");
-    assert.equal(parked.status, "waiting"); assert.equal(asked, 1); assert.equal(parked.lease, null);
+    assert.equal(parked.status, "waiting"); assert.equal(parked.lease, null);
     assert.equal(parked.history.findLast((event) => event.type === "input_needed").question, "Which account should I post from?");
     assert.match(taskUpdate(parked), /Which account should I post from\?/);
     await service.shutdown();
@@ -327,7 +188,7 @@ test("an agent that needs the person parks without a worker slot, survives a res
 
 test("an instruction sent while an agent runs reaches it in the same task before review", async () => {
   const f = await fixture(); const prompts = []; let release;
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"), reviewer: pass,
+  const service = new AssistantWorkerService({ ...f.options, reviewer: pass,
     adapterFactory: async () => ({ async start({ prompt }) {
       prompts.push(prompt);
       if (prompts.length === 1) return { completion: new Promise((resolve) => { release = () => resolve({ status: "completed", text: report("Formal draft") }); }) };
@@ -348,7 +209,7 @@ test("an instruction sent while an agent runs reaches it in the same task before
 
 test("an instruction sent while EV reviews reaches the agent before delivery, even when the review passes", async () => {
   const f = await fixture(); const prompts = []; let reviewing;
-  const service = new AssistantWorkerService({ ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
+  const service = new AssistantWorkerService({ ...f.options,
     reviewer: async () => { if (!reviewing) await new Promise((resolve) => { reviewing = resolve; }); return pass(); },
     adapterFactory: async () => ({ async start({ prompt }) {
       prompts.push(prompt);
@@ -368,7 +229,7 @@ test("an instruction sent while EV reviews reaches the agent before delivery, ev
 
 test("a restart carries on the review loop: same round, earlier reviews and spend, and the rejected answer is not reused", async () => {
   const f = await fixture(); const reviews = []; const starts = [];
-  const options = { ...f.options, planner: async () => normalizeTaskPlan(null, "Do work"),
+  const options = { ...f.options,
     reviewer: async ({ round, previousReviews }) => {
       reviews.push({ round, earlier: previousReviews.length });
       return reviews.length === 1 ? { verdict: "revise", missing: ["More detail"], feedback: ["Add detail"], summary: "Thin" } : pass();

@@ -129,7 +129,6 @@ function renderTask(task) {
   const isR1 = task.capability === "r1-content-package-v1";
   const isOpenClaw = task.capability === "openclaw-general-v1";
   const report = isOpenClaw && task.status === "completed" ? task.result?.report : null;
-  const children = [...tasks.values()].filter((child) => child.parentTaskId === task.taskId);
   const displayStatus = report?.outcome === "partial" ? "partial result" : report?.outcome === "blocked" ? "blocked" : taskLabel(task.status);
   const detail = task.status === "failed" ? task.error?.message ?? "The worker could not complete this task." :
     task.status === "cancelled" ? "Stopped. No late worker result can replace this state." :
@@ -150,10 +149,9 @@ function renderTask(task) {
     <div class="task-card-head"><span class="task-status ${escapeHtml(report?.outcome ?? task.status)}">${escapeHtml(displayStatus)}</span><span class="task-time">${escapeHtml(task.updatedAt ? new Date(task.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "")}</span></div>
     <h3>${escapeHtml(task.title ?? "Background task")}</h3>
     ${task.brief?.objective ? `<p><strong>Interpreted as:</strong> ${escapeHtml(task.brief.objective)}</p>` : ""}
-    ${!task.brief && task.plan?.intent ? `<p><strong>Interpreted as:</strong> ${escapeHtml(task.plan.intent)}</p><details class="task-brief"><summary>EV's brief</summary><p><strong>Success criteria</strong></p><ul>${(task.plan.successCriteria ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>${task.plan.qualityBar?.length ? `<p><strong>Quality bar</strong></p><ul>${task.plan.qualityBar.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}${task.plan.assumptions?.length ? `<p><strong>Assumptions</strong></p><ul>${task.plan.assumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}
+    ${!task.brief && task.request ? `<details class="task-brief"><summary>EV's brief</summary><p>${escapeHtml(task.request)}</p></details>` : ""}
     ${task.brief?.successCriteria?.length ? `<details class="task-brief"><summary>Success criteria and boundaries</summary><ul>${task.brief.successCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul><p><strong>Authority:</strong> prepare only</p><p><strong>Memory:</strong> what EV has learned about you that applies to this task</p>${task.contextManifestId ? `<p><strong>Context manifest:</strong> <code>${escapeHtml(task.contextManifestId)}</code></p>` : ""}</details>` : ""}
     <p>${escapeHtml(detail)}</p>
-    ${children.length ? `<details class="task-children"><summary>Workers · ${children.filter((child) => ["completed", "failed", "cancelled"].includes(child.status)).length}/${children.length} finished</summary><ul>${children.map((child) => `<li><strong>${escapeHtml(child.title)}</strong>${child.retryOf ? " (retry)" : ""} · ${escapeHtml(child.result?.report?.outcome ?? taskLabel(child.status))}${child.error ? ` · ${escapeHtml(child.error.message)}` : ""}</li>`).join("")}</ul></details>` : ""}
     ${reportMarkup}${heldMarkup}
     <div class="task-actions">
       ${artifact && !isOpenClaw ? isR1

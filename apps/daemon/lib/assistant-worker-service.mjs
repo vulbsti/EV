@@ -9,11 +9,10 @@ import { reviewOpenClawReport } from "./ev-quality-gate.mjs";
 import { OpenClawWorkerAdapter } from "./openclaw-worker-adapter.mjs";
 import { readTranscript } from "./openclaw-transcript.mjs";
 import { validateOpenClawTaskReport } from "./openclaw-task-report.mjs";
-import { continuationPrompt, executionPrompt, normalizeTaskPlan, planManagedTask, revisionPrompt, wrapUpPrompt } from "./ev-task-manager.mjs";
-import { answerFromContext } from "./ev-main-agent.mjs";
+import { continuationPrompt, executionPrompt, revisionPrompt, workBrief, wrapUpPrompt } from "./ev-work-prompts.mjs";
 import { PiWorkerAdapter } from "./pi-worker-adapter.mjs";
 import { ScopedWorkspace } from "./scoped-workspace.mjs";
-import { renderBrief, renderReviews, renderTeam, sharedLayout, writeSharedFiles } from "./shared-workspace.mjs";
+import { renderBrief, renderReviews, sharedLayout, writeSharedFiles } from "./shared-workspace.mjs";
 import { emptyUsage, exceededBudget, mergeUsage } from "./worker-usage.mjs";
 
 // Worker failures that say nothing about the work itself. Workspace-only
@@ -182,9 +181,7 @@ export class AssistantWorkerService {
     workerId = "ev-pi-worker-v1",
     profiles = createFixedCapabilityProfiles(),
     adapterFactory = null,
-    planner = planManagedTask,
     reviewer = reviewOpenClawReport,
-    answerer = answerFromContext,
     maxConcurrentWorkers = Number(process.env.EV_MAX_WORKERS ?? 3),
     onTaskSettled = null,
     executable = process.env.EV_PI_EXECUTABLE ?? "pi",
@@ -218,9 +215,7 @@ export class AssistantWorkerService {
     this.reviewHoldMs = reviewHoldMs;
     this.openClawSandbox = openClawSandbox;
     this.activeRuns = new Map();
-    this.planner = planner;
     this.reviewer = reviewer;
-    this.answerer = answerer;
     this.maxConcurrentWorkers = Math.max(1, Math.min(8, Number(maxConcurrentWorkers) || 3));
     this.onTaskSettled = typeof onTaskSettled === "function" ? onTaskSettled : null;
     this.runningWorkers = 0;
@@ -260,36 +255,40 @@ export class AssistantWorkerService {
     const recovery = await this.recover();
     const tasks = await this.supervisor.listTasks();
     const queued = tasks.filter((task) => task.status === "queued" && !recovery.recoveredTaskIds.includes(task.taskId));
-    for (const task of queued) this._dispatch(task.taskId);
+    for (const task of queued) this.dispatch(task.taskId);
     return { recovery, taskIds: tasks.map((task) => task.taskId) };
   }
 
   /**
-   * `layout: "shared"` starts a new goal with its own shared directory; a
-   * `sharedWorkspace` puts this task on an existing goal (a child agent).
-   * Either way the task works in `<goal>/tasks/<taskId>`. Without them the
-   * task keeps the original one-directory-per-task layout. `alongside` runs
-   * in the transaction that creates the task.
+   * The input for new work, checked but not yet stored: the caller stores it
+   * with `supervisor.insertTask` (in its own transaction if it likes) and then
+   * calls `dispatch`. `layout: "shared"` gives the work a goal folder with a
+   * shared directory EV writes the brief into; the agent works in
+   * `<goal>/tasks/<taskId>`. Without it the task has one directory.
    */
-  async submitTask({ taskId, capability, prompt, workspace, context = null, artifact = null, metadata = null, layout = null, sharedWorkspace = null, alongside = null }) {
+  newTask({ taskId, capability, prompt, workspace, context = null, artifact = null, metadata = null, layout = null }) {
     if (this.stopping) throw codedError("WORKER_SERVICE_STOPPING", "The worker service is stopping");
     const id = safeTaskId(taskId);
     const profile = this._profile(capability);
     if (typeof prompt !== "string" || !prompt.trim()) throw codedError("INVALID_PROMPT", "prompt is required");
-    let shared = null;
-    if (sharedWorkspace) shared = relativePath(sharedWorkspace, "sharedWorkspace");
-    else if (layout === "shared") shared = sharedLayout(id).shared;
-    else if (layout !== null) throw codedError("INVALID_LAYOUT", "layout must be \"shared\" or omitted");
-    const goal = shared ? shared.split("/").slice(0, -1).join("/") : null;
+    if (layout !== null && layout !== "shared") throw codedError("INVALID_LAYOUT", "layout must be \"shared\" or omitted");
+    const shared = layout === "shared" ? sharedLayout(id) : null;
     const input = {
       capability: profile.capability, prompt,
-      workspace: shared ? sharedLayout(goal, id).workspace : workspace ?? id,
-      ...(shared ? { sharedWorkspace: shared } : {}),
+      workspace: shared ? shared.workspace : workspace ?? id,
+      ...(shared ? { sharedWorkspace: shared.shared } : {}),
       context, artifact, metadata
     };
-    await this._prepareTaskInput(id, profile, input);
-    const task = await this.supervisor.createTask({ taskId: id, input, alongside });
-    this._dispatch(id);
+    relativePath(input.workspace, "workspace");
+    if (context !== null && (typeof context !== "string" || Buffer.byteLength(context) > 64 * 1024)) throw codedError("INVALID_CONTEXT", "context must be text no larger than 64 KB");
+    return { taskId: id, input };
+  }
+
+  async submitTask(spec) {
+    const { taskId, input } = this.newTask(spec);
+    await this._prepareTaskInput(taskId, this._profile(input.capability), input);
+    const task = await this.supervisor.createTask({ taskId, input });
+    this.dispatch(taskId);
     return task;
   }
 
@@ -299,27 +298,30 @@ export class AssistantWorkerService {
     const command = commandId
       ? await this.supervisor.commandTask({ taskId, commandId, type: "cancel", expectedRevision, reason })
       : { replayed: false, task: await this.supervisor.cancelTask({ taskId, reason }) };
-    const active = this.activeRuns.get(taskId);
-    if (active) {
-      active.cancelRequested = true;
-      active.controller?.abort();
-      this._pumpWorkers();
-      if (active.run) await active.adapter.cancel(active.run, { reason });
-    }
-    await this._cancelChildren(taskId, reason);
-    if (active) await active.promise;
+    await this.stopRun(taskId, reason);
     const task = await this.supervisor.getTask(taskId);
     return { ...task, replayed: command.replayed, task };
+  }
+
+  /** Ends the agent run of work already marked stopped, and waits for it to wind down. */
+  async stopRun(taskId, reason = "user-requested") {
+    const active = this.activeRuns.get(taskId);
+    if (!active) return;
+    active.cancelRequested = true;
+    active.controller?.abort();
+    this._pumpWorkers();
+    if (active.run) await active.adapter.cancel(active.run, { reason });
+    await active.promise;
   }
 
   /**
    * Passes something the person said to unfinished work. A running agent gets
    * it at its next step in the same session; a waiting one resumes with it.
    */
-  async instructTask({ taskId, text, source = null, alongside = null }) {
+  async instructTask({ taskId, text, source = null }) {
     if (typeof text !== "string" || !text.trim()) throw codedError("INVALID_INSTRUCTION", "instruction text is required");
-    const task = await this.supervisor.addInstruction({ taskId, text: text.trim().slice(0, 4_000), source, alongside });
-    if (task.status === "queued") this._dispatch(taskId);
+    const task = await this.supervisor.addInstruction({ taskId, text: text.trim().slice(0, 4_000), source });
+    if (task.status === "queued") this.dispatch(taskId);
     return task;
   }
 
@@ -346,21 +348,16 @@ export class AssistantWorkerService {
    * the agent, BRIEF.md and the reviewer all judge against the same thing.
    */
   async _addUpdates(active, task, texts) {
-    if (!active.plan || !texts.length) return;
-    active.plan.updates = [...(active.plan.updates ?? []), ...texts];
+    if (!active.brief || !texts.length) return;
+    active.brief.updates = [...(active.brief.updates ?? []), ...texts];
     const sharedPath = this._sharedPath(task);
-    if (sharedPath) await writeSharedFiles(sharedPath, { "BRIEF.md": renderBrief(active.plan, task.input.metadata?.sourceRequest ?? "") }).catch(() => {});
+    if (sharedPath) await writeSharedFiles(sharedPath, { "BRIEF.md": renderBrief(active.brief) }).catch(() => {});
   }
 
   /** Updates already applied in earlier runs of this task (before a restart or a pause). */
   _appliedUpdates(task) {
     const through = task.history.findLast((event) => event.type === "instructions_applied")?.through ?? 0;
     return task.history.filter((event) => event.type === "instruction" && event.sequence <= through).map((event) => event.text);
-  }
-
-  async _cancelChildren(taskId, reason) {
-    const children = (await this.supervisor.listTasks({ parentId: taskId })).filter((task) => !["completed", "failed", "cancelled"].includes(task.status));
-    await Promise.all(children.map((task) => this.cancelTask({ taskId: task.taskId, reason })));
   }
 
   async recover() {
@@ -371,7 +368,7 @@ export class AssistantWorkerService {
       return { recoveredTaskIds: [], skippedActiveTaskIds: [...this.activeRuns.keys()] };
     }
     const recovery = await this.supervisor.recover();
-    for (const taskId of recovery.recoveredTaskIds) this._dispatch(taskId);
+    for (const taskId of recovery.recoveredTaskIds) this.dispatch(taskId);
     return recovery;
   }
 
@@ -450,7 +447,8 @@ export class AssistantWorkerService {
     return workspacePath;
   }
 
-  _dispatch(taskId) {
+  /** Starts (or queues for a free agent) work that is stored and queued. */
+  dispatch(taskId) {
     if (this.activeRuns.has(taskId)) return this.activeRuns.get(taskId).promise;
     const active = { taskId, run: null, runId: null, lease: null, adapter: null, cancelRequested: false, shutdownRequested: false, settlementTimer: null, releaseSettlement: null, promise: null };
     active.promise = this._execute(active).finally(() => {
@@ -486,8 +484,8 @@ export class AssistantWorkerService {
 
   /** The budget left for this task's next run, across all its rounds. */
   _remainingBudget(active, profile) {
-    const total = active.plan?.budget?.maxTotalTokens && profile.capability === "openclaw-general-v1"
-      ? { maxTotalTokens: active.plan.budget.maxTotalTokens, maxCostUsd: 0, maxToolCalls: -1 }
+    const total = active.brief?.budget?.maxTotalTokens && profile.capability === "openclaw-general-v1"
+      ? { maxTotalTokens: active.brief.budget.maxTotalTokens, maxCostUsd: 0, maxToolCalls: -1 }
       : profile.budget;
     if (!total) return null;
     if (profile.capability !== "openclaw-general-v1") return total;
@@ -538,9 +536,9 @@ export class AssistantWorkerService {
     try {
       await this._progress(active, { phase: "working", message: "The agent reached its budget; asking it to write up what it finished and what is left." });
       const request = active.task.input.metadata?.sourceRequest ?? active.task.input.prompt;
-      const total = active.plan?.budget?.maxTotalTokens || 0;
+      const total = active.brief?.budget?.maxTotalTokens || 0;
       const allowance = { maxTotalTokens: Math.max(40_000, Math.round(total * 0.03)), maxCostUsd: 0, maxToolCalls: -1 };
-      const summary = await this._runWorker(active, wrapUpPrompt({ request, plan: active.plan ?? normalizeTaskPlan(null, request) }), { reuseCompleted: false, budget: allowance });
+      const summary = await this._runWorker(active, wrapUpPrompt({ request, brief: active.brief ?? workBrief(active.task.input.metadata ?? {}) }), { reuseCompleted: false, budget: allowance });
       return summary.status === "completed" || summary.status === "budget_exceeded" ? summary.text || null : null;
     } finally { active.wrappingUp = false; }
   }
@@ -557,83 +555,20 @@ export class AssistantWorkerService {
     return this.supervisor.recordProgress({ taskId: active.taskId, runId: active.runId, fencingToken: active.lease.fencingToken, type, data });
   }
 
-  async _runManagedTask(active, task) {
+  /** Work EV briefed: the brief goes into the goal's shared folder, and one agent takes the whole job. */
+  async _runBriefed(active, task) {
     const request = task.input.metadata.sourceRequest;
-    const understanding = task.input.metadata.understanding ?? null;
-    let plan = task.history.findLast((event) => event.type === "manager_plan")?.plan;
-    if (!plan) {
-      await this._progress(active, { phase: "planning", message: understanding ? "Breaking the work into assignments." : "Working out the goal and assignments." });
-      active.controller = new AbortController();
-      try { plan = normalizeTaskPlan(await this.planner({ taskId: task.taskId, request, context: task.input.context, understanding, signal: active.controller.signal }), request, understanding); }
-      catch (error) {
-        if (active.cancelRequested || active.shutdownRequested) throw error;
-        plan = normalizeTaskPlan(null, request, understanding);
-        plan.reason = "Planning unavailable; continuing with one execution agent.";
-      } finally { active.controller = null; }
-      await this._progress(active, { plan }, "manager_plan");
-    }
-    active.plan = { ...normalizeTaskPlan(plan, request, understanding), updates: this._appliedUpdates(task) };
+    active.brief = workBrief(task.input.metadata, this._appliedUpdates(task));
     const sharedPath = this._sharedPath(task);
     if (sharedPath) {
       await writeSharedFiles(sharedPath, {
-        "BRIEF.md": renderBrief(active.plan, request),
+        "BRIEF.md": renderBrief(active.brief),
         "CONTEXT.md": task.input.context ?? "",
-        "REVIEW.md": renderReviews([])
+        "REVIEW.md": renderReviews(active.reviews ?? [])
       });
-      await this._updateTeam(task);
     }
-    if (!plan.subtasks.length) {
-      await this._progress(active, { phase: "working", message: "An agent is carrying out the request." });
-      return this._runWorker(active, executionPrompt({ request, plan: active.plan, sharedPath }));
-    }
-    await this._progress(active, { phase: "delegating", message: `${plan.subtasks.length} agents are working on independent parts of the goal.` });
-    const children = await Promise.all(plan.subtasks.map(async (assignment, index) => {
-      let previous = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (active.cancelRequested || active.shutdownRequested) return previous;
-        // A restart finds the pieces already started under this goal by their link to it.
-        let child = (await this.supervisor.listTasks({ parentId: task.taskId })).find((item) => item.input.metadata?.assignment === index && item.input.metadata?.attempt === attempt) ?? null;
-        if (!child) {
-          const id = safeTaskId();
-          child = await this.submitTask({
-            taskId: id, capability: "openclaw-general-v1",
-            ...(task.input.sharedWorkspace ? { sharedWorkspace: task.input.sharedWorkspace } : { workspace: id }),
-            context: `${task.input.context}\n\n# Assignment\n\n${assignment.instruction}`,
-            prompt: executionPrompt({ request, plan: active.plan, sharedPath, assignment: `${assignment.instruction}${previous ? `\nPrevious attempt failed: ${previous.error?.message}. Its workspace is ${resolve(this.workspaceRoot, previous.input.workspace)}. Inspect that work before retrying; do not repeat completed external actions.` : ""}` }),
-            metadata: { parentTaskId: task.taskId, title: assignment.title, conversationId: task.input.metadata.conversationId, sourceRequest: assignment.instruction, retryOf: previous?.taskId ?? null, assignment: index, attempt, verification: {} }
-          });
-          await this._updateTeam(task);
-        } else if (child.status === "queued") this._dispatch(child.taskId);
-        const taskId = child.taskId;
-        if (active.cancelRequested) await this.cancelTask({ taskId, reason: "parent-cancelled" });
-        child = await this.waitForTask(taskId);
-        await this._updateTeam(task);
-        if (child.status !== "failed") return child;
-        previous = child;
-        if (!assignment.retrySafe) return child;
-        if (attempt === 0) await this._progress(active, { childTaskId: child.taskId, message: `Retrying ${assignment.title}.`, code: child.error?.code }, "worker_retry");
-      }
-      return previous;
-    }));
-    if (active.cancelRequested || active.shutdownRequested) return { status: "cancelled" };
-    await this._progress(active, { phase: "combining", message: "Combining the workers' results and checking the outcome." });
-    const summaries = children.filter(Boolean).map((child) => ({
-      taskId: child.taskId, title: child.input.metadata.title, status: child.status,
-      workspacePath: resolve(this.workspaceRoot, child.input.workspace),
-      report: child.result?.report ? {
-        goal: child.result.report.goal, outcome: child.result.report.outcome, answer: child.result.report.answer.slice(0, 6_000),
-        evidence: child.result.report.evidence.slice(0, 8), deliverables: child.result.report.deliverables,
-        checks: child.result.report.checks.slice(0, 6), limitations: child.result.report.limitations.slice(0, 6)
-      } : null,
-      error: child.error
-    }));
-    active.children = children.filter(Boolean).map((child) => ({
-      taskId: child.taskId, status: child.status, workspacePath: resolve(this.workspaceRoot, child.input.workspace),
-      retryOf: child.input.metadata.retryOf, startedAt: child.run?.startedAt ?? null, finishedAt: child.updatedAt
-    }));
-    // Synthesis is a different stage from execution; never reuse an old answer
-    // that was returned before these child results became available.
-    return this._runWorker(active, executionPrompt({ request, plan: active.plan, children: summaries, sharedPath }), { reuseCompleted: false });
+    await this._progress(active, { phase: "working", message: "An agent is carrying out the request." });
+    return this._runWorker(active, executionPrompt({ request, brief: active.brief, sharedPath }));
   }
 
   /**
@@ -642,7 +577,6 @@ export class AssistantWorkerService {
    */
   async _resumeParked(active, task, parked) {
     const request = task.input.metadata.sourceRequest;
-    const understanding = task.input.metadata.understanding ?? null;
     // Recorded spend already includes what was spent before the pause.
     if (!active.restoredUsage) mergeUsage(active.usage, parked.state?.usage);
     active.round = parked.state?.round ?? active.round;
@@ -650,11 +584,10 @@ export class AssistantWorkerService {
     active.reviews = parked.state?.reviews ?? [];
     active.askedAt = { reviews: active.reviews.length, round: active.round };
     active.lastUnresolved = null;
-    active.children = parked.state?.children ?? [];
-    active.plan = { ...normalizeTaskPlan(task.history.findLast((event) => event.type === "manager_plan")?.plan ?? null, request, understanding), updates: this._appliedUpdates(task) };
+    active.brief = workBrief(task.input.metadata, this._appliedUpdates(task));
     const answers = await this._takeInstructions(active);
     await this._progress(active, { phase: "working", message: answers.length ? "The agent is carrying on with your answer." : "The agent is carrying on where it left off." });
-    return this._runWorker(active, continuationPrompt({ request, plan: active.plan, answers }), { reuseCompleted: false });
+    return this._runWorker(active, continuationPrompt({ request, brief: active.brief, answers }), { reuseCompleted: false });
   }
 
   /**
@@ -668,23 +601,6 @@ export class AssistantWorkerService {
 
   _sharedPath(task) {
     return task.input.sharedWorkspace ? resolve(this.workspaceRoot, relativePath(task.input.sharedWorkspace, "sharedWorkspace")) : null;
-  }
-
-  /** Rewrites TEAM.md from supervisor state, so it never drifts from the truth. */
-  async _updateTeam(rootTask) {
-    const sharedPath = this._sharedPath(rootTask);
-    if (!sharedPath) return;
-    const root = await this.supervisor.getTask(rootTask.taskId).catch(() => rootTask);
-    const team = [root, ...await this.supervisor.listTasks({ parentId: rootTask.taskId })].map((current) => ({
-      taskId: current.taskId,
-      title: current.input.metadata?.parentTaskId ? current.input.metadata.title : "Lead agent (combines and delivers)",
-      status: current.status,
-      retryOf: current.input.metadata?.retryOf ?? null,
-      workspacePath: resolve(this.workspaceRoot, current.input.workspace),
-      assignment: current.input.metadata?.parentTaskId ? current.input.metadata.sourceRequest : null,
-      summary: current.result?.report ? `${current.result.report.outcome}: ${current.result.report.answer.slice(0, 280)}` : current.error?.message ?? null
-    }));
-    await writeSharedFiles(sharedPath, { "TEAM.md": renderTeam(team) }).catch(() => {});
   }
 
   /**
@@ -739,8 +655,8 @@ export class AssistantWorkerService {
       const parked = active.isGeneral ? task.history.findLast((event) => event.type === "input_needed") : null;
       let result = parked
         ? await this._resumeParked(active, task, parked)
-        : active.isGeneral && task.input.metadata?.managerMode
-          ? await this._runManagedTask(active, task)
+        : active.isGeneral && task.input.metadata?.briefed
+          ? await this._runBriefed(active, task)
           : await this._runWorkerWithRetry(active, task.input.prompt);
       if (active.shutdownRequested) return this.supervisor.getTask(taskId);
       if (result.status === "cancelled") {
@@ -787,10 +703,9 @@ export class AssistantWorkerService {
       if (error?.code === "NEEDS_INPUT" && lease && runId) {
         return await this.supervisor.waitForInput({
           taskId, runId, fencingToken: lease.fencingToken, question: error.question,
-          state: { usage: active.usage, round: active.round, children: active.children ?? [], reviews: active.reviews ?? [], answerSoFar: String(error.answerSoFar ?? "").slice(0, 4_000) }
+          state: { usage: active.usage, round: active.round, reviews: active.reviews ?? [], answerSoFar: String(error.answerSoFar ?? "").slice(0, 4_000) }
         }).catch(() => this.supervisor.getTask(taskId));
       }
-      if (active.isGeneral) await this._cancelChildren(taskId, "parent-failed");
       if (lease && runId) {
         return await this.supervisor.failTask({
           taskId,
@@ -855,7 +770,7 @@ export class AssistantWorkerService {
 
   _budgetSpent(active) {
     const budget = active.isGeneral
-      ? { maxTotalTokens: active.plan?.budget?.maxTotalTokens ?? 0, maxCostUsd: 0, maxToolCalls: -1 }
+      ? { maxTotalTokens: active.brief?.budget?.maxTotalTokens ?? 0, maxCostUsd: 0, maxToolCalls: -1 }
       : active.profile.budget;
     return Boolean(exceededBudget(active.usage, budget));
   }
@@ -918,15 +833,6 @@ export class AssistantWorkerService {
     catch { return []; }
   }
 
-  /** Null means ask the person; so does an answerer that fails. */
-  async _answerFromContext(active, task, question) {
-    if (!this.answerer) return null;
-    active.controller = new AbortController();
-    try { return await this.answerer({ taskId: task.taskId, question, context: task.input.context ?? "", brief: active.plan, signal: active.controller.signal }); }
-    catch { return null; }
-    finally { active.controller = null; }
-  }
-
   async _inspectDeliverables(report, workspacePath) {
     const checks = [];
     const root = await realpath(workspacePath);
@@ -957,17 +863,15 @@ export class AssistantWorkerService {
    * the same agent session (which keeps its context and files) and the
    * revised result is reviewed again, until the reviewer accepts it. Only an
    * accepted result is delivered as completed. When the loop is stuck (the
-   * reviewer needs the person, or rounds stop making progress), EV asks the
-   * person instead of delivering half-done work, and carries on with their
-   * answer. The token budget is a safety stop: past it, the best result is
+   * reviewer needs the person, or rounds stop making progress), the person is
+   * asked instead of being handed half-done work, and the same session
+   * carries on with their answer. The token budget is a safety stop: past it, the best result is
    * delivered as partial with exactly what is still missing.
    */
   async _finishGeneralResult(active, task, initial, workspacePath) {
     const request = task.input.metadata?.sourceRequest ?? "";
-    const isChild = Boolean(task.input.metadata?.parentTaskId);
-    active.plan ??= normalizeTaskPlan(null, request);
+    active.brief ??= workBrief(task.input.metadata ?? {});
     active.reviews ??= [];
-    active.autoAnswers ??= 0;
     active.askedAt ??= { reviews: 0, round: 1 };
     const sharedPath = this._sharedPath(task);
     let result = initial;
@@ -988,7 +892,7 @@ export class AssistantWorkerService {
       const instructions = stopReason ? [] : await this._takeInstructions(active);
       if (instructions.length) {
         await this._progress(active, { phase: "working", message: "The agent is taking your new instructions into account." });
-        result = await followUp(continuationPrompt({ request, plan: active.plan, instructions }));
+        result = await followUp(continuationPrompt({ request, brief: active.brief, instructions }));
         continue;
       }
       let report = null;
@@ -996,39 +900,26 @@ export class AssistantWorkerService {
       catch (error) { if (error.code !== "TASK_REPORT_INVALID") throw error; }
       if (report?.outcome === "needs_input") {
         if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
-        const answered = active.autoAnswers < 3 ? await this._answerFromContext(active, task, report.question) : null;
-        if (answered) {
-          active.autoAnswers += 1;
-          await this._addUpdates(active, task, [`EV answered the agent's question "${report.question}" from what it knows about the person: ${answered.answer}`]);
-          await this._progress(active, { phase: "working", message: "The agent asked a question; EV answered it from what it knows about you.", question: report.question, answer: answered.answer, basis: answered.basis });
-          result = await followUp(continuationPrompt({ request, plan: active.plan, answers: [answered.answer] }));
-          continue;
-        }
-        // Only a goal's lead agent can stop for the person; a child's open
-        // question goes up with its result.
-        if (!isChild) throw codedError("NEEDS_INPUT", report.question, { question: report.question, answerSoFar: report.answer });
-        report.outcome = "partial";
-        report.limitations.push(`Needs the person's input: ${report.question}`);
+        throw codedError("NEEDS_INPUT", report.question, { question: report.question, answerSoFar: report.answer });
       }
       if (!report) {
         // Format, not quality: one chance to restate the result as a report.
         if (formatFixUsed || stopReason || active.cancelRequested || active.shutdownRequested) break;
         formatFixUsed = true;
-        const repaired = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, formatOnly: true, round: active.round, sharedPath }), { reuseCompleted: false });
+        const repaired = await this._runWorker(active, revisionPrompt({ request, brief: active.brief, formatOnly: true, round: active.round, sharedPath }), { reuseCompleted: false });
         if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
         if (repaired.status === "budget_exceeded") stopReason = "budget";
         else if (repaired.status !== "completed") break;
         result = repaired;
         continue;
       }
-      report.verification.childTasks = active.children ?? [];
       const deliverables = await this._inspectDeliverables(report, workspacePath);
       // Host observations go to the reviewer as evidence, not as hard rules.
       const hostNotes = [...report.verification.issues, ...deliverables.filter((item) => !item.verified).map((item) => `Declared deliverable ${item.path}: ${item.reason}.`)];
       let review = null;
-      if (!isChild && report.outcome !== "blocked") {
+      if (report.outcome !== "blocked") {
         review = await this._review(active, task, {
-          request, brief: active.plan, report, workspacePath, hostNotes,
+          request, brief: active.brief, report, workspacePath, hostNotes,
           sessionEvents: this._transcriptEvents(task.taskId)
         });
       }
@@ -1038,13 +929,12 @@ export class AssistantWorkerService {
       const unresolved = [...new Set([...(review ? (review.pass ? [] : [...review.missing, ...review.feedback]) : report.verification.issues), ...missingFiles])];
       report.verification = {
         ...report.verification, deliverables, hostNotes,
-        qualityGate: review ?? { pass: !hostNotes.length, skipped: true, issues: hostNotes, caveats: [], summary: isChild ? "Reviewed together with the combined result." : "Blocked results are delivered as reported." },
+        qualityGate: review ?? { pass: !hostNotes.length, skipped: true, issues: hostNotes, caveats: [], summary: "Blocked results are delivered as reported." },
         reviews: active.reviews.map(({ round, verdict, intentMatch, summary, missing, feedback, unavailable }) => ({ round, verdict, intentMatch: intentMatch ?? null, summary, missing, feedback, unavailable: Boolean(unavailable) })),
-        repairCount: active.round - 1,
-        successCriteria: active.plan.successCriteria
+        repairCount: active.round - 1
       };
       best = { result, report, issues: unresolved };
-      if (!unresolved.length || isChild || report.outcome === "blocked") {
+      if (!unresolved.length || report.outcome === "blocked") {
         // Something the person said while the review ran must reach the work
         // before it is delivered, even when the review passed.
         if (!stopReason && await this._hasPendingInstructions(active)) continue;
@@ -1056,17 +946,9 @@ export class AssistantWorkerService {
       }
       if (active.cancelRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
       const question = this._stuckQuestion(active, review, unresolved);
-      if (question) {
-        const answered = active.autoAnswers < 3 ? await this._answerFromContext(active, task, question) : null;
-        if (!answered) throw codedError("NEEDS_INPUT", question, { question, answerSoFar: report.answer });
-        active.autoAnswers += 1;
-        active.askedAt = { reviews: active.reviews.length, round: active.round };
-        active.lastUnresolved = null;
-        await this._addUpdates(active, task, [`EV answered "${question}" from what it knows about the person: ${answered.answer}`]);
-        await this._progress(active, { phase: "working", message: "The work was stuck on a question; EV answered it from what it knows about you.", question, answer: answered.answer, basis: answered.basis });
-      }
+      if (question) throw codedError("NEEDS_INPUT", question, { question, answerSoFar: report.answer });
       await this._sendBack(active, task);
-      const revised = await this._runWorker(active, revisionPrompt({ request, plan: active.plan, review: review ?? { missing: hostNotes }, round: active.round - 1, sharedPath }), { reuseCompleted: false });
+      const revised = await this._runWorker(active, revisionPrompt({ request, brief: active.brief, review: review ?? { missing: hostNotes }, round: active.round - 1, sharedPath }), { reuseCompleted: false });
       if (active.shutdownRequested || active.cancelRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
       if (revised.status === "budget_exceeded" && revised.text) { stopReason = "budget"; result = revised; continue; }
       if (revised.status !== "completed") {

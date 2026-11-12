@@ -6,7 +6,7 @@
 // decision ("EV1 searches, then answers") is tested without a real model.
 import { createServer } from "node:http";
 import {
-  NotBuilt, TOOLS, decisionToday, dialectOf, learnerView, offeredTools, personMessage, roleOf, shownText,
+  NotBuilt, TOOLS, dialectOf, learnerView, offeredTools, personMessage, roleOf, shownText,
   streamEvents, textResponse, today, toolCallResponse, toolResults, workerReport, workerTurnKind
 } from "./protocol.mjs";
 
@@ -19,10 +19,9 @@ async function readJson(request) {
 }
 
 /**
- * script: { ev, planner, reviewer, learner, answer, worker } - each optional.
+ * script: { ev, reviewer, learner, worker } - each optional.
  * A role without a script gets a harmless default: EV1 replies "ok", the
- * planner uses one agent, the reviewer accepts, the learner changes nothing,
- * a worker finishes with "Done.".
+ * reviewer accepts, the learner changes nothing, a worker finishes with "Done.".
  */
 export async function startStandIn(script = {}) {
   const calls = [];
@@ -30,6 +29,7 @@ export async function startStandIn(script = {}) {
   const notBuilt = [];
   const errors = [];
   const pending = new Map(); // tool call id -> the turn waiting for its result
+  const closing = new Set(); // ids of the last call of a finished turn
   const outage = new Map(); // role -> HTTP status to answer with
   let callSeq = 0;
 
@@ -39,17 +39,12 @@ export async function startStandIn(script = {}) {
     const toolMode = call.tools.length > 0;
     const useTool = async (intent, input) => {
       const tool = TOOLS[intent];
-      if (!toolMode) {
-        // Today's wire has no tools: EV1's actions ride on its one decision, and nothing else can be asked for.
-        if (role !== "ev" || !["startWork", "messageTask"].includes(intent)) throw new NotBuilt(`${role === "ev" ? "EV1" : `the ${role}`} has no "${tool.name}" tool yet`);
-        turn.steps.push({ intent, ...input });
-        return { text: "", hits: [] };
-      }
+      if (!toolMode) throw new NotBuilt(`${role === "ev" ? "EV1" : `the ${role}`} has no "${tool.name}" tool yet`);
       if (!call.tools.includes(tool.name)) throw new NotBuilt(`${role} is not offered a "${tool.name}" tool`);
       const id = `call_${++callSeq}`;
       const result = deferred();
       pending.set(id, { turn, result });
-      turn.step.resolve(toolCallResponse(dialect, { id, name: tool.name, args: tool.args(input) }));
+      turn.step.resolve(toolCallResponse(dialect, { id, name: tool.name, args: tool.args(input, call.text) }));
       const text = await result.promise;
       let parsed = null;
       try { parsed = JSON.parse(text); } catch {}
@@ -70,28 +65,30 @@ export async function startStandIn(script = {}) {
       revise: (review = {}) => ({ final: true, review: { ...review, verdict: "revise" } }),
       ...(role === "learner" ? learnerView(call.text) : {})
     };
+    // The turn's last call: once its result comes back, the turn ends.
+    const lastCall = (name, args) => { const id = `call_${++callSeq}`; closing.add(id); return toolCallResponse(dialect, { id, name, args }); };
     const finish = async () => {
       const handler = script[role];
       const out = handler ? await handler(api, control) : undefined;
       if (role === "ev") {
         const said = out?.said ?? (typeof out === "string" ? out : "ok");
         const ask = turn.steps.find((step) => step.intent === "ask");
-        if (!toolMode) return textResponse(dialect, JSON.stringify(decisionToday({ steps: turn.steps, said, text: call.text })));
-        if (ask && call.tools.includes(TOOLS.ask.name)) return toolCallResponse(dialect, { id: `call_${++callSeq}`, name: TOOLS.ask.name, args: TOOLS.ask.args(ask) });
-        if (call.tools.includes(TOOLS.reply.name)) return toolCallResponse(dialect, { id: `call_${++callSeq}`, name: TOOLS.reply.name, args: TOOLS.reply.args({ text: said }) });
+        if (!toolMode) throw new NotBuilt("EV1 is not offered any tools");
+        if (ask && call.tools.includes(TOOLS.ask.name)) return lastCall(TOOLS.ask.name, TOOLS.ask.args(ask));
+        if (call.tools.includes(TOOLS.reply.name)) return lastCall(TOOLS.reply.name, TOOLS.reply.args({ text: said }));
         return textResponse(dialect, said);
       }
-      if (role === "planner") return textResponse(dialect, JSON.stringify(today.planner(out)));
       if (role === "reviewer") return textResponse(dialect, JSON.stringify(today.reviewer(out?.review ?? out)));
       if (role === "learner") return textResponse(dialect, JSON.stringify(today.learner((Array.isArray(out) ? out : out?.ops ?? []).filter(Boolean))));
-      if (role === "answer") return textResponse(dialect, JSON.stringify(today.answer(out)));
       return textResponse(dialect, typeof out === "string" ? out : JSON.stringify(out ?? {}));
     };
     finish().then((response) => turn.step.resolve(response), (error) => {
       if (error instanceof NotBuilt) { notBuilt.push(error.what); call.notBuilt = error.what; }
       else errors.push(`${role} script: ${error.stack ?? error.message}`);
       // Something harmless, so EV carries on and the check fails on its own terms.
-      turn.step.resolve(textResponse(dialect, role === "ev" && call.tools.length === 0 ? JSON.stringify({ action: "reply", message: "(stand-in: this turn needed something EV cannot do yet)" }) : "{}"));
+      turn.step.resolve(role === "ev" && call.tools.includes(TOOLS.reply.name)
+        ? lastCall(TOOLS.reply.name, { text: "(stand-in: this turn needed something EV cannot do yet)" })
+        : textResponse(dialect, "{}"));
     });
     return turn;
   }
@@ -109,6 +106,8 @@ export async function startStandIn(script = {}) {
       result.resolve(results.get(waitingId));
       return stream(response, dialect, await turn.step.promise);
     }
+    const ended = [...results.keys()].find((id) => closing.has(id));
+    if (ended) { closing.delete(ended); return stream(response, dialect, textResponse(dialect, "")); }
     const text = shownText(dialect, body);
     const role = roleOf({ userAgent: request.headers["user-agent"], text });
     const call = { role, at: Date.now(), text, tools: offeredTools(dialect, body), body, session: request.headers["x-opencode-session"] ?? null };

@@ -1,8 +1,7 @@
-// Checks the harness itself. EV has no tool-calling loop yet, so the part of
-// the stand-in that speaks in tool calls is driven here by a minimal loop of
-// the kind EV1 will have, built on EV's own model layer (pi-ai underneath),
-// once per API shape. It also documents, in running code, what the stand-in
-// expects from that loop.
+// Checks the harness itself: the part of the stand-in that speaks in tool
+// calls is driven here by a minimal loop of the kind EV1 has, built on EV's
+// own model layer (pi-ai underneath), once per API shape, so a failing check
+// is never the harness's own fault.
 import assert from "node:assert/strict";
 import { modelTurn, toolResult, userMessage } from "../../apps/daemon/lib/ev-model.mjs";
 import { TOOLS } from "./protocol.mjs";
