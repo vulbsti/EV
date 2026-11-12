@@ -39,8 +39,8 @@ function standInUrl() {
   return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).url : null;
 }
 
-let model = "gpt-6-luna";
-try { model = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8")).agents.defaults.model.primary.split("/").slice(1).join("/"); } catch {}
+let provider = "opencode-go", model = "gpt-6-luna";
+try { [provider, model] = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8")).agents.defaults.model.primary.split(/\/(.*)/); } catch {}
 
 function record(message) {
   const path = join(home, ".openclaw", "agents", "ev-worker", "agent", "openclaw-agent.sqlite");
@@ -48,7 +48,7 @@ function record(message) {
   const database = new DatabaseSync(path);
   try {
     database.exec("PRAGMA busy_timeout = 2000; CREATE TABLE IF NOT EXISTS transcript_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, event_json TEXT, event_zstd BLOB)");
-    database.prepare("INSERT INTO transcript_events (session_id, event_json) VALUES (?, ?)").run(taskId, JSON.stringify({ type: "message", message: { role: "assistant", provider: "opencode-go", model, ...message } }));
+    database.prepare("INSERT INTO transcript_events (session_id, event_json) VALUES (?, ?)").run(taskId, JSON.stringify({ type: "message", message: { role: "assistant", provider, model, ...message } }));
   } finally { database.close(); }
 }
 
@@ -73,4 +73,4 @@ if (plan.hangMs) await sleep(plan.hangMs);
 if (plan.exitCode) { console.error(plan.stderr ?? "stub worker: scripted failure"); process.exit(plan.exitCode); }
 const usage = plan.usage ?? { input: 2000, output: 300 };
 record({ stopReason: "stop", content: [{ type: "text", text: plan.text }], usage });
-process.stdout.write(JSON.stringify({ payloads: [{ text: plan.text }], meta: { agentMeta: { provider: "opencode-go", model, usage } } }));
+process.stdout.write(JSON.stringify({ payloads: [{ text: plan.text }], meta: { agentMeta: { provider, model, usage } } }));

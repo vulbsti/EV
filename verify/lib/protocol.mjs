@@ -56,7 +56,9 @@ export function shownText(dialect, body) {
 }
 
 export function offeredTools(dialect, body) {
-  return (body.tools ?? []).map((tool) => dialect === "chat" ? tool.function?.name : tool.name).filter(Boolean);
+  // Some Responses models are given their tools inside the input instead of a top-level list.
+  const declared = dialect === "responses" && Array.isArray(body.input) ? body.input.filter((item) => item.type === "additional_tools" || item.type === "tool_search_output").flatMap((item) => item.tools ?? []) : [];
+  return [...(body.tools ?? []), ...declared].map((tool) => dialect === "chat" ? tool.function?.name : tool.name).filter(Boolean);
 }
 
 /** Tool results carried by this request, by the call id the stand-in issued. */
@@ -118,6 +120,50 @@ export function toolCallResponse(dialect, { id, name, args }) {
   if (dialect === "chat") return { choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: "tool_calls" }], usage: { prompt_tokens: usage.input, completion_tokens: usage.output } };
   if (dialect === "messages") return { type: "message", role: "assistant", content: [{ type: "tool_use", id, name, input: args }], stop_reason: "tool_use", usage: { input_tokens: usage.input, output_tokens: usage.output } };
   return { output: [{ type: "function_call", call_id: id, name, arguments: JSON.stringify(args) }], usage: { input_tokens: usage.input, output_tokens: usage.output } };
+}
+
+/**
+ * A whole reply (as textResponse / toolCallResponse build it) as the
+ * server-sent event stream a real provider sends: callers always ask with
+ * `stream: true`, and pi-ai rejects a reply that is not a stream.
+ */
+export function streamEvents(dialect, reply) {
+  const frame = (data, event = data.type) => `${event ? `event: ${event}\n` : ""}data: ${JSON.stringify(data)}\n\n`;
+  if (dialect === "chat") {
+    const choice = reply.choices[0];
+    const chunk = (delta, finish = null) => frame({ id: "chatcmpl-stand-in", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: finish }] }, null);
+    return [
+      chunk({ role: "assistant", content: choice.message.content ?? "" }),
+      ...(choice.message.tool_calls ?? []).map((call, index) => chunk({ tool_calls: [{ index, ...call }] })),
+      chunk({}, choice.finish_reason),
+      frame({ id: "chatcmpl-stand-in", object: "chat.completion.chunk", choices: [], usage: { ...reply.usage, total_tokens: reply.usage.prompt_tokens + reply.usage.completion_tokens } }, null),
+      "data: [DONE]\n\n"
+    ];
+  }
+  if (dialect === "messages") {
+    return [
+      frame({ type: "message_start", message: { id: "msg_stand_in", type: "message", role: "assistant", model: "stand-in", content: [], stop_reason: null, usage: { input_tokens: reply.usage.input_tokens, output_tokens: 0 } } }),
+      ...reply.content.flatMap((block, index) => [
+        frame({ type: "content_block_start", index, content_block: block.type === "text" ? { type: "text", text: "" } : { ...block, input: {} } }),
+        frame({ type: "content_block_delta", index, delta: block.type === "text" ? { type: "text_delta", text: block.text } : { type: "input_json_delta", partial_json: JSON.stringify(block.input) } }),
+        frame({ type: "content_block_stop", index })
+      ]),
+      frame({ type: "message_delta", delta: { stop_reason: reply.stop_reason, stop_sequence: null }, usage: { output_tokens: reply.usage.output_tokens } }),
+      frame({ type: "message_stop" })
+    ];
+  }
+  const output = reply.output.map((item, index) => item.type === "message" ? { id: `msg_${index}`, status: "completed", ...item } : { id: `fc_${index}`, status: "completed", ...item });
+  return [
+    frame({ type: "response.created", response: { id: "resp_stand_in", status: "in_progress", output: [] } }),
+    ...output.flatMap((item, index) => [
+      frame({ type: "response.output_item.added", output_index: index, item: item.type === "message" ? { ...item, content: [], status: "in_progress" } : { ...item, arguments: "", status: "in_progress" } }),
+      item.type === "message"
+        ? frame({ type: "response.output_text.delta", output_index: index, item_id: item.id, content_index: 0, delta: item.content.map((part) => part.text).join("") })
+        : frame({ type: "response.function_call_arguments.delta", output_index: index, item_id: item.id, delta: item.arguments }),
+      frame({ type: "response.output_item.done", output_index: index, item })
+    ]),
+    frame({ type: "response.completed", response: { id: "resp_stand_in", status: "completed", output, usage: { ...reply.usage, total_tokens: reply.usage.input_tokens + reply.usage.output_tokens } } })
+  ];
 }
 
 /**
