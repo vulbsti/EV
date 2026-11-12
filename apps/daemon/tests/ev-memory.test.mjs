@@ -51,16 +51,53 @@ test("task output can only produce candidate lessons, never claims about the per
   });
 });
 
-test("a candidate lesson becomes active only when a second, separate episode supports it", async () => {
+test("a guess is relied on only when the learner judges its evidence enough, and its reason is kept", async () => {
   await withMemory(async (memory) => {
-    const first = episode(memory, "t1");
-    applyLearning(memory, { ownerId, events: [first], seen: new Map(), ops: [{ op: "add", event: 1, kind: "lesson", text: "Headless browser fails on site X.", cause: "environment" }] });
-    applyLearning(memory, { ownerId, events: [first], seen: seenNow(memory), ops: [{ op: "confirm", event: 1, id: "m1" }] });
-    assert.equal(memory.recall({ ownerId, includeCandidates: true })[0].current.status, "candidate");
-    const second = episode(memory, "t2");
-    const { applied } = applyLearning(memory, { ownerId, events: [second], seen: seenNow(memory), ops: [{ op: "confirm", event: 1, id: "m1" }] });
-    assert.equal(applied[0].op, "promote");
-    assert.equal(memory.recall({ ownerId })[0].current.status, "active");
+    const first = turn(memory, "1", "long day, something quick for dinner");
+    applyLearning(memory, { ownerId, events: [first], seen: new Map(), ops: [{ op: "add", event: 1, kind: "preference", text: "Prefers quick dinners on work days.", explicit: false }] });
+    for (const [id, said] of [["2", "quick again tonight"], ["3", "quick one please"], ["4", "nothing fancy"]]) {
+      const later = turn(memory, id, said);
+      applyLearning(memory, { ownerId, events: [later], seen: seenNow(memory), ops: [{ op: "confirm", event: 1, id: "m1" }, { op: "confirm", event: 1, id: "m1", rely: true }] });
+      assert.equal(memory.recall({ ownerId, includeCandidates: true })[0].current.status, "candidate");
+    }
+    const [guess] = memory.recall({ ownerId, includeCandidates: true });
+    assert.deepEqual(memory.evidence(guess.claimId).map((item) => item.said), ["long day, something quick for dinner", "quick again tonight", "quick one please", "nothing fancy"]);
+    const last = turn(memory, "5", "the usual quick dinner");
+    const { applied } = applyLearning(memory, { ownerId, events: [last], seen: seenNow(memory), ops: [{ op: "confirm", event: 1, id: "m1", rely: true, reason: "Asked for quick dinners on five separate days." }] });
+    assert.equal(applied[0].op, "rely");
+    const relied = memory.getClaim(guess.claimId);
+    assert.equal(relied.current.status, "active");
+    assert.equal(relied.current.authorType, "ev-learned");
+    assert.equal(relied.current.value.reliedBecause, "Asked for quick dinners on five separate days.");
+  });
+});
+
+test("the history keeps a line per conversation and day, folds as it ages, and erase reaches every line", async () => {
+  await withMemory(async (memory, path) => {
+    const said = turn(memory, "1", "my locker code is QUILLON-58, and I finished the kitchen plan");
+    memory.writeHistory({ conversationId: "c1", at: said.createdAt, eventIds: [said.eventId], summary: "Finished the kitchen plan; locker code QUILLON-58." });
+    const other = turn(memory, "2", "booked the tiler for Monday");
+    const [line] = memory.timeline();
+    memory.writeHistory({ conversationId: "c1", at: other.createdAt, eventIds: [other.eventId], summary: "Finished the kitchen plan, booked the tiler; locker code QUILLON-58.", expectedRevision: line.revision });
+    assert.equal(memory.timeline().length, 1);
+    assert.deepEqual(memory.timeline()[0].events.map((event) => event.said), ["my locker code is QUILLON-58, and I finished the kitchen plan", "booked the tiler for Monday"]);
+    assert.ok(memory.store.search("tiler").some((hit) => hit.ref === memory.timeline()[0].id));
+    // Lines of an earlier day fold into one line for that day; a line in words needs words to fold.
+    const later = new Date(Date.parse(said.createdAt) + 2 * 86_400_000).toISOString();
+    const [fold] = memory.historyFolds(later);
+    assert.equal(fold.period, "day");
+    memory.foldHistory({ ...fold, summary: fold.lines[0].summary });
+    assert.equal(memory.timeline()[0].conversationId, null);
+    // Forgetting the first message takes its words out of the line, the index and the file.
+    memory.forgetEvent(said.eventId);
+    const [after] = memory.timeline();
+    assert.equal(after.summary, null);
+    assert.deepEqual(after.events.map((event) => event.said), ["booked the tiler for Monday"]);
+    assert.deepEqual(memory.historyToRewrite().map((item) => item.lineId), [after.lineId]);
+    assert.deepEqual(memory.store.search("QUILLON"), []);
+    for (const file of [path, `${path}-wal`]) assert.equal((await readFile(file).catch(() => Buffer.alloc(0))).includes(Buffer.from("QUILLON-58")), false, file);
+    memory.forgetEvent(other.eventId);
+    assert.deepEqual(memory.timeline(), []);
   });
 });
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { memoryText } from "./assistant-memory.mjs";
-import { isQuoteOf } from "./ev-memory.mjs";
+import { evidenceText, isQuoteOf } from "./ev-memory.mjs";
 import { codedError } from "./store.mjs";
 
 /**
@@ -44,10 +44,10 @@ export function workState(task) {
   }
 }
 
-/** The ids EV uses: "work:<id>", "message:<id>", "result:<id>", "memory:<revision id>". */
+/** The ids EV uses: "work:<id>", "message:<id>", "result:<id>", "memory:<revision id>", "history:<line id>". */
 function parseRef(store, id) {
   const value = required(id, "id");
-  const match = /^(work|message|result|memory):(.+)$/.exec(value);
+  const match = /^(work|message|result|memory|history):(.+)$/.exec(value);
   if (match) return { kind: match[1], key: match[2] };
   const has = (sql) => store.db.prepare(sql).get(value);
   if (has("SELECT 1 FROM work WHERE work_id = ?")) return { kind: "work", key: value };
@@ -80,6 +80,7 @@ export function lookups({ store, supervisor, memory }) {
         const revision = store.db.prepare("SELECT r.status, c.current_revision_id = r.revision_id AS current FROM memory_revisions r JOIN memory_claims c ON c.claim_id = r.claim_id WHERE r.revision_id = ?").get(key);
         if (revision) hit.status = revision.current ? revision.status : "earlier version";
       }
+      if (kind === "history") hit.period = memory.getHistoryLine(key)?.label;
       return { ...hit, excerpt };
     });
   }
@@ -139,11 +140,25 @@ export function lookups({ store, supervisor, memory }) {
     const claim = row && memory.getClaim(row.claim_id);
     if (!claim) throw codedError("NOT_FOUND", `No memory memory:${revisionId}`);
     const line = (revision) => `[${when(revision.createdAt)}, ${revision.status}] ${memoryText(revision.value) || "(forgotten)"}`;
+    const evidence = memory.evidence(claim.claimId);
+    const relied = claim.current.status === "active" && claim.current.value?.reliedBecause;
     return [
-      `Memory memory:${claim.current.revisionId} (${claim.kind}). ${claim.current.status === "candidate" ? "A guess: the person has not said it in so many words." : claim.current.status === "retired" ? "No longer true." : ""}`.trim(),
+      `Memory memory:${claim.current.revisionId} (${claim.kind}). ${claim.current.status === "candidate" ? "A guess: the person has not said it in so many words." : relied ? "EV relies on this from its own judgement; the person has not said it in so many words." : claim.current.status === "retired" ? "No longer true." : ""}`.trim(),
       `Now: ${line(claim.current)}`,
+      relied ? `Why EV relies on it: ${claim.current.value.reliedBecause}` : "",
+      evidence.length ? `What it rests on, oldest first: ${evidenceText(evidence, 20)}` : "",
       claim.revisions.length > 1 ? `Earlier versions, oldest first:\n${claim.revisions.slice(0, -1).map((revision) => `- ${line(revision)}`).join("\n")}` : ""
     ].filter(Boolean).join("\n\n");
+  }
+
+  function readHistory(lineId) {
+    const line = memory.getHistoryLine(lineId);
+    if (!line) throw codedError("NOT_FOUND", `No history line history:${lineId}`);
+    return [
+      `History history:${lineId}, ${line.label}${line.conversationId ? `, conversation "${line.conversationId}"` : ""}: ${line.text}`,
+      `What it summarises, oldest first (open any with read):`,
+      ...line.events.map((event) => `- [${when(event.at)}] ${event.ref}${event.conversation ? ` in "${event.conversation}"` : ""}: ${event.said !== undefined ? `Person: ${clip(event.said, 500)}` : `work "${event.work ?? "untitled"}" settled`}`)
+    ].join("\n");
   }
 
   async function read(id) {
@@ -151,6 +166,7 @@ export function lookups({ store, supervisor, memory }) {
     if (kind === "message") return readMessage(key);
     if (kind === "work") return readWork(key);
     if (kind === "result") return readResult(key);
+    if (kind === "history") return readHistory(key);
     return readMemory(key);
   }
 
