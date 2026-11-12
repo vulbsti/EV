@@ -15,8 +15,9 @@ import { ensurePrivateDirectorySync, secureDatabaseFilesSync } from "./file-perm
  * - State and the event that explains it are written in one transaction.
  * - Erase follows those links, and then clears what SQLite keeps of the old
  *   bytes (secure_delete for free space, a truncating checkpoint for the WAL).
- * - One full-text index covers messages, work, results and memory, kept in
- *   step with them by triggers, so erasing a record erases its entry too.
+ * - One full-text index covers messages, work, results, memory and sessions
+ *   imported from other tools, kept in step with them by triggers, so
+ *   erasing a record erases its entry too.
  */
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -243,8 +244,36 @@ CREATE TABLE IF NOT EXISTS standing_prepared_tasks (
   UNIQUE (responsibility_id, source_revision)
 );
 
+-- A session the person had in another tool (outside_sessions), and what was
+-- said in it (outside_messages), written by the importers. source_id is the
+-- tool's own id for the message, so importing again never adds it twice;
+-- read_to is how many bytes of the file have been read.
+CREATE TABLE IF NOT EXISTS outside_sessions (
+  session_id TEXT PRIMARY KEY,
+  tool TEXT NOT NULL,
+  path TEXT NOT NULL,
+  project TEXT,
+  source_session_id TEXT,
+  read_to INTEGER NOT NULL DEFAULT 0,
+  imported_at TEXT NOT NULL,
+  UNIQUE (tool, path)
+);
+CREATE TABLE IF NOT EXISTS outside_messages (
+  message_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES outside_sessions(session_id),
+  source_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  content TEXT NOT NULL,
+  at TEXT NOT NULL,
+  UNIQUE (session_id, source_id),
+  UNIQUE (session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS outside_messages_source ON outside_messages (source_id);
+
 -- One full-text index over what EV holds: every message, every piece of work
--- (its title and brief), every result, every version of every memory.
+-- (its title and brief), every result, every version of every memory, every
+-- imported message.
 -- Triggers keep it in step with the records, so whatever changes or erases a
 -- record changes or erases its entry too; secure-delete makes FTS5 drop the
 -- old terms instead of leaving them in its segments.
@@ -264,6 +293,14 @@ END;
 CREATE TRIGGER IF NOT EXISTS reindex_message AFTER UPDATE OF content ON messages BEGIN
   DELETE FROM search_index WHERE rowid = (SELECT id FROM search_refs WHERE ref = 'message:' || new.message_id);
   INSERT INTO search_index (rowid, body) SELECT id, new.content FROM search_refs WHERE ref = 'message:' || new.message_id AND new.content <> '[forgotten]';
+END;
+CREATE TRIGGER IF NOT EXISTS index_outside_message AFTER INSERT ON outside_messages BEGIN
+  INSERT INTO search_refs (ref, conversation_id, at) VALUES ('session:' || new.message_id, NULL, new.at);
+  INSERT INTO search_index (rowid, body) VALUES (last_insert_rowid(), new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS reindex_outside_message AFTER UPDATE OF content ON outside_messages BEGIN
+  DELETE FROM search_index WHERE rowid = (SELECT id FROM search_refs WHERE ref = 'session:' || new.message_id);
+  INSERT INTO search_index (rowid, body) SELECT id, new.content FROM search_refs WHERE ref = 'session:' || new.message_id AND new.content <> '[forgotten]';
 END;
 CREATE TRIGGER IF NOT EXISTS index_work AFTER INSERT ON work BEGIN
   INSERT INTO search_refs (ref, conversation_id, at) VALUES ('work:' || new.work_id, new.conversation_id, new.created_at);
