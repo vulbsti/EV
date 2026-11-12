@@ -49,10 +49,10 @@
   "M-01": "pass",
   "M-02": "pass",
   "M-03": "pass",
-  "M-04": "fail",
+  "M-04": "pass",
   "M-05": "pass",
-  "M-06": "fail",
-  "M-07": "fail",
+  "M-06": "pass",
+  "M-07": "pass",
   "N-01": "fail",
   "N-02": "fail"
 }
