@@ -14,5 +14,8 @@
   },
   "engines": {
     "node": ">=24.16"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.5.2"
   }
 }
