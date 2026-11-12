@@ -57,26 +57,31 @@ export default {
     },
     {
       id: "M-04",
-      expect: "A guess becomes established only after it shows up on separate occasions, not twice in one conversation.",
+      expect: "A guess becomes something EV relies on when the learner judges the evidence is enough, never by a count. Its reasoning stays attached where the person can see it.",
       async run({ start, assert }) {
+        const reason = "Asked for a quick dinner on five separate work days and never for anything else.";
         const ev = await start({ script: {
           ev: (turn) => turn.reply("Noted."),
           learner: (turn) => [
             turn.guessed("long day", "preference", "Prefers quick dinners on work days."),
             turn.confirmed("quick again", "quick dinners"),
-            turn.confirmed("quick one today", "quick dinners")
+            turn.confirmed("quick one today", "quick dinners"),
+            turn.confirmed("nothing fancy", "quick dinners"),
+            turn.reliedOn("the usual quick", "quick dinners", reason)
           ]
         } });
-        const status = async () => claimsWith(await ev.memory(), "quick dinners")[0]?.current.status;
-        await ev.say("long day, could use a quick dinner", { conversation: "monday" });
+        const claim = async () => claimsWith(await ev.memory(), "quick dinners")[0];
+        const days = [["monday", "long day, could use a quick dinner"], ["tuesday", "something quick again tonight"], ["thursday", "a quick one today as well"], ["friday", "nothing fancy tonight, keep it quick"]];
+        for (const [day, text] of days) {
+          await ev.say(text, { conversation: day });
+          await ev.learned();
+          assert.equal((await claim())?.current.status, "candidate", `By ${day} the guess had become something EV relies on, although the learner had only noted more evidence and had not judged it reliable`);
+        }
+        await ev.say("the usual quick dinner please", { conversation: "next-monday" });
         await ev.learned();
-        assert.equal(await status(), "candidate", "The guess was not recorded as tentative to begin with");
-        await ev.say("something quick again tonight", { conversation: "monday" });
-        await ev.learned();
-        assert.equal(await status(), "candidate", "A guess became an established fact after being seen twice in the same conversation");
-        await ev.say("a quick one today as well", { conversation: "thursday" });
-        await ev.learned();
-        assert.equal(await status(), "active", "A guess confirmed on a separate occasion still did not become established");
+        const judged = await claim();
+        assert.equal(judged.current.status, "active", "The learner judged the guess reliable, and EV still treats it as a hint");
+        assert.ok(JSON.stringify(judged).includes(reason), "EV now relies on the guess, and the reasoning behind that judgement is not kept with it");
       }
     },
     {

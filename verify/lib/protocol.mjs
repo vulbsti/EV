@@ -204,6 +204,8 @@ export function learnerView(text) {
     guessed: (said, kind, memory, extra = {}) => { const found = event(said); return found ? { op: "add", event: found.number, kind, text: memory, explicit: false, ...extra } : null; },
     /** A later message supports a memory that already exists. */
     confirmed: (said, about) => { const found = event(said), id = memoryId(about); return found && id ? { op: "confirm", event: found.number, id } : null; },
+    /** The learner judges that a guess has held up well enough to rely on, and says why. */
+    reliedOn: (said, about, reason) => { const found = event(said), id = memoryId(about); return found && id ? { op: "confirm", event: found.number, id, rely: true, reason } : null; },
     /** The person said it is different now. */
     changed: (said, about, memory) => { const found = event(said), id = memoryId(about); return found && id ? { op: "update", id, text: memory, explicit: true, change: "changed", ...own(found) } : null; },
     /** The person asked EV to forget it. */

@@ -80,6 +80,7 @@ A check has to name something. These names are the smallest contract; if the bui
 |---|---|
 | EV1's tools | `search{query}`, `read{id}`, `reply{text}`, `ask{questions, assumptions}`, `start_work{title, request}`, `message_task{task, text, stop}`, `remember{text, quote}` |
 | Reviewer's tool | `read_file{path}` |
+| Learner's judgement | A `confirm` with `rely: true` and a `reason` says a guess can now be relied on. A plain `confirm` only adds evidence |
 | Import | `POST /api/assistant/import {source, path}` |
 | Timeline | `GET /api/assistant/timeline` gives `{lines: [{text, events}]}`, oldest first, each line listing the events it summarises |
 | Search for the page | `GET /api/assistant/search?q=` gives `{hits}` |
