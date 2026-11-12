@@ -75,18 +75,18 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 EV1 is a coordinator with a small set of tools: it can search and read everything EV holds, reply, ask, start work and talk to running work. It cannot execute anything itself. Nothing decides in advance what it may see, so it can answer from a conversation three weeks old as easily as from the last message, and it always knows what its own actions actually did.
 
-- ✗ **T-01** EV1 can find something the person said long ago in the same conversation.
-- ✗ **T-02** EV1 can find something said in a different conversation.
-- ✗ **T-03** EV1 can read the whole of a finished result, not only its first lines.
-- ✗ **T-04** Asked how running work is going, EV1 can see where it really stands, and asking starts nothing new.
-- ✗ **T-05** EV1 is offered tools to search, read and coordinate, and none that would let it execute anything itself.
-- ✗ **T-06** When EV reads two separate asks in one message, it can start both, and each gets its own result.
-- ✗ **T-07** What the person asked EV to forget cannot be found by searching either.
-- ✗ **T-08** Text written by an agent or a web page reaches EV1 only as the result of a lookup, never mixed into what it is told to do.
-- ✗ **T-09** EV1 learns what its action actually did, so it never tells the person something happened when it did not.
-- ✗ **T-10** A question from EV can carry what it will assume in the meantime, and the person sees both.
-- ✗ **T-11** One message can call for several things at once (stop one piece of work, change another, start a third, answer a question), and EV can do all of them in the same turn.
-- ✗ **T-12** When the person's answer still leaves the real question open, EV can ask again. The code does not push the work to start.
+- ✓ **T-01** EV1 can find something the person said long ago in the same conversation.
+- ✓ **T-02** EV1 can find something said in a different conversation.
+- ✓ **T-03** EV1 can read the whole of a finished result, not only its first lines.
+- ✓ **T-04** Asked how running work is going, EV1 can see where it really stands, and asking starts nothing new.
+- ✓ **T-05** EV1 is offered tools to search, read and coordinate, and none that would let it execute anything itself.
+- ✓ **T-06** When EV reads two separate asks in one message, it can start both, and each gets its own result.
+- ✓ **T-07** What the person asked EV to forget cannot be found by searching either.
+- ✓ **T-08** Text written by an agent or a web page reaches EV1 only as the result of a lookup, never mixed into what it is told to do.
+- ✓ **T-09** EV1 learns what its action actually did, so it never tells the person something happened when it did not.
+- ✓ **T-10** A question from EV can carry what it will assume in the meantime, and the person sees both.
+- ✓ **T-11** One message can call for several things at once (stop one piece of work, change another, start a third, answer a question), and EV can do all of them in the same turn.
+- ✓ **T-12** When the person's answer still leaves the real question open, EV can ask again. The code does not push the work to start.
 
 Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
@@ -127,11 +127,11 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 EV knows the person the way a long-time colleague does. It keeps a short dated history of what happened and can open any line of it back to the original words. It saves what matters as it hears it. It can tell what the person said from what it guessed, and a guess becomes knowledge only when it holds up across separate occasions. Nothing it once knew is lost when it changes, and nothing it was asked to forget survives anywhere.
 
-- ✗ **M-01** EV1 is told today's date, so "since when" and "how long ago" can be answered.
-- ✗ **M-02** EV1 can save something the person just said, and it is in memory before the reply is sent.
-- ✗ **M-03** EV1 cannot save a guess as something the person said: without their own words behind it, a memory stays tentative.
+- ✓ **M-01** EV1 is told today's date, so "since when" and "how long ago" can be answered.
+- ✓ **M-02** EV1 can save something the person just said, and it is in memory before the reply is sent.
+- ✓ **M-03** EV1 cannot save a guess as something the person said: without their own words behind it, a memory stays tentative.
 - ✗ **M-04** A guess becomes something EV relies on when the learner judges the evidence is enough, never by a count. Its reasoning stays attached where the person can see it.
-- ✗ **M-05** When something about the person changes, what EV knew before can still be found, marked as no longer current.
+- ✓ **M-05** When something about the person changes, what EV knew before can still be found, marked as no longer current.
 - ✗ **M-06** EV keeps a dated history of what happened that stays short however much happens, and every line opens back to its source.
 - ✗ **M-07** Forgetting something removes it from the history as well.
 
