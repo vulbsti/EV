@@ -130,10 +130,10 @@ EV knows the person the way a long-time colleague does. It keeps a short dated h
 - ✓ **M-01** EV1 is told today's date, so "since when" and "how long ago" can be answered.
 - ✓ **M-02** EV1 can save something the person just said, and it is in memory before the reply is sent.
 - ✓ **M-03** EV1 cannot save a guess as something the person said: without their own words behind it, a memory stays tentative.
-- ✗ **M-04** A guess becomes something EV relies on when the learner judges the evidence is enough, never by a count. Its reasoning stays attached where the person can see it.
+- ✓ **M-04** A guess becomes something EV relies on when the learner judges the evidence is enough, never by a count. Its reasoning stays attached where the person can see it.
 - ✓ **M-05** When something about the person changes, what EV knew before can still be found, marked as no longer current.
-- ✗ **M-06** EV keeps a dated history of what happened that stays short however much happens, and every line opens back to its source.
-- ✗ **M-07** Forgetting something removes it from the history as well.
+- ✓ **M-06** EV keeps a dated history of what happened that stays short however much happens, and every line opens back to its source.
+- ✓ **M-07** Forgetting something removes it from the history as well.
 
 Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 

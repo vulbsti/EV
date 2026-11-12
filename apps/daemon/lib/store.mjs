@@ -15,9 +15,9 @@ import { ensurePrivateDirectorySync, secureDatabaseFilesSync } from "./file-perm
  * - State and the event that explains it are written in one transaction.
  * - Erase follows those links, and then clears what SQLite keeps of the old
  *   bytes (secure_delete for free space, a truncating checkpoint for the WAL).
- * - One full-text index covers messages, work, results, memory and sessions
- *   imported from other tools, kept in step with them by triggers, so
- *   erasing a record erases its entry too.
+ * - One full-text index covers messages, work, results, memory, the dated
+ *   history and sessions imported from other tools, kept in step with them by
+ *   triggers, so erasing a record erases its entry too.
  */
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -186,6 +186,28 @@ CREATE TABLE IF NOT EXISTS memory_context_manifests (
   token_budget INTEGER NOT NULL,
   built_at TEXT NOT NULL
 );
+-- The dated history: one line per period, in the learner's words (summary),
+-- resting on the events it summarises. A line starts as one conversation's
+-- day and folds into a day, a week, then a month as it ages. Erase follows
+-- history_events from an event to every line that rests on it.
+CREATE TABLE IF NOT EXISTS history_lines (
+  line_id TEXT PRIMARY KEY,
+  period TEXT NOT NULL CHECK (period IN ('day', 'week', 'month')),
+  starts_at TEXT NOT NULL,
+  conversation_id TEXT,
+  label TEXT NOT NULL,
+  summary TEXT,
+  rewrite INTEGER NOT NULL DEFAULT 0,
+  revision INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS history_events (
+  line_id TEXT NOT NULL REFERENCES history_lines(line_id) ON DELETE CASCADE,
+  event_id TEXT NOT NULL REFERENCES events(event_id),
+  PRIMARY KEY (line_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS history_events_event ON history_events (event_id);
+
 -- Which events the learner has read.
 CREATE TABLE IF NOT EXISTS learning (
   event_id TEXT PRIMARY KEY REFERENCES events(event_id),
@@ -273,7 +295,7 @@ CREATE INDEX IF NOT EXISTS outside_messages_source ON outside_messages (source_i
 
 -- One full-text index over what EV holds: every message, every piece of work
 -- (its title and brief), every result, every version of every memory, every
--- imported message.
+-- imported message, every line of the dated history.
 -- Triggers keep it in step with the records, so whatever changes or erases a
 -- record changes or erases its entry too; secure-delete makes FTS5 drop the
 -- old terms instead of leaving them in its segments.
@@ -317,6 +339,19 @@ END;
 CREATE TRIGGER IF NOT EXISTS reindex_memory AFTER UPDATE OF value_json ON memory_revisions BEGIN
   DELETE FROM search_index WHERE rowid = (SELECT id FROM search_refs WHERE ref = 'memory:' || new.revision_id);
   INSERT INTO search_index (rowid, body) SELECT id, CASE json_type(new.value_json) WHEN 'text' THEN json_extract(new.value_json, '$') WHEN 'object' THEN json_extract(new.value_json, '$.text') END FROM search_refs WHERE ref = 'memory:' || new.revision_id;
+END;
+-- A history line is found by its words and by its dates ("October 2026").
+CREATE TRIGGER IF NOT EXISTS index_history AFTER INSERT ON history_lines BEGIN
+  INSERT INTO search_refs (ref, conversation_id, at) VALUES ('history:' || new.line_id, new.conversation_id, new.starts_at);
+  INSERT INTO search_index (rowid, body) VALUES (last_insert_rowid(), concat_ws(char(10), new.label, new.summary));
+END;
+CREATE TRIGGER IF NOT EXISTS reindex_history AFTER UPDATE OF label, summary ON history_lines BEGIN
+  DELETE FROM search_index WHERE rowid = (SELECT id FROM search_refs WHERE ref = 'history:' || new.line_id);
+  INSERT INTO search_index (rowid, body) SELECT id, concat_ws(char(10), new.label, new.summary) FROM search_refs WHERE ref = 'history:' || new.line_id;
+END;
+CREATE TRIGGER IF NOT EXISTS unindex_history AFTER DELETE ON history_lines BEGIN
+  DELETE FROM search_index WHERE rowid = (SELECT id FROM search_refs WHERE ref = 'history:' || old.line_id);
+  DELETE FROM search_refs WHERE ref = 'history:' || old.line_id;
 END;
 `;
 
@@ -512,24 +547,40 @@ export function openStore({ path = ":memory:" } = {}) {
 
   // ------------------------------------------------------------------ erase
 
-  /** Removes a message's words, and its reply's, and blanks every event about them. */
+  /**
+   * Takes an erased event out of the history. A line that rested only on it
+   * goes; any other line loses the learner's words (they may name what was
+   * forgotten) and is marked to be written again from what remains.
+   */
+  function dropFromHistory(eventId) {
+    const lines = db.prepare("SELECT line_id FROM history_events WHERE event_id = ?").all(eventId).map((row) => row.line_id);
+    db.prepare("DELETE FROM history_events WHERE event_id = ?").run(eventId);
+    for (const lineId of lines) {
+      if (db.prepare("SELECT 1 FROM history_events WHERE line_id = ?").get(lineId)) db.prepare("UPDATE history_lines SET summary = NULL, rewrite = 1, revision = revision + 1, updated_at = ? WHERE line_id = ?").run(now(), lineId);
+      else db.prepare("DELETE FROM history_lines WHERE line_id = ?").run(lineId);
+    }
+  }
+
+  /** Removes a message's words, and its reply's, and blanks every event about them and the history lines that rest on those. */
   function eraseMessage(messageId) {
     tx(() => {
       const ids = [messageId, ...db.prepare("SELECT message_id FROM messages WHERE reply_to = ?").all(messageId).map((row) => row.message_id)];
       for (const id of ids) {
         db.prepare("UPDATE messages SET content = ?, intent_json = NULL WHERE message_id = ?").run(ERASED_TEXT, id);
         db.prepare("UPDATE events SET data_json = ? WHERE message_id = ?").run(ERASED_DATA, id);
+        for (const row of db.prepare("SELECT event_id FROM events WHERE message_id = ?").all(id)) dropFromHistory(row.event_id);
       }
       scrubAfterCommit = true;
     });
   }
 
-  /** Blanks one event and follows its link to the message it records. */
+  /** Blanks one event, takes it out of the history, and follows its link to the message it records. */
   function eraseEvent(eventId) {
     tx(() => {
       const row = db.prepare("SELECT message_id FROM events WHERE event_id = ?").get(eventId);
       if (!row) return;
       db.prepare("UPDATE events SET data_json = ? WHERE event_id = ?").run(ERASED_DATA, eventId);
+      dropFromHistory(eventId);
       if (row.message_id) eraseMessage(row.message_id);
       scrubAfterCommit = true;
     });
