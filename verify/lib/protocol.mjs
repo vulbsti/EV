@@ -33,6 +33,8 @@ export const TOOLS = {
   messageTask: { name: "message_task", args: ({ task, text = "", stop = false }, shown = "") => ({ task: workId(shown, task) ?? task, text, stop }) },
   // quote is the person's own words the memory rests on; without one it is a guess.
   remember: { name: "remember", args: ({ text, quote = null }) => ({ text, ...(quote ? { quote } : {}) }) },
+  // ids are what search and read gave: memory:…, message:…, session:…, history:….
+  forget: { name: "forget", args: ({ ids }) => ({ ids: [].concat(ids) }) },
   // The reviewer's own tools.
   readFile: { name: "read_file", args: ({ path }) => ({ path }) }
 };

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { memoryText } from "./assistant-memory.mjs";
 import { evidenceText, isQuoteOf } from "./ev-memory.mjs";
-import { codedError } from "./store.mjs";
+import { ERASED_TEXT, codedError } from "./store.mjs";
 import { toolName } from "./outside-sessions.mjs";
 
 /**
@@ -206,6 +206,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
   const told = [];
   const stopped = [];
   const remembered = [];
+  const forgotten = [];
   const done = [];
 
   async function findWork(id) {
@@ -267,6 +268,52 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       remembered.push({ text: statement, kind: ["fact", "preference", "goal", "agreement"].includes(kind) ? kind : "fact", theirs });
       done.push(`remembered${theirs ? "" : " as a guess"}: ${statement}`);
       return theirs ? "Saved as something they said." : "Saved as a guess: those words are not in their message, so it stays tentative until they say it.";
+    },
+    forget({ ids }) {
+      const named = list(ids);
+      if (!named.length) throw codedError("INVALID_TOOL_INPUT", "ids is required");
+      const erased = [];
+      const notErased = [];
+      const before = forgotten.length;
+      for (const id of named) {
+        let ref;
+        try { ref = parseRef(store, id); } catch (error) { notErased.push({ id, why: error.message }); continue; }
+        let key = ref.key, what;
+        if (ref.kind === "memory") {
+          const row = store.db.prepare("SELECT claim_id FROM memory_revisions WHERE revision_id = ?").get(key);
+          const claim = row && memory.getClaim(row.claim_id);
+          if (!claim || claim.ownerId !== ownerId) { notErased.push({ id, why: "no such memory" }); continue; }
+          if (!memoryText(claim.current.value)) { notErased.push({ id, why: "already forgotten" }); continue; }
+          key = claim.claimId;
+          const from = memory.evidence(claim.claimId).map((item) => item.ref).filter((ref) => ref?.startsWith("message:"));
+          what = `the memory "${clip(memoryText(claim.current.value), 200)}" and every earlier version of it${from.length ? `, with the messages it was learned from (${from.join(", ")}) and EV's replies to them` : ""}`;
+        } else if (ref.kind === "message") {
+          const row = store.db.prepare("SELECT role, content FROM messages WHERE message_id = ?").get(key);
+          if (!row) { notErased.push({ id, why: "no such message" }); continue; }
+          if (row.content === ERASED_TEXT) { notErased.push({ id, why: "already forgotten" }); continue; }
+          what = row.role === "user" ? "the person's message and EV's reply to it" : "EV's message";
+        } else if (ref.kind === "session") {
+          const row = store.db.prepare("SELECT m.content, s.tool, s.path FROM outside_messages m JOIN outside_sessions s ON s.session_id = m.session_id WHERE m.message_id = ?").get(key);
+          if (!row) { notErased.push({ id, why: "no such imported message" }); continue; }
+          if (row.content === ERASED_TEXT) { notErased.push({ id, why: "already forgotten" }); continue; }
+          what = `its words in EV; the ${toolName(row.tool)} file it was imported from (${row.path}) is outside EV and still holds them`;
+        } else if (ref.kind === "history") {
+          const line = memory.getHistoryLine(key);
+          if (!line) { notErased.push({ id, why: "no such history line" }); continue; }
+          const rests = line.events.map((event) => event.ref);
+          what = rests.length ? `its words; it is written again from what it rests on (${rests.join(", ")}), so anything those still say comes back unless they are forgotten too` : "the whole line";
+        } else {
+          notErased.push({ id, why: "work and its results cannot be forgotten" });
+          continue;
+        }
+        if (!forgotten.some((entry) => entry.kind === ref.kind && entry.key === key)) forgotten.push({ kind: ref.kind, key });
+        erased.push(`${id}: ${what}`);
+      }
+      if (forgotten.length > before) done.push(`forgot ${forgotten.slice(before).map(({ kind, key }) => `${kind}:${key}`).join(", ")}`);
+      return JSON.stringify({
+        erased, not_erased: notErased,
+        ...(erased.length ? { note: "Erased when this turn ends, from the store, the history and search. Their message in this turn is erased too, since it often repeats what is forgotten; your reply is kept, so leave out what was forgotten." } : {})
+      });
     }
   };
 
@@ -295,6 +342,15 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
         for (const work of started) supervisor.insertTask(work);
         for (const { taskId, reason } of stopped) supervisor.hold(taskId, { reason, source: message.messageId });
         for (const { taskId, text } of told) if (supervisor.instruct({ taskId, text, source: message.clientMessageId }) === "queued") queued.push(taskId);
+        // Each erase follows its links: a memory to the events and messages it
+        // was learned from, a message to its reply, its events and the history.
+        for (const { kind, key } of forgotten) {
+          if (kind === "memory") memory.erase({ ownerId, targetType: "claim", targetId: key });
+          else if (kind === "message") store.eraseMessage(key);
+          else if (kind === "session") store.eraseOutsideMessage(key);
+          else memory.forgetHistoryLine(key);
+        }
+        if (forgotten.length) store.eraseMessage(message.messageId);
         const { eventId } = store.handled(item.itemId, { reply, workId, data: { action: done.join("; ") || "reply", recentWork } });
         if (remembered.length) {
           // What EV saved rests on this turn, so forgetting it later follows the link back here.

@@ -48,11 +48,14 @@ export const TOOLS = [
     text: string("What to tell it. May be empty when only stopping."),
     stop: { type: "boolean", description: "True to put this work on hold." }
   }, ["task"]),
-  tool("remember", "Save something the person has just told you about themselves, so EV knows it from now on. EV also learns from every conversation in the background; use this when it should hold from the next message.", {
+  tool("remember", "Save something the person has just told you about themselves, so EV knows it from now on. EV also learns from every conversation in the background; use this when it should hold from the next message. Secrets such as codes, passwords and keys are not for memory unless they ask EV to keep them.", {
     text: string("One short sentence in the third person, such as \"Prefers metric units.\""),
     quote: string("Their exact words in this message that it rests on. Without them it is kept only as a guess."),
     kind: { type: "string", enum: ["fact", "preference", "goal", "agreement"], description: "fact: who they are; preference: how they like things; goal: something they want to achieve; agreement: how they want EV to work with them." }
-  }, ["text", "quote"])
+  }, ["text", "quote"]),
+  tool("forget", "Erase things EV holds, for good: a memory (every version of it, and the messages it was learned from), a message (with EV's reply to it), a message in an imported session, or a history line. What the person wants forgotten may live in several places; search first and name each one. It tells you exactly what was erased and what was not.", {
+    ids: strings("Ids from search or read, such as memory:…, message:…, session:… or history:….")
+  })
 ];
 
 /** A turn that never comes to an end is stopped here, and nothing it decided is carried out. */

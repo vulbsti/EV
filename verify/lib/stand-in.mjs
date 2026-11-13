@@ -56,6 +56,7 @@ export async function startStandIn(script = {}) {
       search: (query) => useTool("search", { query }),
       read: (id) => useTool("read", { id }),
       remember: (text, { quote = null } = {}) => useTool("remember", { text, quote }),
+      forget: (ids) => useTool("forget", { ids }),
       startWork: (work) => useTool("startWork", work),
       messageTask: (message) => useTool("messageTask", message),
       readFile: (path) => useTool("readFile", { path }),
