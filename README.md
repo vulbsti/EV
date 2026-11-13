@@ -4,7 +4,7 @@ An assistant that understands the person first, then coordinates agents that wor
 
 ## Run it
 
-Needs Node.js 24.16+, OpenClaw 2026.10+, docker, and `OPENCODE_API` in the local `.env`.
+Needs Node.js 22.19+, OpenClaw 2026.10+, docker, and `OPENCODE_API` in the local `.env`.
 
 ```bash
 npm install              # pi-ai, the one library EV uses to talk to models
