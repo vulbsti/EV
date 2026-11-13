@@ -13,10 +13,12 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
  * reply never comes back as text: it throws an error carrying the caller's
  * `code`.
  *
- * No call is cut short by EV: a reply may be as long as the model's own output
- * limit (pi-ai's default), and a call ends only when the model falls silent
- * (no bytes for `silenceMs`), however long it keeps streaming. Reasoning
- * models think for a long time and spend tokens doing it; that is the work.
+ * No call is cut short by EV: a reply may be as long as the model's own
+ * output limit (`maxTokens` in its pi-ai record, asked for explicitly since an
+ * OpenAI-compatible provider's own default can be far lower), and a call ends
+ * only when the model falls silent (no bytes for `silenceMs`), however long it
+ * keeps streaming. Reasoning models think for a long time and spend tokens
+ * doing it; that is the work.
  *
  * EV_MODEL names the model as provider/model; a bare id means opencode-go,
  * whose catalogue gives its API shape, base URL and quirks. EV_MODEL_URL
@@ -147,7 +149,7 @@ export async function modelTurn({ context, parse = (text) => text, session, code
     let message;
     try {
       message = await providerFor(model).complete(model, context, {
-        apiKey, sessionId: session, maxRetries: 0,
+        apiKey, sessionId: session, maxTokens: model.maxTokens, maxRetries: 0,
         signal: AbortSignal.any([quiet.signal, ...(signal ? [signal] : [])]),
         identity: { userAgent: { custom: `ev-${label}/0.2` } },
         // Seen here because the provider SDKs throw away the status of a failed reply.
