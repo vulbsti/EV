@@ -54,7 +54,7 @@ export const TOOLS = [
     quote: string("Their exact words in this message that it rests on. Without them it is kept only as a guess."),
     kind: { type: "string", enum: ["fact", "preference", "goal", "agreement"], description: "fact: who they are; preference: how they like things; goal: something they want to achieve; agreement: how they want EV to work with them." }
   }, ["text", "quote"]),
-  tool("forget", "Erase things EV holds, for good: a memory (every version of it, and the messages it was learned from), a message (with EV's reply to it), a message in an imported session, or a history line. What the person wants forgotten may live in several places; search first and name each one. It tells you exactly what was erased and what was not.", {
+  tool("forget", "Erase things EV holds, for good: a memory (every version of it, and the messages it was learned from), a message (with EV's reply to it), a message in an imported session, or a history line. What the person wants forgotten may live in several places; search first and name each one. It tells you exactly what was erased and what was not. This is for what they want gone; something that has simply changed is remembered instead, and EV keeps the earlier version as past.", {
     ids: strings("Ids from search or read, such as memory:…, message:…, session:… or history:….")
   })
 ];
