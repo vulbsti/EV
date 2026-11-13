@@ -112,7 +112,7 @@ export async function analyseEvents({ events, prior = [], claims, history = null
   ].filter(Boolean).join("\n\n");
   const value = await callModel({
     input, session: sessionHeader(`memory:${events[0].eventId}`), code: "MEMORY_LEARNING_UNAVAILABLE", label: "memory",
-    maxOutputTokens: 3_000, timeoutMs: 90_000, apiKey, fetchImpl, signal, retryDelaysMs,
+    apiKey, fetchImpl, signal, retryDelaysMs,
     parse: (raw) => parseModelJson(raw, "EV's memory pass returned unreadable operations")
   });
   return { ops: Array.isArray(value.ops) ? value.ops.slice(0, 30) : [], history: typeof value.history === "string" ? value.history : null };
@@ -135,7 +135,7 @@ export async function summariseHistory({ label, lines = null, events = null, api
   ].join("\n\n");
   const value = await callModel({
     input, session: sessionHeader(`history:${label}`), code: "MEMORY_LEARNING_UNAVAILABLE", label: "memory",
-    maxOutputTokens: 800, timeoutMs: 90_000, apiKey, fetchImpl, signal, retryDelaysMs,
+    apiKey, fetchImpl, signal, retryDelaysMs,
     parse: (raw) => parseModelJson(raw, "EV's history pass returned an unreadable line")
   });
   return typeof value.text === "string" && value.text.trim() ? value.text : null;

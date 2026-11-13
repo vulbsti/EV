@@ -15,3 +15,24 @@ test("model calls retry provider blips and unreadable replies, but not client er
   await assert.rejects(ask(async () => { calls++; return new Response("bad", { status: 400 }); }), (error) => error.code === "MAIN_AGENT_UNAVAILABLE");
   assert.equal(calls, 1);
 });
+
+test("a model call lives as long as the model keeps streaming, and fails once it falls silent", async () => {
+  const frames = (await modelReply(JSON.stringify({ answer: "Hi" })).text()).split("\n\n").filter(Boolean).map((frame) => `${frame}\n\n`);
+  // One frame every 60 ms, more than twice the silence limit in all; `silentAfter` frames in, it stops sending.
+  const trickle = (silentAfter = Infinity) => async () => {
+    const left = [...frames];
+    return new Response(new ReadableStream({
+      async pull(controller) {
+        await new Promise((done) => setTimeout(done, 60));
+        if (silentAfter-- <= 0) return new Promise(() => {});
+        const frame = left.shift();
+        if (frame) controller.enqueue(new TextEncoder().encode(frame)); else controller.close();
+      }
+    }), { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const call = (fetchImpl) => callModel({ input: "hi", session: "test", code: "MAIN_AGENT_UNAVAILABLE", label: "main-agent", apiKey: "test", fetchImpl, retryDelaysMs: [], silenceMs: 150, parse: (raw) => parseModelJson(raw, "unreadable") });
+  const started = Date.now();
+  assert.equal((await call(trickle())).answer, "Hi");
+  assert.ok(Date.now() - started > 300);
+  await assert.rejects(call(trickle(1)), (error) => error.code === "MAIN_AGENT_UNAVAILABLE" && /sent nothing/.test(error.message));
+});

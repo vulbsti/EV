@@ -386,7 +386,7 @@ export async function reviewOpenClawReport({
     if (step >= MAX_REVIEW_STEPS) throw Object.assign(new Error(`Quality review did not end after ${MAX_REVIEW_STEPS} model calls`), { code: "QUALITY_REVIEW_UNAVAILABLE" });
     const turn = await modelTurn({
       context, session: sessionHeader(`review:${taskId}`), code: "QUALITY_REVIEW_UNAVAILABLE", label: "quality-gate",
-      timeoutMs: 60_000, apiKey, fetchImpl,
+      apiKey, fetchImpl,
       parse: (raw, message) => message.content.some((part) => part.type === "toolCall") ? undefined : parseModelJson(raw, "Quality review returned invalid JSON")
     });
     context.messages.push(turn.message);

@@ -133,7 +133,7 @@ async function judgeScenario(result) {
     `What happened:\n${evidence.join("\n")}`,
     'Return JSON only: {"checks":[{"n":number,"verdict":"met"|"not_met"|"happened"|"avoided"|"unclear","evidence":string}],"pass":boolean,"summary":string}. pass is true only if every expect and memory check is met and every fail check is avoided.'
   ].join("\n\n");
-  const verdict = await askModelJson(input, { maxOutputTokens: 4_000, timeoutMs: 180_000, label: "scenario-judge" });
+  const verdict = await askModelJson(input, { label: "scenario-judge" });
   return { pass: Boolean(verdict.pass), summary: String(verdict.summary ?? ""), checks: (verdict.checks ?? []).map((check) => ({ ...boxes[check.n - 1], verdict: check.verdict, evidence: check.evidence })) };
 }
 
