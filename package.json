@@ -13,7 +13,7 @@
     "qa:arc": "node scripts/run-qa-arc.mjs"
   },
   "engines": {
-    "node": ">=24.16"
+    "node": ">=22.19"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "1.5.2"

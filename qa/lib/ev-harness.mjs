@@ -112,4 +112,11 @@ export async function converse(baseUrl, conversationId, clientMessageId, text, t
   return { reply: reply?.content ?? null, later, started, timedOut: settled.timedOut };
 }
 
-export const memoryView = (claims) => claims.map((claim) => ({ claimId: claim.claimId, scope: claim.scope, value: claim.current?.value, revision: claim.current?.revision, author: claim.current?.authorType }));
+/** A claim's words: a plain string (entered by hand) or the text of a learned value. */
+export const claimText = (value) => typeof value === "string" ? value : typeof value?.text === "string" ? value.text : "";
+
+/** Memory as the scorecards and judges read it: the words, with the kind, state and status that change their meaning. */
+export const memoryView = (claims) => claims.map((claim) => ({ claimId: claim.claimId, scope: claim.scope, kind: claim.kind, value: claimText(claim.current?.value), state: claim.current?.value?.state ?? null, status: claim.current?.status, revision: claim.current?.revision, author: claim.current?.authorType }));
+
+/** One line per claim, for a scorecard or a judge. */
+export const memoryLine = (claim) => `- [${[claim.kind ?? claim.scope, claim.state, claim.status === "active" ? null : claim.status].filter(Boolean).join(", ")}] ${claim.value}`;

@@ -571,6 +571,19 @@ export class AssistantMemoryStore {
     });
   }
 
+  /**
+   * Erases a history line's words. A line that still rests on events is
+   * written again from them (so anything they say comes back unless they are
+   * erased too); a line that rests on nothing goes.
+   */
+  forgetHistoryLine(lineId) {
+    this._transaction(() => {
+      if (this.database.prepare("SELECT 1 FROM history_events WHERE line_id = ?").get(lineId)) this.database.prepare("UPDATE history_lines SET summary = NULL, rewrite = 1, revision = revision + 1, updated_at = ? WHERE line_id = ?").run(this._now(), lineId);
+      else this.database.prepare("DELETE FROM history_lines WHERE line_id = ?").run(lineId);
+      this.store.erased();
+    });
+  }
+
   /** Lines that lost their words to an erase and wait to be written again. */
   historyToRewrite() {
     return this.database.prepare("SELECT * FROM history_lines WHERE rewrite = 1").all().map((row) => this._line(row));

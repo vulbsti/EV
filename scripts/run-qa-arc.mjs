@@ -10,7 +10,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-import { converse, memoryOf, memoryView, projectRoot, startServer } from "../qa/lib/ev-harness.mjs";
+import { converse, memoryLine, memoryOf, memoryView, projectRoot, startServer } from "../qa/lib/ev-harness.mjs";
 import { askModelJson } from "../qa/lib/model.mjs";
 
 const DAY_MS = 86_400_000;
@@ -69,7 +69,7 @@ async function nextUserMessage({ phase, earlier, transcript, remaining }) {
     `Messages you have left in this session: ${remaining}.`,
     'Return JSON only: {"message": string, "kind": "chat"|"question"|"request"|"vent"|"decision"|"correction"|"other"}'
   ].filter(Boolean).join("\n\n");
-  const value = await askModelJson(input, { maxOutputTokens: 3_000, label: "sim-user" });
+  const value = await askModelJson(input, { label: "sim-user" });
   if (typeof value.message !== "string" || !value.message.trim()) throw new Error("Simulated user returned no message");
   return { text: value.message.trim().slice(0, 2_000), kind: value.kind ?? "other" };
 }
@@ -88,7 +88,7 @@ async function judgePhase({ phase, memory, probes }) {
     `Probe answers:\n${probes.map((probe) => `Q: ${probe.question}\nEV: ${[probe.reply, ...probe.later].filter(Boolean).join("\n")}`).join("\n\n")}`,
     'Return JSON only: {"items":[{"id":string,"kind":"current"|"history"|"undecided","status":string,"evidence":string}],"violations":[string],"contradictions":[string],"invented":[string],"summary":string}'
   ].join("\n\n");
-  return askModelJson(input, { maxOutputTokens: 4_000, timeoutMs: 180_000, label: "arc-judge" });
+  return askModelJson(input, { label: "arc-judge" });
 }
 
 function score(judgement, phase) {
@@ -133,7 +133,7 @@ async function writeReport() {
     for (const key of ["violations", "contradictions", "invented"]) for (const entry of result.judgement?.[key] ?? []) lines.push(`- ${key}: ${entry}`);
     lines.push("", "Probe answers:", "");
     for (const probe of result.probes) lines.push(`> **${probe.question}**`, ...[probe.reply, ...probe.later].filter(Boolean).map((text) => `> ${String(text).replace(/\n/g, "\n> ")}`), "");
-    lines.push("Memory at end of phase:", "", ...(result.memory.length ? result.memory.map((claim) => `- [${claim.scope}] ${claim.value}`) : ["- (empty)"]));
+    lines.push("Memory at end of phase:", "", ...(result.memory.length ? result.memory.map(memoryLine) : ["- (empty)"]));
   }
   await writeFile(join(root, "drift.md"), `${lines.join("\n")}\n`);
 }

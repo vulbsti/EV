@@ -7,11 +7,18 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 
 /**
  * One way for EV's own model calls (main agent, reviewer, memory) to
- * reach a model, through pi-ai. Transient failures (429, 5xx, timeouts,
- * dropped connections) are retried with backoff, so one blip does not turn a
- * chat message into a task or skip a review. A failed, cut-off or empty
+ * reach a model, through pi-ai. Transient failures (429, 5xx, a model gone
+ * silent, dropped connections) are retried with backoff, so one blip does not
+ * turn a chat message into a task or skip a review. A failed, cut-off or empty
  * reply never comes back as text: it throws an error carrying the caller's
  * `code`.
+ *
+ * No call is cut short by EV: a reply may be as long as the model's own
+ * output limit (`maxTokens` in its pi-ai record, asked for explicitly since an
+ * OpenAI-compatible provider's own default can be far lower), and a call ends
+ * only when the model falls silent (no bytes for `silenceMs`), however long it
+ * keeps streaming. Reasoning models think for a long time and spend tokens
+ * doing it; that is the work.
  *
  * EV_MODEL names the model as provider/model; a bare id means opencode-go,
  * whose catalogue gives its API shape, base URL and quirks. EV_MODEL_URL
@@ -26,6 +33,8 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 
 const DEFAULT_MODEL = "opencode-go/gpt-6-luna";
 const RETRY_DELAYS_MS = [1_000, 4_000];
+/** How long a model may stay silent (no bytes at all, not even a keep-alive) before the call counts as failed. */
+const SILENCE_MS = 90_000;
 const APIS = { "anthropic-messages": anthropicMessagesApi, "openai-completions": openAICompletionsApi, "openai-responses": openAIResponsesApi };
 const opencodeGo = opencodeGoProvider();
 const models = createModels();
@@ -83,13 +92,39 @@ const pause = (ms, signal) => new Promise((resolve, reject) => {
 const chars = (messages) => messages.reduce((sum, message) => sum + (typeof message.content === "string" ? message.content.length : JSON.stringify(message.content ?? "").length), 0);
 
 /**
+ * A fetch that hears every byte the provider sends: each one calls `heard`.
+ * When `quiet` aborts, the body being read fails at once, whoever made it.
+ */
+function listening(fetchImpl, heard, quiet, seen) {
+  return async (url, init) => {
+    const response = await (fetchImpl ?? fetch)(url, init);
+    heard();
+    seen(response);
+    if (!response.body) return response;
+    const reader = response.body.getReader();
+    let controller;
+    const stop = () => { try { controller.error(quiet.reason); } catch {} reader.cancel(quiet.reason).catch(() => {}); };
+    const body = new ReadableStream({
+      start(c) { controller = c; if (quiet.aborted) stop(); else quiet.addEventListener("abort", stop, { once: true }); },
+      async pull(c) {
+        const { done, value } = await reader.read();
+        heard();
+        try { if (done) { quiet.removeEventListener("abort", stop); c.close(); } else c.enqueue(value); } catch { /* already failed */ }
+      },
+      cancel(reason) { quiet.removeEventListener("abort", stop); return reader.cancel(reason); }
+    });
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
+}
+
+/**
  * One model turn over a pi-ai context ({ systemPrompt?, messages, tools? }).
  * Returns { message, text, toolCalls, usage, value }: push `message` onto
  * context.messages, then a toolResult for each tool call, and call again.
  * `parse(text, message)` gives `value`; a reply it rejects is retried like a
  * provider blip. Throws an error with `code` once retries are spent.
  */
-export async function modelTurn({ context, parse = (text) => text, session, code, label, maxOutputTokens = 4_000, timeoutMs = 45_000, apiKey = process.env.OPENCODE_API, fetchImpl, signal, retryDelaysMs = RETRY_DELAYS_MS, env = process.env }) {
+export async function modelTurn({ context, parse = (text) => text, session, code, label, silenceMs = SILENCE_MS, apiKey = process.env.OPENCODE_API, fetchImpl, signal, retryDelaysMs = RETRY_DELAYS_MS, env = process.env }) {
   if (!apiKey) throw Object.assign(new Error("The model key (OPENCODE_API) is not configured"), { code });
   let model;
   try { model = modelSettings(env); } catch (error) { throw Object.assign(error, { code }); }
@@ -103,33 +138,43 @@ export async function modelTurn({ context, parse = (text) => text, session, code
       catch (error) { log("aborted", attempt); throw error; }
     }
     let status = null, retryAfterMs = 0;
-    const message = await providerFor(model).complete(model, context, {
-      apiKey, sessionId: session, maxTokens: maxOutputTokens, maxRetries: 0,
-      signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
-      identity: { userAgent: { custom: `ev-${label}/0.2` } },
-      // Seen here because the provider SDKs throw away the status of a failed reply.
-      fetch: async (url, init) => {
-        const response = await (fetchImpl ?? fetch)(url, init);
-        status = response.status;
-        const retryAfter = Number(response.headers?.get?.("retry-after"));
-        if (retryAfter > 0) retryAfterMs = Math.min(retryAfter * 1_000, 30_000);
-        return response;
-      }
-    });
+    // The call lives as long as the model keeps sending something.
+    const quiet = new AbortController();
+    let timer, ended = false;
+    const heard = () => {
+      clearTimeout(timer);
+      if (!ended) timer = setTimeout(() => quiet.abort(new Error(`the model sent nothing for ${silenceMs / 1_000} s`)), silenceMs);
+    };
+    heard();
+    let message;
+    try {
+      message = await providerFor(model).complete(model, context, {
+        apiKey, sessionId: session, maxTokens: model.maxTokens, maxRetries: 0,
+        signal: AbortSignal.any([quiet.signal, ...(signal ? [signal] : [])]),
+        identity: { userAgent: { custom: `ev-${label}/0.2` } },
+        // Seen here because the provider SDKs throw away the status of a failed reply.
+        fetch: listening(fetchImpl, heard, quiet.signal, (response) => {
+          status = response.status;
+          const retryAfter = Number(response.headers?.get?.("retry-after"));
+          if (retryAfter > 0) retryAfterMs = Math.min(retryAfter * 1_000, 30_000);
+        })
+      });
+    } finally { ended = true; clearTimeout(timer); }
     if (signal?.aborted) { log("aborted", attempt + 1); throw signal.reason; }
     // input counts every prompt token, cached ones included (pi-ai splits them out).
     const usage = { input: (message.usage?.input ?? 0) + (message.usage?.cacheRead ?? 0) + (message.usage?.cacheWrite ?? 0), output: message.usage?.output ?? 0, cached: message.usage?.cacheRead ?? 0 };
     const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
     const toolCalls = message.content.filter((part) => part.type === "toolCall");
     if (message.stopReason === "error" || message.stopReason === "aborted") {
-      // A timeout aborts too; only the caller's own signal ends the retries.
-      failure = Object.assign(new Error(`${label} model call failed${status >= 400 ? ` (HTTP ${status})` : ""}: ${String(message.errorMessage ?? message.stopReason).replace(/\s+/g, " ").slice(0, 300)}`), { code, status: status >= 400 ? status : null, retryAfterMs });
+      // Silence aborts too; only the caller's own signal ends the retries.
+      const why = quiet.signal.aborted ? quiet.signal.reason.message : message.errorMessage ?? message.stopReason;
+      failure = Object.assign(new Error(`${label} model call failed${status >= 400 ? ` (HTTP ${status})` : ""}: ${String(why).replace(/\s+/g, " ").slice(0, 300)}`), { code, status: status >= 400 ? status : null, retryAfterMs });
       if (status >= 400 && !transient(status)) { log("rejected", attempt + 1, { status }); throw failure; }
       continue;
     }
     // With tools on offer, a turn may end with nothing left to say.
     if (message.stopReason === "length" || (!text && !toolCalls.length && !context.tools?.length)) {
-      failure = Object.assign(new Error(message.stopReason === "length" ? `${label} reply was cut off at ${maxOutputTokens} tokens` : `${label} returned an empty reply`), { code });
+      failure = Object.assign(new Error(message.stopReason === "length" ? `${label} reply was cut off at the model's output limit` : `${label} returned an empty reply`), { code });
       continue;
     }
     let value;

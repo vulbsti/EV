@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { askModelJson } from "../qa/lib/model.mjs";
-import { RESTING, api, memoryOf, memoryView, projectRoot, say, settle, startServer, tasksIn } from "../qa/lib/ev-harness.mjs";
+import { RESTING, api, claimText, memoryLine, memoryOf, memoryView, projectRoot, say, settle, startServer, tasksIn } from "../qa/lib/ev-harness.mjs";
 
 const scenarioDir = join(projectRoot, "qa", "scenarios");
 
@@ -62,7 +62,7 @@ function selectScenarios(all) {
 
 function findClaim(claims, match) {
   const needle = match.toLowerCase();
-  const claim = claims.find((candidate) => String(candidate.current?.value ?? "").toLowerCase().includes(needle));
+  const claim = claims.find((candidate) => claimText(candidate.current?.value).toLowerCase().includes(needle));
   if (!claim) throw new Error(`No active memory matches "${match}"`);
   return claim;
 }
@@ -119,21 +119,24 @@ async function judgeScenario(result) {
       const at = `session ${sessionIndex + 1}, after "${step.say.slice(0, 60)}"`;
       for (const text of step.expect ?? []) boxes.push({ kind: "expect", at, text });
       for (const text of step.fail ?? []) boxes.push({ kind: "fail", at, text });
-      if (step.memory) boxes.push({ kind: "memory", at, text: step.memory });
+      if (step.memory) {
+        boxes.push({ kind: "memory", at, text: step.memory });
+        evidence.push("Memory after this step:", ...(record.memory?.length ? record.memory.map(memoryLine) : ["- (empty)"]));
+      }
     }
     evidence.push("Final task results:", ...session.finalTasks.map((task) => `- ${task.title}: ${task.status}${task.outcome ? `/${task.outcome}` : ""}${task.question ? ` (waiting on: ${task.question})` : ""}${task.answer ? `\n  ${String(task.answer).slice(0, 1_200)}` : ""}`));
-    evidence.push("Memory at end of session:", ...(session.memory.length ? session.memory.map((claim) => `- [${claim.scope}] ${claim.value}`) : ["- (empty)"]));
+    evidence.push("Memory at end of session:", ...(session.memory.length ? session.memory.map(memoryLine) : ["- (empty)"]));
   }
   if (!boxes.length) return null;
   const input = [
     "You grade a QA scenario for EV, a personal AI assistant. Judge what actually happened against each check's intent, not its exact wording. A check that cannot be judged from the evidence is 'unclear'.",
-    "For expect checks: 'met' if it clearly happened. For fail checks: 'happened' if the failure occurred at all, else 'avoided'. For memory checks: 'met' if the memory snapshot at the end of that session reflects it (a missing claim is 'not_met').",
+    "For expect checks: 'met' if it clearly happened. For fail checks: 'happened' if the failure occurred at all, else 'avoided'. For memory checks: 'met' if the memory shown after that step reflects it (a missing claim is 'not_met').",
     `Scenario ${result.scenario.id}: ${result.scenario.title}. Guards against: ${result.scenario.guards}.`,
     `Checks:\n${boxes.map((box, index) => `${index + 1}. [${box.kind}] (${box.at}) ${box.text}`).join("\n")}`,
     `What happened:\n${evidence.join("\n")}`,
     'Return JSON only: {"checks":[{"n":number,"verdict":"met"|"not_met"|"happened"|"avoided"|"unclear","evidence":string}],"pass":boolean,"summary":string}. pass is true only if every expect and memory check is met and every fail check is avoided.'
   ].join("\n\n");
-  const verdict = await askModelJson(input, { maxOutputTokens: 4_000, timeoutMs: 180_000, label: "scenario-judge" });
+  const verdict = await askModelJson(input, { label: "scenario-judge" });
   return { pass: Boolean(verdict.pass), summary: String(verdict.summary ?? ""), checks: (verdict.checks ?? []).map((check) => ({ ...boxes[check.n - 1], verdict: check.verdict, evidence: check.evidence })) };
 }
 
@@ -141,12 +144,22 @@ async function runSession({ baseUrl, scenario, sessionIndex, runId, timeoutMs })
   const session = scenario.sessions[sessionIndex];
   const conversationId = `qa-${runId}-${scenario.id}-s${sessionIndex + 1}`.replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 128);
   const steps = [];
+  // A step's memory box is judged against memory as it stood after that
+  // step. The learner works in the background, but EV waits for it before
+  // each turn, so the snapshot is taken once EV has answered the next
+  // message (or before the next action, or at the end of the session).
+  let awaiting = null;
+  const snapshot = async () => {
+    if (awaiting) awaiting.memory = memoryView(await memoryOf(baseUrl));
+    awaiting = null;
+  };
   for (const [index, step] of session.steps.entries()) {
     const record = { index, step };
     try {
       if (step.say !== undefined) {
         const before = new Set((await tasksIn(baseUrl, conversationId)).map((task) => task.taskId));
         const reply = await say(baseUrl, conversationId, `${conversationId}-m${index + 1}`, step.say);
+        await snapshot();
         record.reply = reply?.content ?? null;
         record.replySequence = reply?.sequence ?? null;
         const settled = step.wait === false ? { tasks: await tasksIn(baseUrl, conversationId), timedOut: false } : await settle(baseUrl, conversationId, timeoutMs);
@@ -157,16 +170,19 @@ async function runSession({ baseUrl, scenario, sessionIndex, runId, timeoutMs })
           record.autoCheck = { name: `tasks started = ${step.tasks}`, pass: started.length === step.tasks, observed: started.length };
         }
       } else {
+        await snapshot();
         record.action = await runAction(baseUrl, step, conversationId, timeoutMs);
       }
     } catch (error) {
       record.error = error.message;
     }
+    if (step.memory) awaiting = record;
     steps.push(record);
     process.stdout.write(`  ${scenario.id} s${sessionIndex + 1} step ${index + 1}${record.autoCheck ? ` [${record.autoCheck.pass ? "ok" : "MISMATCH"}: ${record.autoCheck.name}, saw ${record.autoCheck.observed}]` : ""}${record.error ? ` ERROR ${record.error}` : ""}\n`);
   }
   // Late results: tasks sent with wait:false finish after the session's last step.
   const finalTasks = (await settle(baseUrl, conversationId, timeoutMs)).tasks.filter((task) => !task.parentTaskId).map(taskSummary);
+  await snapshot();
   // EV posts its own messages when work settles; attach each to the step it follows.
   const { messages } = await api(baseUrl, `/api/assistant/conversation?conversationId=${encodeURIComponent(conversationId)}`);
   for (const message of messages.filter((candidate) => candidate.status === "update")) {
@@ -179,7 +195,7 @@ async function runSession({ baseUrl, scenario, sessionIndex, runId, timeoutMs })
     if (!task.contextManifestId) continue;
     try {
       const manifest = await api(baseUrl, `/api/assistant/memory/manifests/${encodeURIComponent(task.contextManifestId)}`);
-      manifests[task.taskId] = manifest.claimRevisionIds.map((revisionId) => memory.find((claim) => claim.current?.revisionId === revisionId)?.current?.value ?? `(revision ${revisionId}, no longer current)`);
+      manifests[task.taskId] = manifest.claimRevisionIds.map((revisionId) => claimText(memory.find((claim) => claim.current?.revisionId === revisionId)?.current?.value) || `(revision ${revisionId}, no longer current)`);
     } catch {}
   }
   return { label: session.label, note: session.note ?? null, conversationId, steps, finalTasks, manifests, memory: memoryView(memory) };
@@ -210,7 +226,7 @@ function scorecard(result) {
         if (record.autoCheck) lines.push(`- Auto: ${record.autoCheck.name} → saw ${record.autoCheck.observed} ${record.autoCheck.pass ? "✅" : "❌"}`);
         for (const item of step.expect ?? []) lines.push(`- [ ] Expect: ${item}`);
         for (const item of step.fail ?? []) lines.push(`- [ ] Fail: ${item}`);
-        if (step.memory) lines.push(`- [ ] Memory after this step: ${step.memory}`);
+        if (step.memory) lines.push(`- [ ] Memory after this step: ${step.memory}`, ...(record.memory ? record.memory.length ? record.memory.map((claim) => `  ${memoryLine(claim)}`) : ["  - (empty)"] : []));
         if (step.probe) lines.push(`- Probe \`${step.probe}\`: compare this answer with the same probe in other sessions for drift.`);
         if (record.timedOut) lines.push("- ⚠️ Tasks were still running when the step timeout hit.");
         if (record.error) lines.push(`- ⚠️ Step error: ${record.error}`);
@@ -226,7 +242,7 @@ function scorecard(result) {
       if (session.manifests[task.taskId]) lines.push(`  Memory given to this task: ${session.manifests[task.taskId].length ? session.manifests[task.taskId].map((value) => `"${value}"`).join("; ") : "none"}`);
     }
     lines.push("", "**Memory at end of session:**", "");
-    lines.push(...(session.memory.length ? session.memory.map((claim) => `- [${claim.scope}] ${claim.value} (rev ${claim.revision}, by ${claim.author})`) : ["- (empty)"]), "");
+    lines.push(...(session.memory.length ? session.memory.map((claim) => `${memoryLine(claim)} (rev ${claim.revision}, by ${claim.author})`) : ["- (empty)"]), "");
   }
   if (result.judge) {
     lines.push(`## Judge: ${result.judge.pass ? "PASS" : "FAIL"}`, "", result.judge.summary, "");

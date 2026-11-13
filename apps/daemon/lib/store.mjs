@@ -369,7 +369,7 @@ CREATE TRIGGER IF NOT EXISTS unindex_history AFTER DELETE ON history_lines BEGIN
 END;
 `;
 
-const ERASED_TEXT = "[forgotten]";
+export const ERASED_TEXT = "[forgotten]";
 const ERASED_DATA = JSON.stringify({ erased: true });
 
 export function codedError(code, message, details = {}) {
@@ -600,6 +600,14 @@ export function openStore({ path = ":memory:" } = {}) {
     });
   }
 
+  /** Removes the words of one message imported from another tool's session; it stays marked as forgotten, so importing the file again does not bring it back. */
+  function eraseOutsideMessage(messageId) {
+    tx(() => {
+      db.prepare("UPDATE outside_messages SET content = ? WHERE message_id = ?").run(ERASED_TEXT, messageId);
+      scrubAfterCommit = true;
+    });
+  }
+
   /** Marks that this transaction removed words, so the WAL is emptied after it commits. */
   function erased() { scrubAfterCommit = true; }
 
@@ -625,7 +633,7 @@ export function openStore({ path = ":memory:" } = {}) {
   return {
     db, path, tx, now, counter, bump, event, events, getEvent,
     receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, listTurns,
-    eraseMessage, eraseEvent, erased, search,
+    eraseMessage, eraseEvent, eraseOutsideMessage, erased, search,
     close: () => db.close()
   };
 }

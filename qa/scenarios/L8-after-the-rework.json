@@ -66,6 +66,7 @@
       "sessions": [
         {
           "label": "Day 1",
+          "day": 0,
           "steps": [
             {
               "say": "For the Slow Bread weekly report I want exactly this layout: one sentence on top, then three bullets, then a small table with visits, orders and revenue.",
@@ -75,6 +76,7 @@
         },
         {
           "label": "Day 3, new conversation",
+          "day": 2,
           "steps": [
             {
               "say": "write this week's numbers for Tidepool using the layout I described for the Slow Bread report: 1,240 visits, 87 orders, 2,310 euros",
@@ -160,6 +162,7 @@
       "sessions": [
         {
           "label": "Week 1",
+          "day": 0,
           "note": "Run the three sessions with the clock moved forward between them (EV_QA_TIME_OFFSET_MS), about nine days apart.",
           "steps": [
             {
@@ -170,6 +173,7 @@
         },
         {
           "label": "Week 2",
+          "day": 9,
           "steps": [
             {
               "say": "onboarding is done. now I'm stuck on the Play Store listing, let's work through the screenshots",
@@ -179,6 +183,7 @@
         },
         {
           "label": "Week 4, new conversation",
+          "day": 23,
           "steps": [
             {
               "say": "what was I working on about two weeks ago?",
@@ -256,6 +261,7 @@
       "sessions": [
         {
           "label": "Day 1",
+          "day": 0,
           "steps": [
             {
               "say": "I work at Northwind as a product designer",
@@ -266,6 +272,7 @@
         },
         {
           "label": "Day 30, new conversation",
+          "day": 29,
           "steps": [
             {
               "say": "I left Northwind last week, I'm freelancing now",
@@ -276,6 +283,7 @@
         },
         {
           "label": "Day 31, new conversation",
+          "day": 30,
           "steps": [
             {
               "say": "where did I work before I went freelance, and when did that change?",

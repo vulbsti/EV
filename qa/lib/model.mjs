@@ -24,11 +24,11 @@ export function qaModelEnv(env = process.env) {
   };
 }
 
-export async function askModelJson(input, { maxOutputTokens = 3_000, timeoutMs = 120_000, label = "qa" } = {}) {
+export async function askModelJson(input, { label = "qa" } = {}) {
   const apiKey = process.env.EV_QA_API_KEY ?? process.env.OPENCODE_API ?? dotEnvKey("OPENCODE_API");
   if (!apiKey) throw new Error("Set OPENCODE_API (or EV_QA_API_KEY) for the simulated user and judges");
   return callModel({
-    input, apiKey, label, code: "QA_MODEL_UNAVAILABLE", maxOutputTokens, timeoutMs,
+    input, apiKey, label, code: "QA_MODEL_UNAVAILABLE",
     session: `qa-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     env: qaModelEnv(),
     parse: (text) => parseModelJson(text, `QA model returned unreadable JSON: ${String(text).slice(0, 200)}`)
