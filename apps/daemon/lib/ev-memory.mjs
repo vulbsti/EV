@@ -335,8 +335,8 @@ function learningSnapshot(memory, ownerId) {
 
 /**
  * Serial background learner. `record*` adds an event and starts a pass;
- * `idle()` resolves when nothing is being analysed, so EV can read memory
- * that includes the person's previous message.
+ * `idle()` resolves once the events recorded so far have been learned from,
+ * so EV can read memory that includes the person's previous message.
  */
 export class MemoryLearner {
   constructor({ memory, ownerId, analyse = analyseEvents, summarise = summariseHistory, now = () => Date.now(), log = (message) => console.error(`[${new Date().toISOString()}] ${message}`), batchSize = 6 }) {
@@ -349,6 +349,8 @@ export class MemoryLearner {
     this.batchSize = batchSize;
     this.chain = Promise.resolve();
     this.queued = false;
+    this.busy = false;
+    this._passed();
   }
 
   /** A settled root task becomes an episode: what was asked, what was done, how review went. */
@@ -379,14 +381,33 @@ export class MemoryLearner {
   kick() {
     if (this.queued) return;
     this.queued = true;
-    this.chain = this.chain.then(() => { this.queued = false; return this._drain(); }).catch((error) => this.log(`Memory learning failed: ${error.message}`));
+    this.busy = true;
+    this.chain = this.chain.then(() => { this.queued = false; return this._drain(); })
+      .catch((error) => this.log(`Memory learning failed: ${error.message}`))
+      .finally(() => { if (!this.queued) this.busy = false; this._passed(); });
   }
 
-  /** Resolves when the current pass is done, or after `timeoutMs`. */
-  async idle(timeoutMs = 15_000) {
-    let timer;
-    await Promise.race([this.chain, new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); timer.unref?.(); })]);
-    clearTimeout(timer);
+  /** Marks the end of a pass (or of all passes), waking whoever waits on `this.pass`. */
+  _passed() {
+    this._endPass?.();
+    this.pass = new Promise((resolve) => { this._endPass = resolve; });
+  }
+
+  /**
+   * Resolves once the learner has been through every event recorded before
+   * this call, or has stopped trying for now (no model, or the pass failed
+   * and waits for a retry). It follows the learner's passes, not the clock:
+   * a slow pass is waited for, since each of its model calls ends only when
+   * the model falls silent, so EV never reads memory that lacks the person's
+   * previous message just because the learner was slow.
+   */
+  async idle() {
+    const before = new Date().toISOString();
+    while (this.busy) {
+      const [oldest] = this.memory.pendingEvents({ ownerId: this.ownerId, limit: 1 });
+      if (!oldest || oldest.createdAt > before) return;
+      await this.pass;
+    }
   }
 
   async _drain() {
@@ -422,7 +443,7 @@ export class MemoryLearner {
       // events stay pending and are retried (a few times) on the next pass.
       for (const event of events) this.memory.finishEvent({ eventId: event.eventId, error: error.message });
       throw error;
-    }
+    } finally { this._passed(); }
   }
 
   /**
