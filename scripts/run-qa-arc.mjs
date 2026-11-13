@@ -10,7 +10,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-import { converse, memoryOf, memoryView, projectRoot, startServer } from "../qa/lib/ev-harness.mjs";
+import { converse, memoryLine, memoryOf, memoryView, projectRoot, startServer } from "../qa/lib/ev-harness.mjs";
 import { askModelJson } from "../qa/lib/model.mjs";
 
 const DAY_MS = 86_400_000;
@@ -133,7 +133,7 @@ async function writeReport() {
     for (const key of ["violations", "contradictions", "invented"]) for (const entry of result.judgement?.[key] ?? []) lines.push(`- ${key}: ${entry}`);
     lines.push("", "Probe answers:", "");
     for (const probe of result.probes) lines.push(`> **${probe.question}**`, ...[probe.reply, ...probe.later].filter(Boolean).map((text) => `> ${String(text).replace(/\n/g, "\n> ")}`), "");
-    lines.push("Memory at end of phase:", "", ...(result.memory.length ? result.memory.map((claim) => `- [${claim.scope}] ${claim.value}`) : ["- (empty)"]));
+    lines.push("Memory at end of phase:", "", ...(result.memory.length ? result.memory.map(memoryLine) : ["- (empty)"]));
   }
   await writeFile(join(root, "drift.md"), `${lines.join("\n")}\n`);
 }
