@@ -782,6 +782,8 @@ export class AssistantWorkerService {
       try {
         review = await this.reviewer({
           taskId: task.taskId, request, brief, report, round, previousReviews: active.reviews, hostNotes, personal: task.input.metadata?.reviewerMemory ?? "",
+          // Work reopened after delivery: what the person already has, so the change can be checked against it.
+          delivered: task.result?.report?.answer ?? task.result?.text ?? null,
           localRoots: this._reviewRoots(task, workspacePath), sessionEvents, workspacePath
         });
         review = { ...normalizeReviewShape(review), round };
