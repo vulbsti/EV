@@ -1879,7 +1879,8 @@ const dotFor = (provider) => DOTS[[...provider].reduce((sum, character) => sum +
 
 function accountLine(connection) {
   const name = `${connection.providerName}${connection.label ? ` (${connection.label})` : ""}`;
-  const how = connection.method === "oauth" ? `Signed in${connection.hint && connection.hint !== "signed in" ? ` as ${connection.hint}` : ""}`
+  const how = connection.endpoint ? `Your own endpoint at ${connection.endpoint.baseUrl}, model ${connection.endpoint.model}${connection.hint ? `, key ending ${connection.hint.replace(/^…/, "")}` : ""}`
+    : connection.method === "oauth" ? `Signed in${connection.hint && connection.hint !== "signed in" ? ` as ${connection.hint}` : ""}`
     : connection.method === "env" || connection.source ? `Key ${connection.hint ? `ending ${connection.hint.replace(/^…/, "")}, ` : ""}from ${connection.source ?? "the environment"}`
       : `Key${connection.hint ? ` ending ${connection.hint.replace(/^…/, "")}` : ""}`;
   const several = setup.connections.filter((other) => other.provider === connection.provider).length > 1;
@@ -1962,12 +1963,13 @@ async function accountsAct(run) {
 }
 
 function addMode(mode) {
-  root.classList.remove("add-sub", "add-key");
-  if (mode === "sub" || mode === "key") root.classList.add(`add-${mode}`);
+  root.classList.remove("add-sub", "add-key", "add-own");
+  if (["sub", "key", "own"].includes(mode)) root.classList.add(`add-${mode}`);
   for (const option of document.querySelectorAll(".st-accounts [data-add].opt")) option.setAttribute("aria-pressed", String(option.dataset.add === mode));
   if (mode !== "sub" && signIn && ["started", "waiting", "completing"].includes(signIn.state)) void cancelSignIn();
   if (mode === "sub" && !signIn) signInView("idle");
   if (mode === "key") requestAnimationFrame(() => $("key-value").focus());
+  if (mode === "own") requestAnimationFrame(() => $("own-name").focus());
 }
 
 function signInView(view) {
@@ -2054,6 +2056,33 @@ $("sheet-look").addEventListener("click", (event) => {
   }
 });
 $("signin-cancel").addEventListener("click", () => void cancelSignIn());
+const API_NOTES = {
+  "openai-responses": "OpenAI's newer shape. Some servers speak it alongside Chat Completions.",
+  "openai-completions": "The most widely supported shape. Most open models and local servers use it.",
+  "anthropic-messages": "Anthropic's shape, for servers that copy Claude's API."
+};
+let ownApi = "openai-completions";
+$("own-api").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-api]");
+  if (!button) return;
+  ownApi = button.dataset.api;
+  for (const option of $("own-api").querySelectorAll("[data-api]")) option.setAttribute("aria-pressed", String(option === button));
+  $("own-api-note").textContent = API_NOTES[ownApi];
+});
+$("own-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("own-save").disabled = true;
+  $("own-note").textContent = "Trying it…";
+  try {
+    const { connection } = await setupCall("/endpoints", { method: "POST", body: { name: $("own-name").value, baseUrl: $("own-url").value, api: ownApi, model: $("own-model").value, key: $("own-key").value } });
+    for (const id of ["own-name", "own-url", "own-model", "own-key"]) $(id).value = "";
+    $("own-note").textContent = "";
+    addMode("none");
+    $("accounts-status").textContent = `${connection.providerName ?? "Your endpoint"} is connected.`;
+    await loadAccounts();
+  } catch (error) { $("own-note").textContent = error.message; }
+  finally { $("own-save").disabled = false; }
+});
 $("signin-code-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const code = $("signin-code").value.trim();

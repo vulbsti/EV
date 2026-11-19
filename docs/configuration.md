@@ -7,7 +7,7 @@ Model accounts can also be added while KenWise runs, by key or by signing in wit
 ## Model
 
 - `OPENCODE_API`: the key for [OpenCode Go](https://opencode.ai), which KenWise uses by default. Any key pi-ai knows (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`...) is found the same way and shows as an account.
-- `EV_MODEL` (default `opencode-go/gpt-6-luna`): the model KenWise and its agents use, as `provider/model` from pi-ai's catalogue; a bare model id means `opencode-go`. Its API shape, base URL and quirks come from the catalogue, and the key from that provider's account.
+- `EV_MODEL` (default `opencode-go/gpt-6-luna`): the model KenWise and its agents use, as `provider/model` from pi-ai's catalogue; a bare model id means `opencode-go`. Its API shape, base URL and quirks come from the catalogue, and the key from that provider's account. When neither `EV_MODEL` nor a role's own model is set and no account reaches the default, KenWise thinks with a model you can reach instead: your own endpoints and subscriptions first, a model the atlas knows before one it does not, then the cheapest. Your own endpoint counts as already paid for, like a subscription.
 - `EV_MODEL_URL` sends the calls (KenWise's and the agents') to another endpoint, such as a stub model in tests or any OpenAI- or Anthropic-compatible server. A model the catalogue does not know also needs `EV_MODEL_API`: `openai-responses`, `openai-completions` or `anthropic-messages`. Give OpenAI-style base URLs with their `/v1`; an Anthropic base URL has none.
 
 ## Accounts
@@ -40,7 +40,8 @@ An account that hits its usage limit is marked limited until its reset time, and
 | `GET /api/assistant/setup` | Providers (with whether a key or a subscription sign-in is offered) and accounts with their status. Never a secret, only a hint |
 | `POST /api/assistant/setup/connections` `{provider, key, label?}` | Tries the key, then saves it as the provider's active account |
 | `POST /api/assistant/setup/connections/:id` `{active?, label?}` | Makes it the active account, or renames it |
-| `DELETE /api/assistant/setup/connections/:id` | Removes a saved account |
+| `DELETE /api/assistant/setup/connections/:id` | Removes a saved account (and, for your own endpoint, the endpoint) |
+| `POST /api/assistant/setup/endpoints` `{name, baseUrl, api, model, key?}` | Adds your own endpoint (Ollama, LM Studio, any compatible server) as an account: `api` is `openai-completions`, `openai-responses` or `anthropic-messages`; it is tried with one small call and kept only if it answers. Listed connections for it carry `endpoint` |
 | `POST /api/assistant/setup/signin` `{provider, label?}` | Starts a subscription sign-in; poll it with `GET /api/assistant/setup/signin/:id` (link or device code, then saved, failed, expired or cancelled after 10 minutes) |
 | `POST /api/assistant/setup/signin/:id/code` `{code}` | Answers what the sign-in asks for, usually the pasted redirect URL |
 | `DELETE /api/assistant/setup/signin/:id` | Cancels it |

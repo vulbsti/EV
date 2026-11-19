@@ -60,8 +60,25 @@ export class ModelGuide {
   /** The default model for agents, as a record, or null when it cannot be named. */
   _default() { try { return workerModel(); } catch { return null; } }
 
+  /**
+   * A model to think with when the default has no account: from the person's
+   * own endpoints and subscriptions first, then any account; a model the atlas
+   * knows before one it does not, then the cheapest.
+   */
+  fallback() {
+    const known = new Set(this.atlas.flatMap((entry) => entry.keys ?? []));
+    const providers = [...new Set(this.connections.list().filter((connection) => this.connections.usable(connection)).map((connection) => connection.provider))];
+    providers.sort((a, b) => Number(this._plan(b)) - Number(this._plan(a)));
+    for (const provider of providers) {
+      const models = this.connections.models.getModels(provider).filter((record) => this.allowed(record));
+      const pick = models.find((record) => known.has(modelKey(record.id))) ?? models.sort((a, b) => (a.cost?.input ?? 0) - (b.cost?.input ?? 0))[0];
+      if (pick) return pick;
+    }
+    return null;
+  }
+
   /** Whether this provider's account is a subscription (quota already paid for), not pay per token. */
-  _plan(providerId) { return PLAN_PROVIDERS.has(providerId) || this.connections.serving(providerId)?.method === "oauth"; }
+  _plan(providerId) { return PLAN_PROVIDERS.has(providerId) || this.connections.isOwn?.(providerId) || this.connections.serving(providerId)?.method === "oauth"; }
 
   /**
    * A catalogue record for one of these model keys at a provider the person

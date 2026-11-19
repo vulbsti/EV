@@ -160,7 +160,7 @@ export class ModelRoutes {
 
   /** Whether calls through this provider and account are already paid for (a plan or a subscription sign-in). */
   isSubscription(providerId, connectionId = null) {
-    if (PLAN_PROVIDERS.has(providerId)) return true;
+    if (PLAN_PROVIDERS.has(providerId) || this.connections.isOwn?.(providerId)) return true;
     const connection = connectionId ? this.connections.connectionsOf(providerId).find((candidate) => candidate.id === connectionId) : this.connections.serving(providerId);
     return connection?.method === "oauth";
   }

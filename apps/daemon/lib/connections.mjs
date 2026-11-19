@@ -123,6 +123,9 @@ export class Connections {
       const provider = this.models.getProvider(id);
       if (provider) this.models.setProvider({ ...provider, auth: { ...provider.auth, oauth: opencodeConsoleOAuth } });
     }
+    // The person's own endpoints (Ollama, LM Studio, any compatible server), each a provider of its own.
+    this.ownEndpoints = new Map();
+    for (const endpoint of [].concat(store?.setting("endpoints") ?? [])) this._registerEndpoint(endpoint);
     this.envSources = new Map();
     /** Settles once the environment has been looked through for keys. */
     this.scanned = this._scan();
@@ -178,9 +181,60 @@ export class Connections {
     }), { custom: true }));
   }
 
+  // ------------------------------------------------------- own endpoints
+
+  /** Whether a provider is one of the person's own endpoints: already paid for (it runs on their machine or server). */
+  isOwn(providerId) { return this.ownEndpoints.has(providerId); }
+
+  endpoint(providerId) { return this.ownEndpoints.get(providerId) ?? null; }
+
+  /**
+   * Adds the person's own endpoint as a provider with one model: its address,
+   * the API shape it speaks, and the model as the server names it. Its account
+   * is saved separately, once a call through it has worked.
+   */
+  addEndpoint({ name, baseUrl, api, model }) {
+    const label = String(name ?? "").trim().slice(0, 60);
+    const url = String(baseUrl ?? "").trim().replace(/\/+$/, "");
+    const modelId = String(model ?? "").trim().slice(0, 200);
+    if (!label) throw coded("ENDPOINT_NAME_MISSING", "Give it a name", { statusCode: 400 });
+    if (!/^https?:\/\/[^\s/]+/i.test(url)) throw coded("ENDPOINT_ADDRESS", "The address must start with http:// or https://", { statusCode: 400 });
+    if (!APIS[api]) throw coded("ENDPOINT_API", `How it is spoken to must be one of ${Object.keys(APIS).join(", ")}`, { statusCode: 400 });
+    if (!modelId) throw coded("ENDPOINT_MODEL_MISSING", "Name the model as the server names it", { statusCode: 400 });
+    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "endpoint";
+    let id = `own-${slug}`;
+    for (let n = 2; this.models.getProvider(id); n++) id = `own-${slug}-${n}`;
+    const endpoint = { id, name: label, baseUrl: url, api, model: modelId };
+    this._registerEndpoint(endpoint);
+    this._saveEndpoints();
+    return endpoint;
+  }
+
+  /** Forgets an endpoint (once its last account is removed). */
+  removeEndpoint(providerId) {
+    if (!this.ownEndpoints.delete(providerId)) return;
+    this.models.deleteProvider(providerId);
+    this._saveEndpoints();
+  }
+
+  _saveEndpoints() { this.store?.saveSetting("endpoints", [...this.ownEndpoints.values()]); }
+
+  _registerEndpoint(endpoint) {
+    if (!endpoint?.id || !APIS[endpoint.api]) return;
+    this.ownEndpoints.set(endpoint.id, endpoint);
+    const record = { id: endpoint.model, name: endpoint.model, provider: endpoint.id, api: endpoint.api, baseUrl: endpoint.baseUrl, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 32_000 };
+    this.models.setProvider(Object.assign(createProvider({
+      id: endpoint.id, name: endpoint.name, models: [record],
+      // A local server often needs no key; the person may still give one.
+      auth: { apiKey: { name: `${endpoint.name} key`, resolve: async ({ credential }) => ({ auth: { apiKey: credential?.key || "none" }, source: "stored" }) } },
+      api: { [endpoint.api]: APIS[endpoint.api]() }
+    }), { custom: true, own: true }));
+  }
+
   /** Every provider EV can sign in to, and how. */
   providers() {
-    return this.models.getProviders().map((provider) => ({
+    // The person's own endpoints are added from their own form, not chosen from this list.
+    return this.models.getProviders().filter((provider) => !this.isOwn(provider.id)).map((provider) => ({
       id: provider.id,
       name: provider.name ?? provider.id,
       key: Boolean(provider.auth.apiKey),
@@ -248,7 +302,7 @@ export class Connections {
   /** Every connection, for the settings screen. Never carries a secret. */
   list() {
     const providers = new Set([...this._stored().map((connection) => connection.provider), ...this.models.getProviders().map((provider) => provider.id)]);
-    return [...providers].flatMap((providerId) => this.connectionsOf(providerId)).map((connection) => ({ ...connection, providerName: this.providerName(connection.provider) }));
+    return [...providers].flatMap((providerId) => this.connectionsOf(providerId)).map((connection) => ({ ...connection, providerName: this.providerName(connection.provider), ...(this.isOwn(connection.provider) ? { endpoint: this.endpoint(connection.provider) } : {}) }));
   }
 
   /**
@@ -341,6 +395,7 @@ export class Connections {
     };
     if (this.store) this.store.tx(write); else write();
     this.secrets.set(id, undefined);
+    if (this.isOwn(connection.provider) && !this._stored(connection.provider).length) this.removeEndpoint(connection.provider);
     this._changed();
   }
 

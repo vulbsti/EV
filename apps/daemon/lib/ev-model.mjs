@@ -145,6 +145,16 @@ function listening(fetchImpl, heard, quiet, seen) {
  * `parse(text, message)` gives `value`; a reply it rejects is retried like a
  * provider blip. Throws an error with `code` once retries are spent.
  */
+/**
+ * When no model is set for a role (no EV_MODEL or EV_MODEL_<ROLE>) and the
+ * default has no account at all, the call goes to a model the person can
+ * reach instead (the model guide's choice: their own endpoints and
+ * subscriptions first). Set by the daemon.
+ */
+let fallbackModel = null;
+export function useFallbackModel(pick) { fallbackModel = pick; }
+const setFor = (role, env) => Boolean(env.EV_MODEL || env[`EV_MODEL_${(ROLES[role] ?? String(role ?? "")).toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`]);
+
 export async function modelTurn({ context, session, code, label, role = label, spec = null, apiKey, env = process.env, workId = null, conversationId = null, noSwitch = false, ...rest }) {
   let asked;
   // `spec` (provider/model) overrides the role's model, as when a reviewer should not be the worker's model.
@@ -160,6 +170,11 @@ export async function modelTurn({ context, session, code, label, role = label, s
     // One turn of EV's stays on one route while it can (the provider's prompt cache).
     try { route = routes.pick(asked, code, { stick: session ? `${label}:${session}` : null, subject }); }
     catch (error) {
+      // Nothing reaches the default model at all, and the person never named one: think with one they can reach.
+      if (error.wait?.reason === "none" && !spec && !setFor(role, env) && fallbackModel) {
+        const other = fallbackModel();
+        if (other && `${other.provider}/${other.id}` !== `${asked.provider}/${asked.id}`) { asked = other; continue; }
+      }
       // A subscription ran out and only a paid route is left: weigh it once (limit-decision.mjs), then look again.
       if (!error.paid || noSwitch || !routes.decider?.open(subject, error.limited)) throw error;
       await routes.decider.decide({ subject, limited: error.limited, paid: error.paid, personWaiting: label === "main-agent", title: label, conversationId });

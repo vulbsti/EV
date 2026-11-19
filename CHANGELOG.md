@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Your own endpoint as an account: in the Accounts tab (and on the first-run screen), give a name, an address, the API shape it speaks (Chat Completions, Responses or Messages), the model as the server names it and an optional key. It is tried once before it is kept, counts as already paid for when routing, and with no model set KenWise uses it to think.
 - The Accounts tab in settings: every account with its state (ready, limited until a time in your own zone, or needing a new sign-in or key), sign in to a subscription or paste a key from the page, choose which of several accounts is used, remove one, and the limit setting. A first-run screen when nothing is connected, and a bar while a message is held for an account, saying what it waits for, with a button to carry on through a paid account when one could.
 - The Models tab in settings: what KenWise has learnt about each model from your work and from the shared research, with its standing and source; what changed lately with Undo; your own notes; switching a model off; and the limit setting with the monthly cap.
 - Times KenWise tells you (limit notices, when a passing state ends, the time in its own prompt) are in your own time zone, which the page reports.
