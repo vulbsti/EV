@@ -30,7 +30,8 @@ export const TOOLS = {
   reply: { name: "reply", args: ({ text, call }) => ({ text, ...(call ? { call } : {}) }) },
   ask: { name: "ask", args: ({ questions, assumptions = [] }) => ({ questions, assumptions }) },
   // notes: memory ids EV names as bearing on the work (see memoryIdShown).
-  startWork: { name: "start_work", args: ({ title, request, notes }) => ({ title, request, ...(notes ? { notes: [].concat(notes) } : {}) }) },
+  // model: EV's choice of model for the work; by default the first model its picture lists.
+  startWork: { name: "start_work", args: ({ title, request, notes, model }, shown = "") => ({ title, request, ...(notes ? { notes: [].concat(notes) } : {}), ...modelChoice(model, shown) }) },
   // Checks name work by its title; EV knows it by the id its work list shows.
   messageTask: { name: "message_task", args: ({ task, text = "", stop = false }, shown = "") => ({ task: workId(shown, task) ?? task, text, stop }) },
   // quote is the person's own words the memory rests on; without one it is a guess.
@@ -109,6 +110,12 @@ export function memoryShown(text) {
 }
 
 /** The id EV1's work list gives a piece of work, found by its title. */
+/** The model argument of start_work: the one a check names, else the first model EV was shown, as first and second choice. */
+function modelChoice(model, shown) {
+  const name = model ?? /\(name it as ([^)\s]+)\)/.exec(shown)?.[1];
+  return name ? { model: { first: name, why: "The stand-in's choice.", second: name, second_why: "The stand-in's choice." } } : {};
+}
+
 function workId(text, title) {
   for (const line of text.split("\n")) {
     const match = /^\[(work:[^\]]+)\] (.*)$/.exec(line);

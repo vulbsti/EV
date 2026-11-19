@@ -14,15 +14,17 @@ const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 // OpenClaw has a clock of its own per turn (600 s unless told otherwise). EV
 // watches progress instead (stallMs), so that clock is set out of the way.
 const OPENCLAW_TURN_SECONDS = 7 * 24 * 60 * 60;
-// Agents use the model EV_MODEL names (its API shape and base URL come from
-// the same record as EV's own calls); EV_OPENCLAW_MODEL picks a different one.
+// Each piece of work runs on the model EV chose for it (model-guide.mjs).
+// Without a choice, agents use the model EV_MODEL names (its API shape and
+// base URL come from the same record as EV's own calls); EV_OPENCLAW_MODEL
+// picks a different one.
 export const workerModel = () => modelSettings(process.env, process.env.EV_OPENCLAW_MODEL || undefined);
 // Inside a container the relay is reached on this port, forwarded to its socket file.
 const RELAY_PORT_IN_CONTAINER = 4319;
 
-/** What agents' model waits for (every route limited, a sign-in, no account), or null when a route is usable. */
-export function workerAccountWait() {
-  try { currentRoutes().pick(workerModel(), "AGENT_MODEL_UNAVAILABLE", { sameApi: true }); return null; }
+/** What an agent's model waits for (every route limited, a sign-in, no account), or null when a route is usable. */
+export function workerAccountWait(model = workerModel()) {
+  try { currentRoutes().pick(model, "AGENT_MODEL_UNAVAILABLE", { sameApi: true }); return null; }
   catch (error) { return error.wait ?? null; }
 }
 
@@ -46,8 +48,7 @@ function stableSessionHeader(taskId) {
  * relay: { baseUrl, token } from EV's model relay. The agent's key is the
  * task token; the relay swaps in the real one, so no key is in the config.
  */
-export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null, relay }) {
-  const model = workerModel();
+export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null, relay, model = workerModel() }) {
   const primary = `${model.provider}/${model.id}`;
   const port = 24000 + (createHash("sha256").update(`browser:${taskId}`).digest().readUInt16BE(0) % 18000);
   return {
@@ -85,7 +86,7 @@ export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null,
   };
 }
 
-export function parseOpenClawOutput(stdout) {
+export function parseOpenClawOutput(stdout, model = workerModel()) {
   let envelope;
   try { envelope = JSON.parse(stdout); }
   catch { return { status: "failed", code: "OPENCLAW_OUTPUT_INVALID", message: "OpenClaw did not return JSON" }; }
@@ -97,7 +98,6 @@ export function parseOpenClawOutput(stdout) {
     return { status: "failed", code: "OPENCLAW_PROVIDER_ERROR", message: text.slice(0, 500) };
   }
   const actual = envelope.meta?.agentMeta ?? {};
-  const model = workerModel();
   if (actual.provider !== model.provider || actual.model !== model.id) {
     return { status: "failed", code: "OPENCLAW_MODEL_MISMATCH", message: "OpenClaw did not use the selected model" };
   }
@@ -105,13 +105,13 @@ export function parseOpenClawOutput(stdout) {
 }
 
 /** The agent's last finished answer among these transcript events, if any. */
-function completedResult(events) {
+function completedResult(events, model) {
   for (const event of [...events].reverse()) {
     const message = event?.message;
     if (event?.type !== "message" || message?.role !== "assistant" || message.stopReason !== "stop") continue;
     const answer = message.content?.filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
     if (!answer) continue;
-    return parseOpenClawOutput(JSON.stringify({ payloads: [{ text: answer }], meta: { agentMeta: { provider: message.provider, model: message.model, usage: message.usage } } }));
+    return parseOpenClawOutput(JSON.stringify({ payloads: [{ text: answer }], meta: { agentMeta: { provider: message.provider, model: message.model, usage: message.usage } } }), model);
   }
   return null;
 }
@@ -224,8 +224,9 @@ export class OpenClawWorkerAdapter {
    * that long is stopped and reported as stalled. One that keeps making
    * progress is never stopped for taking long.
    */
-  constructor({ taskId, workspacePath, sessionDir, homeDir, stallMs = 600_000, executable = "openclaw", sandbox = null, relay = null }) {
+  constructor({ taskId, workspacePath, sessionDir, homeDir, stallMs = 600_000, executable = "openclaw", sandbox = null, relay = null, model = workerModel() }) {
     this.taskId = taskId;
+    this.model = model;
     this.relay = relay;
     this.homeDir = homeDir;
     this.sandbox = sandbox;
@@ -243,16 +244,16 @@ export class OpenClawWorkerAdapter {
     const transcript = (afterSeq) => readTranscript({ homeDir: this.homeDir, sessionId: this.taskId, afterSeq });
     const earlier = transcript(0);
     if (reuseCompleted && earlier.events.length) {
-      const prior = completedResult(earlier.events);
+      const prior = completedResult(earlier.events, this.model);
       if (prior?.status === "completed") return { runId, completion: Promise.resolve(prior) };
     }
     if (!this.relay) return { runId, completion: Promise.resolve({ status: "failed", code: "MODEL_RELAY_MISSING", message: "EV's model relay is not running, so the agent cannot reach a model" }) };
     ensurePrivateDirectorySync(this.sessionDir);
     // Valid for this run only; revoked when it ends.
-    const grant = await this.relay.grant({ taskId: this.taskId, model: workerModel(), socket: Boolean(this.sandbox) });
+    const grant = await this.relay.grant({ taskId: this.taskId, model: this.model, socket: Boolean(this.sandbox) });
     const configPath = join(this.sessionDir, "openclaw-task-config.json");
     const relay = { token: grant.token, baseUrl: grant.socket ? `http://127.0.0.1:${RELAY_PORT_IN_CONTAINER}/relay` : grant.baseUrl };
-    await writeFile(configPath, JSON.stringify(openClawTaskConfig({ taskId: this.taskId, workspacePath: this.workspacePath, searchPlugin: searchPluginPath(this.sandbox), relay })), { mode: 0o600 });
+    await writeFile(configPath, JSON.stringify(openClawTaskConfig({ taskId: this.taskId, workspacePath: this.workspacePath, searchPlugin: searchPluginPath(this.sandbox), relay, model: this.model })), { mode: 0o600 });
     if (grant.socket) await writeFile(join(this.sessionDir, "relay-forward.mjs"), FORWARDER, { mode: 0o600 });
     ensurePrivateDirectorySync(this.homeDir);
     if (this.sandbox) await removeTaskContainers(this.taskId);
@@ -318,7 +319,7 @@ export class OpenClawWorkerAdapter {
             setTimeout(() => terminate(run, "SIGKILL"), 2_000).unref?.();
             return finish({ status: "budget_exceeded", code: "WORKER_BUDGET_EXCEEDED", message: `The agent reached its ${exceeded} budget and was stopped`, text: live.lastText });
           }
-          const parsed = completedResult(live.events);
+          const parsed = completedResult(live.events, this.model);
           if (parsed) {
             finish(parsed);
             terminate(run);
@@ -337,11 +338,11 @@ export class OpenClawWorkerAdapter {
       child.on("close", async (code) => {
         if (run.stopped) return finish(run.steered ? { status: "steered", code: "OPENCLAW_STEERED", message: "The agent was stopped so a message could reach it" } : { status: "stopped", code: "OPENCLAW_STOPPED", message: "The agent was stopped" });
         let sessionResult = null;
-        try { readNew(); sessionResult = completedResult(live.events); } catch {}
+        try { readNew(); sessionResult = completedResult(live.events, this.model); } catch {}
         if (sessionResult) return finish(sessionResult);
         if (code !== 0) return finish({ status: "failed", code: "OPENCLAW_PROCESS_EXIT", message: `OpenClaw exited with code ${code}` });
         if (stdoutOverflow) return finish({ status: "failed", code: "OPENCLAW_OUTPUT_TOO_LARGE", message: "OpenClaw's output was too large to read and no session answer was found" });
-        finish(parseOpenClawOutput(stdout));
+        finish(parseOpenClawOutput(stdout, this.model));
       });
     });
     return run;

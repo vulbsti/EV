@@ -145,9 +145,10 @@ function listening(fetchImpl, heard, quiet, seen) {
  * `parse(text, message)` gives `value`; a reply it rejects is retried like a
  * provider blip. Throws an error with `code` once retries are spent.
  */
-export async function modelTurn({ context, session, code, label, role = label, apiKey, env = process.env, workId = null, ...rest }) {
+export async function modelTurn({ context, session, code, label, role = label, spec = null, apiKey, env = process.env, workId = null, ...rest }) {
   let asked;
-  try { asked = modelSettings(env, modelFor(role, env)); } catch (error) { throw Object.assign(error, { code }); }
+  // `spec` (provider/model) overrides the role's model, as when a reviewer should not be the worker's model.
+  try { asked = modelSettings(env, spec || modelFor(role, env)); } catch (error) { throw Object.assign(error, { code }); }
   // An explicit key (tests, the harness's self-test) bypasses the accounts.
   if (apiKey) return turnOn({ ...rest, context, session, code, label, apiKey, workId, model: asked, account: null });
   await connections.scanned;
