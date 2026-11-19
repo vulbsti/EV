@@ -13,9 +13,11 @@ import { workerModel } from "./openclaw-worker-adapter.mjs";
  * The guide covers the models the person can reach. For each it gives what
  * the catalogue says (price, context), how fast it has been for them, the
  * central atlas's claims (knowledge/models/, shipped with KenWise), each
- * marked with how it is known, and what the person's own finished work
- * shows. Where the person's own evidence and the atlas disagree, theirs wins
- * for them; the guide shows both and EV weighs them.
+ * marked with how it is known, and what the person's own work and words
+ * show (model-learning.mjs: seen, relied on, said). Where the person's own
+ * evidence and the atlas disagree, theirs wins for them; the guide shows both
+ * and EV weighs them. Models in their subscriptions that nothing is known
+ * about are named in one line, so EV can still try them.
  *
  * EV names a first and a second choice with one line of reason each
  * (start_work's `model`). The choice and its reasons are saved with the
@@ -28,6 +30,7 @@ import { workerModel } from "./openclaw-worker-adapter.mjs";
 export const ATLAS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../../knowledge/models");
 const CLAIM = /^-\s+(.+?)\s*\[(reported|tested|dropped|past)(?::\s*([^\]]*))?\]\s*$/;
 const STATES = { reported: "reported, not checked", tested: "tested centrally" };
+const PERSONAL = { said: "the person said so", seen: "seen in their own work, few cases", relied_on: "relied on in their own work" };
 
 /** The atlas: one entry per file, { name, keys, updated, claims: [{ text, state, source }] }. */
 export function loadAtlas(dir = ATLAS_DIR) {
@@ -75,86 +78,115 @@ export class ModelGuide {
   }
 
   /**
+   * Which models EV may choose from. EV_MODELS (a comma list, such as
+   * "claude-haiku-5-5, muse-spark-1-3-contributor") keeps EV to those; a
+   * model the person switched off (setting models_off) is never offered. A
+   * model left out is not shown to EV and cannot be named.
+   */
+  allowed(record) {
+    const key = modelKey(record.id);
+    const only = String(this.env.EV_MODELS ?? "").split(",").map((name) => modelKey(name.trim())).filter(Boolean);
+    if (only.length && !only.includes(key)) return false;
+    return !this.off().includes(key);
+  }
+
+  /** Models the person switched off, by key. */
+  off() { return [].concat(this.store?.setting?.("models_off") ?? []); }
+
+  /** Switches a model off ("don't use this model") or back on. */
+  setOff(name, off) {
+    const key = modelKey(name);
+    if (!key) throw Object.assign(new Error("Name the model"), { statusCode: 400, code: "MODEL_MISSING" });
+    const next = this.off().filter((item) => item !== key);
+    if (off) next.push(key);
+    this.store.saveSetting("models_off", next);
+    return { off: next };
+  }
+
+  /**
    * Every model the person can reach that the guide knows something about:
-   * the atlas's models, and the default model even when the atlas is silent
-   * on it. { key, name, spec, record, claims, yours, speed }.
+   * the atlas's models, the default model, and any model their own work or
+   * notes speak of. { key, name, spec, record, claims (atlas), personal,
+   * speed }.
    */
   entries() {
     const fallback = this._default();
-    const evidence = this.evidence();
     const seen = new Set();
     const out = [];
     const add = (record, entry) => {
       const key = modelKey(record.id);
-      if (seen.has(key)) return;
+      if (seen.has(key) || !this.allowed(record)) return;
       seen.add(key);
-      const speed = this.routes.speed(record.provider, record.id);
-      out.push({ key, name: entry?.name ?? record.name ?? record.id, spec: `${record.provider}/${record.id}`, record, claims: entry?.claims.filter((claim) => claim.state !== "dropped") ?? [], atlasUpdated: entry?.updated ?? null, yours: evidence.get(key) ?? null, speed });
+      out.push({
+        key, name: entry?.name ?? record.name ?? record.id, spec: `${record.provider}/${record.id}`, record, subscription: this._plan(record.provider),
+        claims: entry?.claims.filter((claim) => claim.state !== "dropped") ?? [], atlasUpdated: entry?.updated ?? null,
+        personal: this.personal?.claims(key) ?? [], speed: this.routes.speed(record.provider, record.id)
+      });
     };
     if (fallback && this.routes.routes(fallback).length) add(fallback, this.atlas.find((entry) => entry.keys.includes(modelKey(fallback.id))));
     for (const entry of this.atlas) {
       const record = this._reachable(entry.keys, fallback?.provider);
       if (record) add(record, entry);
     }
+    for (const key of new Set((this.personal?.claims() ?? []).map((claim) => claim.model).filter(Boolean))) {
+      const record = this._reachable([key], fallback?.provider);
+      if (record) add(record, null);
+    }
     return out;
+  }
+
+  /** Models inside the person's subscriptions that the guide knows nothing about yet: { key, spec, name }. */
+  unknown() {
+    const listed = new Set(this.entries().map((entry) => entry.key));
+    const found = new Map();
+    for (const provider of this.connections.models.getProviders()) {
+      if (!this.connections.connectionsOf(provider.id).length || !this._plan(provider.id)) continue;
+      for (const record of this.connections.models.getModels(provider.id)) {
+        const key = modelKey(record.id);
+        if (!listed.has(key) && !found.has(key) && this.allowed(record)) found.set(key, { key, spec: `${record.provider}/${record.id}`, name: record.name ?? record.id });
+      }
+    }
+    return [...found.values()];
   }
 
   /** The guide as EV reads it: a few lines per model. */
   text() {
     const entries = this.entries();
     if (!entries.length) return "";
-    return entries.map((entry) => {
-      const cost = this._plan(entry.record.provider)
+    const line = (claim, indent) => `${indent}- ${claim.text} (${PERSONAL[claim.state]}${claim.why ? `: ${claim.why}` : ""}${claim.state === "said" ? `; model:${claim.id}` : ""})`;
+    const general = (this.personal?.claims(null) ?? []).map((claim) => line(claim, ""));
+    const models = entries.map((entry) => {
+      const cost = entry.subscription
         ? `within the person's ${this.connections.providerName(entry.record.provider)} subscription (quota already paid for)`
         : entry.record.cost ? `${money(entry.record.cost.input)} in / ${money(entry.record.cost.output)} out per million tokens` : "price unknown";
       const context = entry.record.contextWindow ? `, reads up to ${Math.round(entry.record.contextWindow / 1000)}k tokens` : "";
       const lines = [`${entry.name} (name it as ${entry.spec}): ${cost}${context}.`];
-      for (const claim of entry.claims) lines.push(`  - ${claim.text} (${STATES[claim.state] ?? claim.state})`);
-      if (!entry.claims.length) lines.push("  - The atlas says nothing about it yet.");
-      lines.push(entry.yours
-        ? `  - In this person's own work: ${entry.yours.pieces} piece${entry.yours.pieces === 1 ? "" : "s"} delivered, ${entry.yours.rounds.toFixed(1)} review rounds on average${entry.yours.costUsd ? `, about ${money(entry.yours.costUsd / entry.yours.pieces)} each` : ""}.`
-        : "  - Nothing from this person's own work yet.");
+      for (const claim of entry.personal) lines.push(line(claim, "  "));
+      for (const claim of entry.claims) lines.push(`  - ${claim.text} (atlas, ${STATES[claim.state] ?? claim.state})`);
+      if (!entry.claims.length && !entry.personal.length) lines.push("  - Nothing known about it yet.");
+      else if (!entry.personal.length) lines.push("  - Nothing from this person's own work yet.");
       return lines.join("\n");
-    }).join("\n");
+    });
+    const unknown = this.unknown();
+    return [
+      ...(general.length ? [`What this person has said or shown about choosing models:\n${general.join("\n")}`] : []),
+      ...models,
+      ...(unknown.length ? [`Also within their subscriptions, with nothing known yet: ${unknown.map((item) => item.spec).join(", ")}.`] : [])
+    ].join("\n");
   }
 
-  /** A model EV named: "provider/id", an id, or a name from the guide. The record, or null when the person cannot reach it. */
+  /** A model EV named: "provider/id", an id, or a name from the guide. The record, or null when the person cannot reach it or it is not allowed. */
   resolve(name) {
     const wanted = String(name ?? "").trim();
     if (!wanted) return null;
     const entry = this.entries().find((candidate) => candidate.spec === wanted || candidate.key === modelKey(wanted) || candidate.name.toLowerCase() === wanted.toLowerCase());
     if (entry) return entry.record;
+    let record = null;
     if (wanted.includes("/")) {
-      try { const record = modelSettings(this.env, wanted); if (this.routes.routes(record).length) return record; } catch {}
+      try { const named = modelSettings(this.env, wanted); if (this.routes.routes(named).length) record = named; } catch {}
     }
-    return this._reachable([modelKey(wanted)], this._default()?.provider);
-  }
-
-  /**
-   * What the person's own finished work shows per model key: { pieces,
-   * rounds, costUsd }. The model is the one the work's calls actually went
-   * to; rounds come from its reviews.
-   */
-  evidence() {
-    const found = new Map();
-    if (!this.store) return found;
-    const rows = this.store.db.prepare(`
-      SELECT w.work_id AS id,
-        (SELECT model FROM model_calls c WHERE c.work_id = w.work_id AND c.role = 'agent' GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1) AS model,
-        (SELECT SUM(cost_usd) FROM model_calls c WHERE c.work_id = w.work_id) AS cost,
-        (SELECT MAX(CAST(json_extract(data_json, '$.round') AS INTEGER)) FROM events e WHERE e.work_id = w.work_id AND e.type = 'verifying') AS rounds
-      FROM work w WHERE w.status = 'completed'`).all();
-    for (const row of rows) {
-      if (!row.model) continue;
-      const key = modelKey(row.model);
-      const entry = found.get(key) ?? { pieces: 0, totalRounds: 0, costUsd: 0 };
-      entry.pieces++;
-      entry.totalRounds += row.rounds ?? 1;
-      entry.costUsd += row.cost ?? 0;
-      found.set(key, entry);
-    }
-    for (const entry of found.values()) entry.rounds = entry.totalRounds / entry.pieces;
-    return found;
+    record ??= this._reachable([modelKey(wanted)], this._default()?.provider);
+    return record && this.allowed(record) ? record : null;
   }
 
   // -------------------------------------------------------- for the work
