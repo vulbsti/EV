@@ -1,5 +1,5 @@
 name: Bug report
-description: Kenwise crashed, lost something, or the install or a command failed.
+description: KenWise crashed, lost something, or the install or a command failed.
 labels: [bug]
 body:
   - type: markdown
@@ -9,7 +9,7 @@ body:
   - type: input
     id: commit
     attributes:
-      label: Kenwise commit
+      label: KenWise commit
       description: Output of `git -C ~/.kenwise rev-parse --short HEAD`.
     validations:
       required: true

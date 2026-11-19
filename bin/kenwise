@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kenwise: start, stop and open the Kenwise daemon. Installed by install.sh as ~/.local/bin/kenwise.
+# kenwise: start, stop and open the KenWise daemon. Installed by install.sh as ~/.local/bin/kenwise.
 set -euo pipefail
 
 self=$0
@@ -43,21 +43,21 @@ open_url() {
 }
 
 start() {
-  if pid=$(running_pid); then echo "Kenwise is already running (pid $pid): $(url)"; return; fi
+  if pid=$(running_pid); then echo "KenWise is already running (pid $pid): $(url)"; return; fi
   mkdir -p "$DATA"
   touch "$LOG_FILE"
   local from=$(( $(wc -l <"$LOG_FILE") + 1 ))
   (cd "$KENWISE_HOME" || exit 1; nohup node apps/daemon/server.mjs >>"$LOG_FILE" 2>&1 & echo $! >"$PID_FILE")
   for _ in $(seq 1 50); do
     if tail -n "+$from" "$LOG_FILE" | grep -q "^EV: http"; then
-      echo "Kenwise is running: $(url)"
+      echo "KenWise is running: $(url)"
       echo "Logs: kenwise logs    Stop: kenwise stop"
       return
     fi
     running_pid >/dev/null || break
     sleep 0.2
   done
-  echo "Kenwise did not start. What it said ($LOG_FILE):" >&2
+  echo "KenWise did not start. What it said ($LOG_FILE):" >&2
   tail -n "+$from" "$LOG_FILE" | tail -n 20 >&2
   exit 1
 }
@@ -66,9 +66,9 @@ stop() {
   if pid=$(running_pid); then
     kill "$pid"
     for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
-    echo "Kenwise stopped."
+    echo "KenWise stopped."
   else
-    echo "Kenwise is not running."
+    echo "KenWise is not running."
   fi
   rm -f "$PID_FILE"
 }
@@ -86,7 +86,7 @@ case ${1:-help} in
   start) start ;;
   stop) stop ;;
   restart) stop; start ;;
-  status) if pid=$(running_pid); then echo "Kenwise is running (pid $pid): $(url)"; else echo "Kenwise is not running."; exit 1; fi ;;
+  status) if pid=$(running_pid); then echo "KenWise is running (pid $pid): $(url)"; else echo "KenWise is not running."; exit 1; fi ;;
   open) running_pid >/dev/null || start; open_url "$(url)" ;;
   logs) exec tail -n 50 -f "$LOG_FILE" ;;
   run) cd "$KENWISE_HOME" && exec node apps/daemon/server.mjs ;;
@@ -97,16 +97,16 @@ case ${1:-help} in
 Usage: kenwise <command>
 
   start     start the daemon in the background and print its link
-  open      start it if needed and open Kenwise in your browser
+  open      start it if needed and open KenWise in your browser
   stop      stop the daemon (work in progress is kept and picked up on the next start)
   restart   stop, then start
   status    say whether it is running
   logs      follow the daemon's log
   run       run the daemon in this terminal instead
-  update    pull the latest Kenwise, reinstall, rebuild the agent image, restart if it was running
+  update    pull the latest KenWise, reinstall, rebuild the agent image, restart if it was running
   config    print the path of the settings file
 
-Kenwise lives in $KENWISE_HOME. Its data is in $DATA.
+KenWise lives in $KENWISE_HOME. Its data is in $DATA.
 EOF
     ;;
 esac

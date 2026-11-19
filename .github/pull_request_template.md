@@ -4,7 +4,7 @@
 
 ## How it was tested
 
-<!-- Commands you ran. If this changes how Kenwise understands, asks or reviews, say which model and scenarios you ran and what they showed. -->
+<!-- Commands you ran. If this changes how KenWise understands, asks or reviews, say which model and scenarios you ran and what they showed. -->
 
 ## Checklist
 

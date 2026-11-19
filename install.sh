@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Installs Kenwise on macOS or Linux:
+# Installs KenWise on macOS or Linux:
 #
-#   curl -fsSL https://raw.githubusercontent.com/vulbsti/EV/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/vulbsti/KenWise/main/install.sh | bash
 #
-# It puts Kenwise in ~/.kenwise (KENWISE_HOME), installs its one npm dependency, builds the
+# It puts KenWise in ~/.kenwise (KENWISE_HOME), installs its one npm dependency, builds the
 # container its agents run in (if docker is running), and links the `kenwise`
 # command into ~/.local/bin (KENWISE_BIN_DIR). It never uses sudo and installs
 # nothing system-wide. Run it again to update. Options (after `bash -s --`):
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 main() {
-  local repo=${KENWISE_REPO:-https://github.com/vulbsti/EV}
+  local repo=${KENWISE_REPO:-https://github.com/vulbsti/KenWise}
   local home=${KENWISE_HOME:-$HOME/.kenwise}
   local bin_dir=${KENWISE_BIN_DIR:-$HOME/.local/bin}
   local need_node=22.19.0 build_image=yes
@@ -25,15 +25,15 @@ main() {
   case $(uname -s) in
     Darwin) os=macos ;;
     Linux) os=linux ;;
-    *) fail "Kenwise supports macOS and Linux for now. On Windows, use WSL2." ;;
+    *) fail "KenWise supports macOS and Linux for now. On Windows, use WSL2." ;;
   esac
 
-  say "Checking what Kenwise needs"
+  say "Checking what KenWise needs"
   command -v git >/dev/null 2>&1 || fail "git is missing. $(hint git)"
   command -v node >/dev/null 2>&1 || fail "Node.js $need_node or newer is missing. $(hint node)"
   local have_node
   have_node=$(node -p 'process.versions.node')
-  version_ge "$have_node" "$need_node" || fail "Kenwise needs Node.js $need_node or newer; you have $have_node. $(hint node)"
+  version_ge "$have_node" "$need_node" || fail "KenWise needs Node.js $need_node or newer; you have $have_node. $(hint node)"
   ok "Node.js $have_node"
   local docker_ok=""
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -41,20 +41,20 @@ main() {
   else
     local why="docker is not installed"
     command -v docker >/dev/null 2>&1 && why="docker is installed but not running (or your user cannot use it)"
-    warn "$why. Kenwise's agents run in a container, so Kenwise can talk but not do work until docker runs. $(hint docker)"
+    warn "$why. KenWise's agents run in a container, so KenWise can talk but not do work until docker runs. $(hint docker)"
   fi
 
   if [ -d "$home/.git" ]; then
-    say "Updating Kenwise in $home"
+    say "Updating KenWise in $home"
     git -C "$home" pull --ff-only --quiet || fail "Could not update $home (local changes?). Fix it there, or move it away and run this again."
   elif [ -e "$home" ]; then
-    fail "$home exists but is not an Kenwise checkout. Move it away, or set KENWISE_HOME to another folder."
+    fail "$home exists but is not an KenWise checkout. Move it away, or set KENWISE_HOME to another folder."
   else
-    say "Downloading Kenwise to $home"
+    say "Downloading KenWise to $home"
     git clone --quiet --depth 1 "$repo" "$home"
   fi
 
-  say "Installing Kenwise's dependencies"
+  say "Installing KenWise's dependencies"
   (cd "$home" && npm ci --omit=dev --no-audit --no-fund --loglevel=error)
 
   if [ ! -f "$home/.env" ]; then
@@ -74,7 +74,7 @@ main() {
   ok "Linked the kenwise command into $bin_dir"
 
   echo
-  echo "Kenwise is installed. Next:"
+  echo "KenWise is installed. Next:"
   if grep -q '^OPENCODE_API=$' "$home/.env"; then echo "  Put your model key in $home/.env (OPENCODE_API=...)."; fi
   echo "  Run: kenwise open"
   if [ -z "$docker_ok" ]; then echo "  Then start docker and run: kenwise update   (builds the agent container)"; fi

@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Kenwise: a personal AI assistant that understands you, keeps everything organised in one place, has context across everything without bloat, and remembers like a person, not a list of facts",
+  "description": "KenWise: a personal AI assistant that understands you, keeps everything organised in one place, has context across everything without bloat, and remembers like a person, not a list of facts",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vulbsti/EV.git"
+    "url": "git+https://github.com/vulbsti/KenWise.git"
   },
   "scripts": {
     "test": "node --test apps/daemon/tests/*.test.mjs",
