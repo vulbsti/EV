@@ -790,6 +790,22 @@ export class AssistantWorkerService {
         break;
       } catch (error) {
         if (active.stopRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+        // No account can reach the reviewer's model yet (limited, or waiting
+        // for a sign-in): that is not the reviewer failing, so the result is
+        // held for as long as it takes, checking again at the reset or every
+        // minute, without counting towards giving up.
+        if (error.wait) {
+          attempt--;
+          const message = error.wait.until ? `Holding the result for EV's quality check: the ${error.wait.providerName} account is limited until ${error.wait.until}.` : `Holding the result for EV's quality check: the ${error.wait.providerName} account needs a new sign-in.`;
+          if (message !== active.holding) await this._progress(active, { phase: "checking", message, code: error.code ?? null });
+          active.holding = message;
+          active.controller = new AbortController();
+          const holdMs = error.wait.until ? Math.max(1_000, Date.parse(error.wait.until) - Date.now() + 500) : 60_000;
+          try { await abortableDelay(holdMs, active.controller.signal); }
+          catch { throw codedError("STALE_FENCING_TOKEN", "Task was stopped"); }
+          finally { active.controller = null; }
+          continue;
+        }
         if (attempt >= this.reviewHoldMs.length) {
           throw codedError("QUALITY_REVIEW_UNAVAILABLE", "The agent finished, but EV's quality check could not run, so the result was held back instead of delivered unchecked.", { heldAnswer: String(report.answer ?? "").slice(0, 6_000), cause: error.message });
         }

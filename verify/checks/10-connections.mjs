@@ -67,7 +67,7 @@ export default {
       id: "C-03",
       expect: "A pasted key survives a restart and is kept in exactly one file that only the person's own user can read: not in the conversation, the store, search or anything given to an agent.",
       async run({ start, assert }) {
-        const secret = "sk-verify-kept-in-one-place-7731";
+        const secret = "skverifykeptinoneplace7731";
         const ev = await start({ script: { ev: work("Notes"), worker: (job) => job.done("Tidied.") } });
         assert.ok((await ev.addKey("opencode-go", secret)).ok, "The key was not saved");
         await ev.say("tidy my notes");
@@ -104,7 +104,7 @@ export default {
         const ev = await start({ script: { ev: (turn) => turn.reply("Here is today.") } });
         ev.standIn.outage("ev", 429, { retryAfter: 2 });
         const messageId = await send(ev, "what's on today?", "limit-1");
-        const [limited] = await ev.until("the account to show as limited", async () => (await account(ev)).filter((connection) => connection.status === "limited"));
+        const limited = await ev.until("the account to show as limited", async () => (await account(ev)).find((connection) => connection.status === "limited"));
         assert.ok(limited.until && !Number.isNaN(Date.parse(limited.until)), "The limited account does not say when it is usable again");
         await ev.until("EV to tell the person the message waits", async () => (await notices(ev)).length);
         assert.ok(!await answerTo(ev, messageId), "EV answered the message as if it had been handled");

@@ -1,9 +1,5 @@
 import { createHash } from "node:crypto";
-import { createModels, createProvider } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
-import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
+import { Connections, retryAfterMs as readRetryAfter } from "./connections.mjs";
 
 /**
  * One way for EV's own model calls (main agent, reviewer, memory) to
@@ -20,12 +16,18 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
  * keeps streaming. Reasoning models think for a long time and spend tokens
  * doing it; that is the work.
  *
- * EV_MODEL names the model as provider/model; a bare id means opencode-go,
- * whose catalogue gives its API shape, base URL and quirks. EV_MODEL_URL
- * sends the calls to another endpoint, and EV_MODEL_API (openai-responses,
- * openai-completions or anthropic-messages) says how it is spoken to when the
- * catalogue does not know the model. The key is OPENCODE_API, passed
- * explicitly, so pi-ai never looks up keys or credentials of its own.
+ * EV_MODEL names the model as provider/model; a bare id means opencode-go.
+ * pi-ai's catalogue gives each model its API shape, base URL and quirks.
+ * EV_MODEL_URL sends the calls to another endpoint, and EV_MODEL_API
+ * (openai-responses, openai-completions or anthropic-messages) says how it is
+ * spoken to when the catalogue does not know the model.
+ *
+ * Calls go through the provider's connection (connections.mjs): its key or
+ * subscription token, never one pi-ai finds on its own. An account that is
+ * limited or needs a new sign-in is not called; the error carries `wait`
+ * saying what the work waits for. A usage limit (429 once retries are spent,
+ * or a reset too far off to wait out here) marks the account limited until
+ * its reset, and a refused key (401, 403) marks it as needing a new sign-in.
  *
  * Every call writes one log line (role, session, attempts, duration, tokens,
  * outcome), so cost and failures of EV's own thinking are visible.
@@ -35,10 +37,14 @@ const DEFAULT_MODEL = "opencode-go/gpt-6-luna";
 const RETRY_DELAYS_MS = [1_000, 4_000];
 /** How long a model may stay silent (no bytes at all, not even a keep-alive) before the call counts as failed. */
 const SILENCE_MS = 90_000;
-const APIS = { "anthropic-messages": anthropicMessagesApi, "openai-completions": openAICompletionsApi, "openai-responses": openAIResponsesApi };
-const opencodeGo = opencodeGoProvider();
-const models = createModels();
-models.setProvider(opencodeGo);
+const APIS = ["anthropic-messages", "openai-completions", "openai-responses"];
+// Longer than this, a Retry-After is a usage limit to wait out, not a blip to retry.
+const LONGEST_RETRY_MS = 30_000;
+// Until the daemon hands over its own (with the store and the secrets file), keys come from the environment only.
+let connections = new Connections();
+/** Makes every model call go through these connections. */
+export function useConnections(next) { connections = next; }
+export const currentConnections = () => connections;
 
 const configError = (message) => Object.assign(new Error(message), { code: "MODEL_NOT_CONFIGURED" });
 
@@ -47,26 +53,21 @@ export function modelSettings(env = process.env, spec = env.EV_MODEL || DEFAULT_
   const slash = spec.indexOf("/");
   const provider = slash < 0 ? "opencode-go" : spec.slice(0, slash);
   const id = slash < 0 ? spec : spec.slice(slash + 1);
-  const known = provider === "opencode-go" ? opencodeGo.getModels().find((model) => model.id === id) : null;
+  const known = connections.models.getModel(provider, id);
   const url = env.EV_MODEL_URL?.replace(/\/$/, "");
   if (!url) {
     if (known) return known;
-    throw configError(provider === "opencode-go" ? `opencode-go has no model "${id}"` : `EV knows the opencode-go catalogue only; set EV_MODEL_URL and EV_MODEL_API to reach ${spec}`);
+    throw configError(connections.models.getProvider(provider) ? `${provider} has no model "${id}"` : `pi-ai does not know the provider "${provider}"; set EV_MODEL_URL and EV_MODEL_API to reach ${spec}`);
   }
   const api = env.EV_MODEL_API || known?.api;
-  if (!APIS[api]) throw configError(`EV_MODEL_API must be one of ${Object.keys(APIS).join(", ")}${api ? `, not "${api}"` : ` for ${spec}`}`);
+  if (!APIS.includes(api)) throw configError(`EV_MODEL_API must be one of ${APIS.join(", ")}${api ? `, not "${api}"` : ` for ${spec}`}`);
   if (known && api === known.api) return { ...known, baseUrl: url };
   return { id, name: id, provider, api, baseUrl: url, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 32_000 };
 }
 
 function providerFor(model) {
-  if (!models.getProvider(model.provider)) {
-    models.setProvider(createProvider({
-      id: model.provider, auth: { apiKey: { name: model.provider, resolve: async () => ({ auth: {} }) } }, models: [],
-      api: Object.fromEntries(Object.entries(APIS).map(([api, make]) => [api, make()]))
-    }));
-  }
-  return models;
+  connections.ensureProvider(model.provider);
+  return connections.models;
 }
 
 export function sessionHeader(seed) {
@@ -124,10 +125,17 @@ function listening(fetchImpl, heard, quiet, seen) {
  * `parse(text, message)` gives `value`; a reply it rejects is retried like a
  * provider blip. Throws an error with `code` once retries are spent.
  */
-export async function modelTurn({ context, parse = (text) => text, session, code, label, silenceMs = SILENCE_MS, apiKey = process.env.OPENCODE_API, fetchImpl, signal, retryDelaysMs = RETRY_DELAYS_MS, env = process.env }) {
-  if (!apiKey) throw Object.assign(new Error("The model key (OPENCODE_API) is not configured"), { code });
+export async function modelTurn({ context, parse = (text) => text, session, code, label, silenceMs = SILENCE_MS, apiKey, fetchImpl, signal, retryDelaysMs = RETRY_DELAYS_MS, env = process.env }) {
   let model;
   try { model = modelSettings(env); } catch (error) { throw Object.assign(error, { code }); }
+  // An explicit key (tests, the harness's self-test) bypasses the accounts.
+  if (!apiKey) await connections.scanned;
+  const account = apiKey ? null : connections.forCall(model.provider, code);
+  if (account?.method === "oauth") {
+    // A subscription token that cannot be refreshed means signing in again.
+    try { await providerFor(model).getAuth(model, { signal }); }
+    catch (error) { throw connections.refused(account, error.message, code); }
+  }
   const started = Date.now();
   const log = (outcome, attempts, extra = {}) => logCall({ role: label, session, model: `${model.provider}/${model.id}`, attempts, ms: Date.now() - started, inputChars: chars(context.messages), outcome, ...extra });
   let failure;
@@ -137,7 +145,7 @@ export async function modelTurn({ context, parse = (text) => text, session, code
       try { await pause(failure.retryAfterMs || retryDelaysMs[attempt - 1], signal); }
       catch (error) { log("aborted", attempt); throw error; }
     }
-    let status = null, retryAfterMs = 0;
+    let status = null, retryAfterMs = 0, resetMs = 0;
     // The call lives as long as the model keeps sending something.
     const quiet = new AbortController();
     let timer, ended = false;
@@ -149,14 +157,14 @@ export async function modelTurn({ context, parse = (text) => text, session, code
     let message;
     try {
       message = await providerFor(model).complete(model, context, {
-        apiKey, sessionId: session, maxTokens: model.maxTokens, maxRetries: 0,
+        ...(apiKey ? { apiKey } : {}), sessionId: session, maxTokens: model.maxTokens, maxRetries: 0,
         signal: AbortSignal.any([quiet.signal, ...(signal ? [signal] : [])]),
         identity: { userAgent: { custom: `ev-${label}/0.2` } },
         // Seen here because the provider SDKs throw away the status of a failed reply.
         fetch: listening(fetchImpl, heard, quiet.signal, (response) => {
           status = response.status;
-          const retryAfter = Number(response.headers?.get?.("retry-after"));
-          if (retryAfter > 0) retryAfterMs = Math.min(retryAfter * 1_000, 30_000);
+          resetMs = readRetryAfter(response.headers?.get?.("retry-after"));
+          retryAfterMs = Math.min(resetMs, LONGEST_RETRY_MS);
         })
       });
     } finally { ended = true; clearTimeout(timer); }
@@ -168,8 +176,12 @@ export async function modelTurn({ context, parse = (text) => text, session, code
     if (message.stopReason === "error" || message.stopReason === "aborted") {
       // Silence aborts too; only the caller's own signal ends the retries.
       const why = quiet.signal.aborted ? quiet.signal.reason.message : message.errorMessage ?? message.stopReason;
-      failure = Object.assign(new Error(`${label} model call failed${status >= 400 ? ` (HTTP ${status})` : ""}: ${String(why).replace(/\s+/g, " ").slice(0, 300)}`), { code, status: status >= 400 ? status : null, retryAfterMs });
-      if (status >= 400 && !transient(status)) { log("rejected", attempt + 1, { status }); throw failure; }
+      failure = Object.assign(new Error(`${label} model call failed${status >= 400 ? ` (HTTP ${status})` : ""}: ${String(why).replace(/\s+/g, " ").slice(0, 300)}`), { code, status: status >= 400 ? status : null, retryAfterMs, resetMs });
+      if (status >= 400 && !transient(status)) {
+        log("rejected", attempt + 1, { status });
+        throw account && (status === 401 || status === 403) ? connections.refused(account, why, code) : failure;
+      }
+      if (account && status === 429 && resetMs > LONGEST_RETRY_MS) { log("limited", attempt + 1, { status }); throw connections.limitHit(account, resetMs, code); }
       continue;
     }
     // With tools on offer, a turn may end with nothing left to say.
@@ -181,10 +193,35 @@ export async function modelTurn({ context, parse = (text) => text, session, code
     try { value = parse(text, message); }
     catch (error) { failure = Object.assign(error, { code }); continue; }
     log("ok", attempt + 1, { tokens: usage });
+    if (account) connections.ready(account);
     return { message, text, toolCalls, usage, value };
   }
   log("failed", attempt, { status: failure?.status ?? null, error: failure?.message?.slice(0, 200) ?? null });
+  if (account && failure?.status === 429) throw connections.limitHit(account, failure.resetMs, code);
   throw failure;
+}
+
+/**
+ * Tries a key with one tiny call to a model of its provider (EV's own model
+ * when it is that provider's, so EV_MODEL_URL is honoured), the way a key is
+ * checked when the person pastes it. Returns { ok, status, error }.
+ */
+export async function tryKey(providerId, key, { env = process.env, fetchImpl } = {}) {
+  let model = null;
+  try { model = modelSettings(env); } catch {}
+  if (model?.provider !== providerId) {
+    connections.ensureProvider(providerId);
+    model = [...connections.models.getModels(providerId)].sort((a, b) => (a.cost?.input ?? 0) - (b.cost?.input ?? 0))[0] ?? null;
+  }
+  if (!model) return { ok: false, status: null, error: `EV knows no model of ${providerId} to try the key on` };
+  let status = null;
+  const message = await providerFor(model).complete(model, { messages: [userMessage("Reply with the word ok.")] }, {
+    apiKey: key, maxTokens: 16, maxRetries: 0, signal: AbortSignal.timeout(60_000),
+    identity: { userAgent: { custom: "ev-connection-test/0.2" } },
+    fetch: async (url, init) => { const response = await (fetchImpl ?? fetch)(url, init); status = response.status; return response; }
+  });
+  if (message.stopReason !== "error" && message.stopReason !== "aborted") return { ok: true, status };
+  return { ok: false, status, error: String(message.errorMessage ?? message.stopReason).replace(/\s+/g, " ").slice(0, 300) };
 }
 
 /** Text in, `parse(text)` out: one user message and no tools. */
