@@ -56,6 +56,21 @@
     <section><h3>Work</h3><div id="rail-work" class="rows"></div></section>
   </aside>
 
+  <aside id="livepane" class="livepane glass" aria-label="Live work">
+    <div class="sheet-h">
+      <div class="row-m"><h2 id="pane-title"></h2><span id="pane-state" class="state"><span class="dot"></span><span class="state-label"></span></span></div>
+      <button id="pane-hold" type="button" class="btn quiet"></button>
+      <button id="pane-in" type="button" class="btn"><svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 19H5v-5M5 19l8-8M13 17h5V6H7v5"></path></svg>Pop back in</button>
+    </div>
+    <div id="pane-body" class="sheet-b"></div>
+    <ul id="pane-queued" class="queued" aria-label="Waiting for the agent" hidden></ul>
+    <form id="pane-form" class="sheet-f">
+      <input id="pane-input" class="in" type="text" maxlength="4000" aria-label="Tell this agent something" placeholder="Tell this agent something">
+      <button id="pane-now" type="button" class="btn quiet" title="Stop what it is doing and give it this now">Now</button>
+      <button class="ibtn send" type="submit" aria-label="Send to this agent at its next step"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"></path></svg></button>
+    </form>
+  </aside>
+
   <div id="statusbar" class="waitbar glass status" role="status" hidden></div>
 
   <form id="composer" class="composer glass">
