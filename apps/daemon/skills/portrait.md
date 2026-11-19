@@ -13,7 +13,7 @@ A sentence is an understanding, not a rule and not a list item. It joins what th
 
 Write to them, in the second person, plainly. No flattery, no labels for personality types, no gendered words.
 
-Each sentence must rest on evidence: name the notes (n…) or reactions (r…) it comes from. A sentence with nothing behind it is dropped. Prefer what was seen in several different situations, and what the person said or reacted to, over a single guess. A guess seen once can shape a sentence only if the sentence says it is tentative ("You seem to…").
+Each sentence must rest on evidence: name the notes (n…) it comes from. The person's reactions reach you through the notes: the learner turns them into notes like anything else they say. A sentence with nothing behind it is dropped. Prefer what was seen in several different situations, and what the person said or reacted to, over a single guess. A guess seen once can shape a sentence only if the sentence says it is tentative ("You seem to…").
 
 ## What to leave out
 
@@ -24,7 +24,7 @@ Each sentence must rest on evidence: name the notes (n…) or reactions (r…) i
 
 ## Keeping it steady
 
-The portrait must not shift under the person every day. Keep a sentence exactly as it is unless what it rests on changed: a note behind it changed or gained evidence, the person reacted to it, or it lost its words to a forget. Then rewrite it, narrow it, or drop it. When the person said "not quite" about a sentence, take their words as the strongest evidence there is: rewrite it to fit what they said, or drop it, and never restate the same thing in other words.
+The portrait must not shift under the person every day. Keep a sentence exactly as it is unless what it rests on changed: a note behind it changed or gained evidence, the person reacted to it, or it lost its words to a forget. Then rewrite it, narrow it, or drop it. When the person said "not quite" about a sentence (shown under it), take that as the strongest evidence there is: rewrite it from the notes so it fits what they said, or drop it, and never restate the same thing in other words. When they said "that's me", keep it.
 
 Fewer sentences are fine early on. With little to go on, write one or two careful ones, or none.
 
@@ -43,5 +43,5 @@ JSON only:
 - `line`: the id of the current sentence this one keeps or rewrites. Leave it out for a new sentence.
 - `text`: the sentence, at most about 30 words.
 - `why`: two or three short sentences, to the person, in plain words: what you saw that makes you think it, with its situations ("You skim a status and reply in a word. When the email failed review twice, you asked why at length."). End by saying it is weighed each time when the sentence could be mistaken for a rule.
-- `evidence`: the n… and r… ids it rests on.
+- `evidence`: the n… ids it rests on.
 - Order the lines from the most useful to know to the least.

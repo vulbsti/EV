@@ -122,6 +122,33 @@ function countedText(events, conversationId) {
   return `${what} ${conversationId ? `in "${conversationId}"` : `across ${conversations} conversation${conversations === 1 ? "" : "s"}`}; not summarised yet.`;
 }
 
+const VERDICTS = { thats_me: "That's me", not_quite: "Not quite", right: "Right call" };
+
+/**
+ * A reaction in words, read through its links so a forget reaches it: what
+ * the person reacted to (a portrait sentence, a call EV made, EV's
+ * question) and what they tapped. Their typed words are kept apart (words).
+ */
+export function reactionText(db, data) {
+  const on = String(data?.on ?? "");
+  if (on.startsWith("line:")) {
+    const line = db.prepare("SELECT text FROM portrait_lines WHERE version_id = ? AND line_id = ?").get(data.versionId ?? "", on.slice(5));
+    return `EV's portrait of them said: "${line?.text ?? "(since forgotten)"}". They tapped "${VERDICTS[data.verdict] ?? data.verdict}".`;
+  }
+  if (on.startsWith("call:")) {
+    const [, eventId, index] = on.split(":");
+    const turn = db.prepare("SELECT e.data_json, m.content FROM events e LEFT JOIN messages m ON m.message_id = e.message_id WHERE e.event_id = ?").get(eventId);
+    const made = parse(turn?.data_json, {})?.calls?.[Number(index)];
+    if (!made) return "They reacted to a call EV made that has since been forgotten.";
+    return `EV made a call on its reading of them: "${made.made}" (because: ${made.why}), answering their message "${String(turn.content ?? "").slice(0, 300)}". They tapped "${data.verdict === "right" ? "Right call" : made.other || "Not the right call"}".`;
+  }
+  if (on.startsWith("question:")) {
+    const version = db.prepare("SELECT question FROM portrait_versions WHERE version_id = ?").get(on.slice(9));
+    return `EV asked them: "${version?.question ?? "(since forgotten)"}". They answered${data.option ? `: "${data.option}"` : " in their own words"}.`;
+  }
+  return "";
+}
+
 /** The readable text of a memory value: plain strings (manual guidance) or `{ text, ... }` (learned). */
 export function memoryText(value) {
   if (typeof value === "string") return value;
@@ -450,10 +477,13 @@ export class AssistantMemoryStore {
       LEFT JOIN learning l ON l.event_id = e.event_id
       LEFT JOIN messages u ON e.type = 'turn' AND u.message_id = e.message_id
       LEFT JOIN messages r ON r.reply_to = u.message_id
-      WHERE e.type IN ('turn', 'episode') AND ${where}
+      WHERE e.type IN ('turn', 'episode', 'reaction') AND ${where}
     `).all(...args).map((row) => {
       const data = parse(row.data_json, {});
-      const content = data.erased ? { erased: true } : row.type === "turn" ? { userText: row.said, evReply: row.reply, action: data.action ?? null, recentWork: data.recentWork ?? "" } : data;
+      const content = data.erased ? { erased: true }
+        : row.type === "turn" ? { userText: row.said, evReply: row.reply, action: data.action ?? null, recentWork: data.recentWork ?? "", calls: data.calls ?? [] }
+          : row.type === "reaction" ? { userText: data.words ?? "", reaction: reactionText(this.database, data) }
+            : data;
       return { eventId: row.event_id, conversationId: row.conversation_id, type: row.type, content, sourceId: row.event_id, createdAt: row.at };
     });
   }
@@ -470,7 +500,7 @@ export class AssistantMemoryStore {
   pendingEvents({ ownerId, limit = 20, maxAttempts = 3 }) {
     const events = this._learnable("l.analysed_at IS NULL AND COALESCE(l.attempts, 0) < ? ORDER BY e.seq LIMIT ?", [maxAttempts, limit]);
     const source = this.database.prepare("INSERT OR IGNORE INTO memory_sources (source_id, owner_id, scope, source_type, source_ref, metadata_json, created_at) VALUES (?, ?, 'global', ?, ?, ?, ?)");
-    for (const event of events) source.run(event.eventId, ownerId, event.type === "episode" ? "episode" : "conversation", `event:${event.eventId}`, JSON.stringify({ conversationId: event.conversationId }), event.createdAt);
+    for (const event of events) source.run(event.eventId, ownerId, event.type === "episode" ? "episode" : event.type === "reaction" ? "reaction" : "conversation", `event:${event.eventId}`, JSON.stringify({ conversationId: event.conversationId }), event.createdAt);
     return events;
   }
 
@@ -506,6 +536,7 @@ export class AssistantMemoryStore {
       const situation = row.situation ? { situation: row.situation } : {};
       if (row.type === "turn") return { at: row.at, ref: `message:${row.message_id}`, said: row.said, ...situation };
       if (row.type === "episode") return { at: row.at, ref: `work:${row.work_id}`, work: data.title ?? null, ...situation };
+      if (row.type === "reaction") return { at: row.at, ref: `reaction:${row.source_id}`, reaction: reactionText(this.database, data), said: data.words || null, ...situation };
       return { at: row.at ?? row.created_at, entered: row.source_type, ...situation };
     });
   }

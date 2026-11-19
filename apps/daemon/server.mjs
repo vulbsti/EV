@@ -20,7 +20,7 @@ import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView, rightNow } from "./lib/ev-memory.mjs";
 import { Threads } from "./lib/threads.mjs";
-import { Portrait, latestPortrait, portraitHistory, portraitView } from "./lib/portrait.mjs";
+import { Portrait, callsLog, latestPortrait, portraitHistory, portraitView, react } from "./lib/portrait.mjs";
 import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
 import { StandingResponsibilityStore } from "./lib/standing-responsibility.mjs";
 import { StandingResponsibilityRunner } from "./lib/standing-runner.mjs";
@@ -190,7 +190,8 @@ async function publicResponsibility(responsibility) {
  */
 function publicMessage({ intent, ...message }) {
   // toAgent: typed straight to one piece of work's agent in the pane, not to EV.
-  return { ...message, status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", toAgent: Boolean(message.clientMessageId?.startsWith("pane:")), threads: facts.messageThreads(message.messageId) };
+  // readAs: EV's readings of this message for the work it started or told, which the person can strike.
+  return { ...message, readAs: intent?.readAs ?? [], status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", toAgent: Boolean(message.clientMessageId?.startsWith("pane:")), threads: facts.messageThreads(message.messageId) };
 }
 
 /** Whether EV is thinking: something waits in this conversation's inbox. */
@@ -849,7 +850,19 @@ async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/assistant/understanding") {
     // How EV understands the person, as the page shows it.
     const current = latestPortrait(store);
-    return json(response, 200, { rightNow: rightNow(assistantMemory, assistantOwnerId), portrait: current ? { versionId: current.versionId, at: current.at, lines: current.lines.map(({ lineId, text, why, writtenAt, evidence }) => ({ lineId, text, why, writtenAt, evidence })), question: current.question } : null });
+    return json(response, 200, {
+      rightNow: rightNow(assistantMemory, assistantOwnerId),
+      portrait: current ? { versionId: current.versionId, at: current.at, lines: current.lines.map(({ lineId, text, why, writtenAt, evidence, reaction }) => ({ lineId, text, why, writtenAt, evidence, reaction })), question: current.question } : null,
+      calls: callsLog(store)
+    });
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/understanding/react") {
+    // That's me / Not quite, Right call / the other call, or an answer: evidence at once, never a rule.
+    const body = await readJson(request);
+    const saved = react(store, { on: body.on, verdict: body.verdict, words: typeof body.words === "string" ? body.words : "", option: typeof body.option === "string" ? body.option : "" });
+    // It reaches the portrait through the notes: the learner reads it, and a change it makes wakes the writer.
+    memoryLearner.kick();
+    return json(response, 201, { reaction: saved.eventId });
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/understanding/history") {
     // Every version of the portrait, newest first; forgotten sentences are left out.
@@ -1019,7 +1032,8 @@ const server = createServer(async (request, response) => {
       CONNECTOR_TIMEOUT: 504,
       CONNECTOR_READ_FAILED: 502,
       CONNECTION_NOT_FOUND: 404,
-      CONNECTION_FROM_ENVIRONMENT: 409
+      CONNECTION_FROM_ENVIRONMENT: 409,
+      INVALID_REACTION: 400
     }[error.code];
     if (!response.headersSent) json(response, error.statusCode ?? codedStatus ?? 500, { error: error.message, code: error.code ?? null });
     else response.end();

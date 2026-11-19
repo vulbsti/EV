@@ -111,6 +111,53 @@ export default {
         assert.ok(context.includes("status update in a word") && context.includes("boarding"), "The note EV named for the work did not reach the agent with its situation");
         assert.ok(!context.includes("ORRIN-4"), "A note EV did not name for the work reached the agent");
       }
+    },
+    {
+      id: "U-04",
+      expect: "When the person says a sentence of the portrait is not quite right, EV is shown it as challenged on its very next turn, before anything rewrites it.",
+      async run({ start, assert }) {
+        const ev = await start({ env: { EV_PORTRAIT_EVERY: "1d" }, script: {
+          ev: (turn) => turn.reply("Noted."),
+          learner,
+          portrait: (call) => ({ lines: [{ text: "You want a status in a word.", why: "You said so while boarding.", evidence: [call.noteId("status update")] }], question: null })
+        } });
+        await ev.say("one word is enough for status, I'm boarding");
+        await ev.learned();
+        await portraitSays(ev, "status in a word");
+        const line = (await understanding(ev)).portrait.lines[0];
+        const { status } = await ev.api("/api/assistant/understanding/react", { on: `line:${line.lineId}`, verdict: "not_quite", words: "only when I'm travelling" });
+        if (status === 404) throw new NotBuilt("reactions (no POST /api/assistant/understanding/react)");
+        await ev.say("where are we?");
+        const shown = ev.standIn.calls("ev").at(-1).text;
+        const sentence = shown.split("\n").find((text) => text.includes("status in a word")) ?? "";
+        assert.ok(/challenged|not quite/i.test(sentence) && sentence.includes("only when I'm travelling"), `EV is not shown that the person challenged the sentence: ${sentence || "(the sentence is not shown at all)"}`);
+      }
+    },
+    {
+      id: "U-05",
+      expect: "Forgetting a message takes away the calls EV made on its reading of the person in answering it, and the person's reactions to those calls.",
+      async run({ start, assert }) {
+        const ev = await start({ script: {
+          ev: (turn) => turn.message.includes("forget")
+            ? turn.forget([turn.message.match(/message:[A-Za-z0-9-]+/)?.[0] ?? ""]).then(() => turn.reply("Forgotten."))
+            : turn.reply("Two lines: on track.", { call: { made: "Kept it to two lines", why: "You asked from PLATFORM-6 while boarding.", other: "Wanted more" } }),
+          // The reaction is evidence: the learner notes what it shows.
+          learner: (pass) => [pass.guessed("bad moment", "preference", "Wanted more on that status update.", { situation: "a status update while boarding" })].filter(Boolean)
+        } });
+        const { id } = await ev.say("where does the comparison stand? at PLATFORM-6");
+        const calls = (await understanding(ev)).calls ?? [];
+        const made = calls.find((call) => call.why.includes("PLATFORM-6"));
+        assert.ok(made, "The call EV made was not recorded with its reply");
+        await ev.api("/api/assistant/understanding/react", { on: `call:${made.callId}`, verdict: "other", words: "PLATFORM-6 was a bad moment" });
+        await ev.learned();
+        assert.ok(JSON.stringify(await ev.memory()).includes("PLATFORM-6 was a bad moment"), "The reaction never reached memory as evidence, so forgetting it cannot be judged");
+        const messageId = (await ev.conversation()).find((message) => message.clientMessageId === id)?.messageId;
+        assert.ok(messageId, "The person's message could not be found");
+        await ev.say(`forget message:${messageId}`);
+        await ev.learned();
+        const after = JSON.stringify(await understanding(ev)) + JSON.stringify(await ev.memory());
+        assert.ok(!after.includes("PLATFORM-6"), "A call EV made, or the person's reaction to it, survives forgetting the message it answered");
+      }
     }
   ]
 };

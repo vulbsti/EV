@@ -26,6 +26,19 @@ const SYSTEM_PROMPT = [
 const string = (description) => ({ type: "string", description });
 const strings = (description) => ({ type: "array", items: { type: "string" }, description });
 const tool = (name, description, properties, required = Object.keys(properties)) => ({ name, description, parameters: { type: "object", properties, required, additionalProperties: false } });
+// The calls log: what EV decided on its reading of the person, recorded with the reply in the same step.
+const call = {
+  type: "object",
+  description: "Only when this rests on your reading of the person rather than on what they asked: the call you made (kept it short, explained in full, assumed instead of asking, went ahead without checking). The person sees it later and can tell you it was right or not; that is how your judgement gets corrected.",
+  properties: {
+    made: string("The call, in a few words, such as \"Kept it to two lines\"."),
+    why: string("One line on why, with the situation, such as \"You asked where the comparison stood while you were boarding.\""),
+    other: string("The other call you could have made, in two or three words, such as \"Wanted more\" or \"Should have asked\".")
+  },
+  required: ["made", "why", "other"],
+  additionalProperties: false
+};
+const readAs = strings("Optional: how you read their words for this work, as a few short phrases they can strike if wrong (\"One page\", \"Ready by Thursday evening\", \"Sources linked\"). Only readings that were yours to make, not what they said outright.");
 
 export const TOOLS = [
   tool("search", "Full-text search over everything EV holds: this and every other conversation, every piece of work (its title, brief and results), memory, including earlier versions, the dated history (found by its words or by its dates, such as \"October 2026\"), and imported sessions from other tools. Returns ids with short excerpts and the threads of work each is in; open one with read.", {
@@ -35,21 +48,26 @@ export const TOOLS = [
     id: string("An id from search, the work list or the history, such as work:…, message:…, result:…, memory:…, history:…, session:… or thread:….")
   }),
   tool("reply", "Say something to the person.", {
-    text: string("What to say.")
-  }),
+    text: string("What to say."),
+    call
+  }, ["text"]),
   tool("ask", "Ask the person what only they can settle. Say what you will assume in the meantime, so they can simply let it stand.", {
     questions: strings("The questions, each short and concrete."),
-    assumptions: strings("What you will assume, or are going ahead with, until they answer. Empty if nothing.")
-  }),
+    assumptions: strings("What you will assume, or are going ahead with, until they answer. Empty if nothing."),
+    call
+  }, ["questions", "assumptions"]),
   tool("start_work", "Start a new piece of work. An agent does it in its own session and workspace, organising the job itself, and EV reviews the result against your brief before the person sees it. Start one piece for each separate thing they asked for.", {
     title: string("A few plain words naming the work."),
     request: string("The brief, self-contained: what they want and why, with references resolved from the conversation, what a good result is for this person, and what to assume where they left something open."),
-    notes: strings("Optional: memory ids (memory:…) of what EV knows about the person that bears on this work, such as how they like this kind of result. The agent and the reviewer get only these, each with the situation it was seen in, as background. Leave it empty when nothing does.")
+    notes: strings("Optional: memory ids (memory:…) of what EV knows about the person that bears on this work, such as how they like this kind of result. The agent and the reviewer get only these, each with the situation it was seen in, as background. Leave it empty when nothing does."),
+    read_as: readAs,
+    call
   }, ["title", "request"]),
   tool("message_task", "Tell an existing piece of work something, whatever its state: a change, more detail, the answer to its question, or a follow-up. It steers running work, carries on work that is on hold, and reopens work already delivered; the same agent gets it, in its own session with everything it knows and has made. With stop, that one piece of work is put on hold: its agent stops, what it made is kept, and nothing else is touched.", {
     task: string("The work's id, such as work:…."),
     text: string("What to tell it. May be empty when only stopping."),
-    stop: { type: "boolean", description: "True to put this work on hold." }
+    stop: { type: "boolean", description: "True to put this work on hold." },
+    read_as: readAs
   }, ["task"]),
   tool("regroup", "Organise the threads of work again now, instead of waiting for the next regular run: a stronger model regroups the conversation by the work it is about, creating, merging, splitting and renaming threads. Use it when the person asks for their work to be (re)organised or regrouped. It runs in the background after this turn.", {
     note: string("What the person asked for, in their terms, such as \"keep billing apart from pricing\". Empty if they only asked to organise.")

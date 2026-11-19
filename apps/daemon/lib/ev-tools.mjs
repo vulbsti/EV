@@ -242,6 +242,14 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
   const forgotten = [];
   const regroups = [];
   const done = [];
+  // The calls EV made on its reading of the person, and its readings of their words for a piece of work.
+  const calls = [];
+  const readings = [];
+  const noteCall = (value) => {
+    const made = typeof value?.made === "string" ? value.made.trim().slice(0, 120) : "";
+    if (made) calls.push({ made, why: String(value.why ?? "").trim().slice(0, 300), other: String(value.other ?? "").trim().slice(0, 60) });
+  };
+  const noteReadings = (workId, value) => { for (const text of list(value).slice(0, 6)) readings.push({ workId, text: text.slice(0, 80) }); };
 
   async function findWork(id) {
     const ref = parseRef(store, id);
@@ -257,28 +265,33 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       return JSON.stringify(hits.length ? { hits } : { hits, note: "Nothing matched." });
     },
     read({ id }) { return read(id); },
-    reply({ text }) {
+    reply({ text, call }) {
       said.push(required(text, "text"));
+      noteCall(call);
       return "Added to your message to the person.";
     },
-    ask({ questions, assumptions }) {
+    ask({ questions, assumptions, call }) {
       const asked = list(questions);
       if (!asked.length) throw codedError("INVALID_TOOL_INPUT", "questions is required");
+      noteCall(call);
       const assumed = list(assumptions);
       said.push([asked.map((question) => `- ${question}`).join("\n"), assumed.length ? `Until you say otherwise:\n${assumed.map((assumption) => `- ${assumption}`).join("\n")}` : ""].filter(Boolean).join("\n\n"));
       done.push(`asked: ${asked.join(" ")}`);
       return "Added to your message to the person. Their answer arrives as their next message.";
     },
-    async start_work({ title, request, notes = [] }) {
+    async start_work({ title, request, notes = [], read_as: readAs = [], call }) {
       // The notes EV judged bear on this work, by id; anything that is not a memory is ignored.
       const claims = list(notes).flatMap((id) => { try { const ref = parseRef(store, id); return ref.kind === "memory" ? [ref.key] : []; } catch { return []; } });
       const work = await newWork({ taskId: randomUUID(), title: required(title, "title").slice(0, 140), request: required(request, "request").slice(0, 8_000), notes: claims });
       started.push(work);
+      noteReadings(work.taskId, readAs);
+      noteCall(call);
       done.push(`started work:${work.taskId} "${work.input.metadata.title}"`);
       return JSON.stringify({ work: `work:${work.taskId}`, title: work.input.metadata.title, outcome: "started", note: "It is queued for an agent when this turn ends." });
     },
-    async message_task({ task: id, text = "", stop = false }) {
+    async message_task({ task: id, text = "", stop = false, read_as: readAs = [] }) {
       const task = await findWork(id);
+      noteReadings(task.taskId, readAs);
       const title = task.input?.metadata?.title ?? "untitled";
       const words = typeof text === "string" ? text.trim() : "";
       const heldNow = stopped.some((entry) => entry.taskId === task.taskId);
@@ -402,7 +415,11 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
           else memory.forgetHistoryLine(key);
         }
         if (forgotten.length) store.eraseMessage(message.messageId);
-        const { eventId } = store.handled(item.itemId, { reply, work, data: { action: done.join("; ") || "reply", recentWork } });
+        const { eventId } = store.handled(item.itemId, {
+          reply, work,
+          intent: readings.length ? { readAs: readings } : null,
+          data: { action: done.join("; ") || "reply", recentWork, ...(calls.length ? { calls } : {}) }
+        });
         if (remembered.length) {
           // What EV saved rests on this turn, so forgetting it later follows the link back here.
           memory.addSource({ sourceId: eventId, ownerId, sourceType: "conversation", sourceRef: `event:${eventId}`, metadata: { conversationId } });

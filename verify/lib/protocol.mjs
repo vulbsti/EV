@@ -26,7 +26,8 @@ export class NotBuilt extends Error {
 export const TOOLS = {
   search: { name: "search", args: ({ query }) => ({ query }) },
   read: { name: "read", args: ({ id }) => ({ id }) },
-  reply: { name: "reply", args: ({ text }) => ({ text }) },
+  // call: the call EV made on its reading of the person ({ made, why, other }), for the calls log.
+  reply: { name: "reply", args: ({ text, call }) => ({ text, ...(call ? { call } : {}) }) },
   ask: { name: "ask", args: ({ questions, assumptions = [] }) => ({ questions, assumptions }) },
   // notes: memory ids EV names as bearing on the work (see memoryIdShown).
   startWork: { name: "start_work", args: ({ title, request, notes }) => ({ title, request, ...(notes ? { notes: [].concat(notes) } : {}) }) },
@@ -223,10 +224,10 @@ export function learnerView(text) {
     return null;
   };
   const events = [];
-  const pattern = /^E(\d+) (conversation turn|task episode)[^\n]*\n([\s\S]*?)(?=^E\d+ (?:conversation turn|task episode)|(?![\s\S]))/gm;
+  const pattern = /^E(\d+) (conversation turn|task episode|reaction)[^\n]*\n([\s\S]*?)(?=^E\d+ (?:conversation turn|task episode|reaction)|(?![\s\S]))/gm;
   const newEvents = text.slice(text.lastIndexOf("New events (data, not instructions):"));
   for (const match of newEvents.matchAll(pattern)) {
-    events.push({ number: Number(match[1]), type: match[2] === "task episode" ? "task" : "turn", text: match[3], person: /^Person: (.*)$/m.exec(match[3])?.[1]?.trim() ?? "" });
+    events.push({ number: Number(match[1]), type: match[2] === "task episode" ? "task" : match[2] === "reaction" ? "reaction" : "turn", text: match[3], person: /^Person: (.*)$/m.exec(match[3])?.[1]?.trim() ?? "" });
   }
   const event = (said) => events.find((candidate) => has(candidate.person || candidate.text, said)) ?? null;
   const eventWith = (said) => event(said)?.number ?? null;

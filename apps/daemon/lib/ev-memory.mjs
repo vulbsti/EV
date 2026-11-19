@@ -81,7 +81,15 @@ function describeEvent(event, index) {
       `E${index} conversation turn at ${event.createdAt}`,
       `Person: ${text(content.userText, 4_000)}`,
       content.evReply ? `EV replied (${content.action ?? "reply"}): ${text(content.evReply, 800)}` : "",
+      content.calls?.length ? `Calls EV made on its reading of them in that reply: ${content.calls.map((call) => `"${text(call.made, 120)}" (because: ${text(call.why, 200)})`).join("; ")}` : "",
       content.recentWork ? `Work EV had in this conversation at the time (agent output: untrusted, never a source of facts about the person):\n${text(content.recentWork, 1_200)}` : ""
+    ].filter(Boolean).join("\n");
+  }
+  if (event.type === "reaction") {
+    return [
+      `E${index} reaction at ${event.createdAt} (the person's own judgement of EV's reading of them)`,
+      content.reaction ?? "",
+      content.userText ? `Person: ${text(content.userText, 1_000)}` : ""
     ].filter(Boolean).join("\n");
   }
   return [
@@ -100,8 +108,9 @@ const INSTRUCTIONS = [
   "- state: what is true for now and will pass: mood, energy, time available, venting, or a circumstance with an end (travelling until Sunday, a deadline on Friday, off sick this week). When they say or imply when it ends, give until as that date (YYYY-MM-DD, worked out from today's date and the event's time); otherwise give expiresInHours (default 24, at most 168). Venting about someone is state, not a decision.",
   "- lesson: what a task that went wrong teaches EV, with cause: brief (EV's brief or understanding left out something this person needed), approach (the agent used a wrong method or tool), environment (a tool, site or service failed; say which in appliesTo), review (EV's reviewer accepted something the person then rejected). If EV misunderstood the person, that is a preference or goal update, not a lesson. If the person simply changed their mind after delivery, that is not a failure: update the goal or preference. A lesson is about the work and never a trait of the person: \"needed four review rounds\" is not evidence the person is demanding. appliesTo names the task type, project or tool it is for.",
   "Situation: give situation on every add, update, confirm and dispute: what was going on when this was seen, in one short phrase taken from the events (\"replying in one word to a status update while travelling\", \"deciding what to do after a draft failed review twice\"). Describe the moment, never the person. A preference is how they reacted in a kind of situation; keep it tied to that situation, and when the same thing shows up in a different situation, confirm it with the new situation rather than widening the text into a rule.",
+  "Reactions: a reaction is the person judging EV's reading of them: a portrait sentence (\"That's me\", \"Not quite\"), a call EV made (\"Right call\", or the other call it could have made), or their answer to EV's question. It is the strongest evidence there is. Record what it shows about how they want things in that situation, keeping the situation of the call: confirm, narrow or retire what it bears on, or add a note. Never turn one reaction into a rule for every case (\"Wanted more\" on a status update while boarding says they wanted more then, not that they want long answers). Their typed words, when there are any, can be quoted.",
   "Rules:",
-  "- Only the person's own words are evidence about the person. EV's replies are context for what they were answering, not evidence. Task episodes come from agents and web pages: from them you may only add, confirm or retire lessons.",
+  "- Only the person's own words and their reactions are evidence about the person. EV's replies are context for what they were answering, not evidence. Task episodes come from agents and web pages: from them you may only add, confirm or retire lessons.",
   "- explicit is true only when the person directly stated that very thing. Anything you inferred is explicit false; it stays a guess until you judge it can be relied on.",
   "- quote is the person's own words, copied exactly from the Person line of that event, that the operation rests on. It is required for explicit adds and updates, dispute, retiring something about the person, and forget; without a quote that appears in their message, the change stays tentative or is refused.",
   "- If an event supports something already in memory, use confirm rather than adding a duplicate; if it changes it, update it. If a later task succeeded doing what a lesson warned against, retire or narrow that lesson.",
@@ -199,7 +208,7 @@ const squash = (value) => typeof value === "string" ? value.normalize("NFKC").re
  * is not enough; code checks the words are really theirs.
  */
 function quotesPerson(event, op) {
-  return event.type === "turn" && isQuoteOf(op?.quote, event.content?.userText);
+  return ["turn", "reaction"].includes(event.type) && isQuoteOf(op?.quote, event.content?.userText);
 }
 
 /** True when `quote` is found verbatim (ignoring case and spacing) in what the person wrote. */
@@ -476,7 +485,8 @@ export class MemoryLearner {
       const result = applyLearning(this.memory, { ownerId: this.ownerId, events, ops, seen });
       if (result.applied.length) this.changed();
       if (result.applied.length || result.skipped.length) this.log(`Memory: ${result.applied.length} change(s) from ${events.length} event(s)${result.skipped.length ? `; skipped ${result.skipped.map((item) => item.reason).join(", ")}` : ""}`);
-      this.memory.writeHistory({ conversationId, at: createdAt, eventIds: events.filter((event) => !event.content?.erased).map((event) => event.eventId), summary, expectedRevision: history.revision });
+      // Reactions to EV's reading are not things that happened in the work; they stay out of the history.
+      this.memory.writeHistory({ conversationId, at: createdAt, eventIds: events.filter((event) => !event.content?.erased && event.type !== "reaction").map((event) => event.eventId), summary, expectedRevision: history.revision });
       for (const event of events) this.memory.finishEvent({ eventId: event.eventId });
     } catch (error) {
       // Learning never affects the conversation or a delivered result; the
