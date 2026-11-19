@@ -82,6 +82,28 @@ update() {
   if [ -n "$was_running" ]; then stop; start; fi
 }
 
+# Packs everything KenWise holds (its data folder, with accounts and settings) to move it to another machine.
+export_data() {
+  local to=${1:-kenwise-$(date +%Y%m%d).tar.gz}
+  if running_pid >/dev/null; then echo "Stop KenWise first (kenwise stop), so nothing changes while it is packed." >&2; exit 1; fi
+  [ -d "$DATA" ] || { echo "Nothing to export: $DATA does not exist." >&2; exit 1; }
+  (umask 077; tar -czf "$to" -C "$DATA" --exclude=./kenwise.pid --exclude=./kenwise.log .)
+  echo "Packed $DATA into $to. It holds your accounts' keys: keep it private."
+  echo "On the other machine: kenwise import $to"
+}
+
+import_data() {
+  local from=${1:?Usage: kenwise import <file>}
+  [ -f "$from" ] || { echo "No such file: $from" >&2; exit 1; }
+  if running_pid >/dev/null; then echo "Stop KenWise first (kenwise stop)." >&2; exit 1; fi
+  if [ -n "$(ls -A "$DATA" 2>/dev/null | grep -v -e '^kenwise.log$' -e '^kenwise.pid$')" ]; then
+    echo "$DATA already holds a KenWise. Move it away first, so nothing is overwritten." >&2; exit 1
+  fi
+  mkdir -p "$DATA" && chmod 700 "$DATA"
+  tar -xzf "$from" -C "$DATA"
+  echo "Unpacked into $DATA. Start it with: kenwise start"
+}
+
 case ${1:-help} in
   start) start ;;
   stop) stop ;;
@@ -92,6 +114,8 @@ case ${1:-help} in
   run) cd "$KENWISE_HOME" && exec node apps/daemon/server.mjs ;;
   update) update ;;
   config) echo "$KENWISE_HOME/.env" ;;
+  export) export_data "${2:-}" ;;
+  import) import_data "${2:-}" ;;
   *)
     cat <<EOF
 Usage: kenwise <command>
@@ -105,6 +129,8 @@ Usage: kenwise <command>
   run       run the daemon in this terminal instead
   update    pull the latest KenWise, reinstall, rebuild the agent image, restart if it was running
   config    print the path of the settings file
+  export    pack everything KenWise holds into a file, to move it to another machine
+  import    unpack such a file here (into an empty KenWise)
 
 KenWise lives in $KENWISE_HOME. Its data is in $DATA.
 EOF

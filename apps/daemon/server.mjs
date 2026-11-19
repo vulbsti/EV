@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadDotEnv } from "./lib/env.mjs";
 import { openStore } from "./lib/store.mjs";
@@ -32,6 +33,7 @@ import { StandingResponsibilityScheduler } from "./lib/standing-scheduler.mjs";
 import { assertLoopbackHost, ensurePrivateDirectorySync } from "./lib/file-permissions.mjs";
 import { localRequestRejection } from "./lib/local-request-guard.mjs";
 import { carriesToken, createDaemonToken, sessionCookie, tokenMatches } from "./lib/daemon-token.mjs";
+import { createFiles, grantsFor, placeFromEnv } from "./lib/place.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const webRoot = join(projectRoot, "apps", "web");
@@ -91,7 +93,30 @@ useClock(store.setting("hour12"));
 // When a subscription runs out: switch to a paid route or wait (issue 21). A switch is told once in the conversation.
 const limitDecision = new LimitDecision({ store, routes: currentRoutes(), onSwitch: ({ conversationId, key, content }) => store.recordUpdate({ conversationId, key, content }) });
 void modelLearning.kick();
-const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait, models: modelGuide });
+// Where KenWise runs (EV_PLACE), what agents see of this machine, and the
+// folders the person let them change (place.mjs). KenWise's own settings file
+// and data are never shown to an agent.
+const files = createFiles({
+  store,
+  place: placeFromEnv(),
+  privatePaths: [join(projectRoot, ".env"), dataRoot],
+  workFolder: resolve(process.env.EV_WORK_FOLDER || join(homedir(), "work")),
+  changed: (grant, how) => void filesChanged(grant, how)
+});
+const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait, models: modelGuide, files });
+/** Running work a grant covers is told at its next step; its next turn starts with the folder mounted, or no longer. */
+async function filesChanged(grant, how) {
+  const shown = grant.path.startsWith(`${files.home}/`) ? `~/${grant.path.slice(files.home.length + 1)}` : grant.path;
+  for (const taskId of [...assistantWorkers.activeRuns.keys()]) {
+    const task = await assistantSupervisor.getTask(taskId).catch(() => null);
+    if (!task || !grantsFor([grant], task).length) continue;
+    const text = how === "granted"
+      ? `The person has let you change files in ${shown}. From your next step you can write there directly.`
+      : `The person took back your permission to change ${shown}. From your next step it is read-only for you again; anything that still needs changing there, do on a copy in your workspace and say where it belongs.`;
+    assistantSupervisor.instruct({ taskId, text, source: `files:${grant.id}` });
+    assistantWorkers.steer(taskId, { mode: "next" });
+  }
+}
 await assistantWorkers.start();
 const standingStore = StandingResponsibilityStore.open({ store });
 const githubStandingConnector = new GitHubPullRequestConnector();
@@ -458,12 +483,13 @@ async function handleItem(item) {
     store, supervisor: assistantSupervisor, workers: assistantWorkers, memory: assistantMemory, ownerId: assistantOwnerId, item,
     newWork: (spec) => newWork({ ...spec, conversationId, message }),
     models: modelGuide,
+    files,
     regroup: (note) => { void threadsEngine.regroup({ why: "asked", note }); }
   });
   let closing;
   try {
     ({ text: closing } = await takeTurn({
-      prompt: turnPrompt({ portrait: portraitView(store), profile: memoryView(assistantMemory, assistantOwnerId, { audience: "ev" }).text, history: historyView(assistantMemory), recent: recentConversation(conversationId, message.sequence), work, models: modelGuide.text(), message: message.content }),
+      prompt: turnPrompt({ portrait: portraitView(store), profile: memoryView(assistantMemory, assistantOwnerId, { audience: "ev" }).text, history: historyView(assistantMemory), recent: recentConversation(conversationId, message.sequence), work, models: modelGuide.text(), files: files.picture(), message: message.content }),
       run: turn.run,
       session: sessionHeader(`ev:${message.messageId}`),
       conversationId
@@ -747,6 +773,31 @@ async function handleApi(request, response, url) {
     }
     store.saveSetting("look", look);
     return json(response, 200, { look });
+  }
+  // Files: what agents can read and change on this machine. Only the person, through this page, or their own words to EV, makes a folder writable.
+  if (url.pathname === "/api/assistant/files" && request.method === "GET") return json(response, 200, files.view());
+  if (url.pathname === "/api/assistant/files" && request.method === "POST") {
+    const body = await readJson(request);
+    const list = (value, name) => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value) || value.length > 100 || !value.every((item) => typeof item === "string" && item.length <= 1_000)) throw Object.assign(new Error(`${name} must be a list of paths`), { statusCode: 400 });
+      return value;
+    };
+    try { return json(response, 200, files.saveLists({ readRoots: list(body?.readRoots, "readRoots"), hidden: list(body?.hidden, "hidden") })); }
+    catch (error) { throw Object.assign(error, { statusCode: error.statusCode ?? 400 }); }
+  }
+  if (url.pathname === "/api/assistant/files/grants" && request.method === "POST") {
+    const body = await readJson(request);
+    const task = body?.work ? await assistantSupervisor.getTask(String(body.work).replace(/^work:/, "")).catch(() => null) : null;
+    if (body?.work && !task) throw Object.assign(new Error("No such work"), { statusCode: 404 });
+    try { files.grant({ folder: body?.folder, scope: body?.scope ?? "always", task, source: "settings" }); }
+    catch (error) { throw Object.assign(error, { statusCode: error.statusCode ?? 400 }); }
+    return json(response, 200, files.view());
+  }
+  const grantMatch = url.pathname.match(/^\/api\/assistant\/files\/grants\/([0-9a-f-]{36})$/);
+  if (grantMatch && request.method === "DELETE") {
+    if (!files.revoke(grantMatch[1])) throw Object.assign(new Error("No such grant"), { statusCode: 404 });
+    return json(response, 200, files.view());
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/stream") {
     return openStream(request, response, safeConversation(url));

@@ -232,7 +232,7 @@ export function lookups({ store, supervisor, memory }) {
  * a new piece of work without storing it. Call `run` for each tool call, then
  * `commit` once with what EV said.
  */
-export function createTurn({ store, supervisor, workers, memory, ownerId, item, newWork, regroup = null, models = null, log = console.error }) {
+export function createTurn({ store, supervisor, workers, memory, ownerId, item, newWork, regroup = null, models = null, files = null, log = console.error }) {
   /**
    * EV's choice of model for new work, checked against what the person can
    * reach: { first: { spec, why }, second: { spec, why } }, or null when no
@@ -257,6 +257,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
   const remembered = [];
   const forgotten = [];
   const regroups = [];
+  const granted = [];
   const done = [];
   // The calls EV made on its reading of the person, and its readings of their words for a piece of work.
   const calls = [];
@@ -333,6 +334,19 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       regroups.push(typeof note === "string" ? note.trim().slice(0, 1_000) : "");
       done.push("asked for the threads of work to be organised");
       return "The threads of work are organised again in the background once this turn ends, which takes a minute or two. The person sees what changed where the threads are listed, and can undo it there.";
+    },
+    // A folder becomes writable only on the person's own words in this message.
+    async grant({ folder, scope = "always", work = null, quote }) {
+      if (!files) throw codedError("NOT_AVAILABLE", "Folders cannot be granted here");
+      if (!isQuoteOf(quote, message.content)) throw codedError("NOT_THEIR_WORDS", "Nothing was granted: a folder becomes writable only on the person's own words, and those words are not in their message. Ask them; they can also allow it under Settings, Files.");
+      // Work started in this same turn can be named too: its grant is written with it.
+      const staged = work ? started.find((entry) => `work:${entry.taskId}` === work || entry.taskId === work) : null;
+      const task = staged ?? (work ? await findWork(work) : null);
+      if (scope !== "always" && !task) throw codedError("INVALID_TOOL_INPUT", "work is required for a grant to one piece of work or one goal");
+      const shown = files.check({ folder, scope, task });
+      granted.push({ folder, scope, task });
+      done.push(`made ${shown} writable${scope === "always" ? "" : scope === "goal" ? ` for the goal of work:${task.taskId}` : ` for work:${task.taskId}`}`);
+      return JSON.stringify({ folder: shown, scope, outcome: "granted", note: "Written when this turn ends. Running work it covers is told at its next step and can write there from then on. To have finished work apply its changes now, also tell that work to apply them." });
     },
     remember({ text, quote, kind = "fact" }) {
       const statement = required(text, "text").slice(0, 600);
@@ -442,6 +456,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
           intent: readings.length ? { readAs: readings } : null,
           data: { action: done.join("; ") || "reply", recentWork, ...(calls.length ? { calls } : {}) }
         });
+        for (const entry of granted) entry.record = files.grant({ ...entry, source: `message:${message.messageId}`, notify: false });
         if (remembered.length) {
           // What EV saved rests on this turn, so forgetting it later follows the link back here.
           memory.addSource({ sourceId: eventId, ownerId, sourceType: "conversation", sourceRef: `event:${eventId}`, metadata: { conversationId } });
@@ -455,6 +470,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       // Running work gets what it was told at its next step, not when its turn ends.
       for (const { taskId } of told) if (!queued.includes(taskId)) workers.steer?.(taskId, { mode: "next" });
       for (const note of regroups) regroup(note);
+      for (const { record } of granted) if (record?.added) files.changed(record.grant, "granted");
       for (const { taskId } of stopped) workers.stopRun(taskId).catch((error) => log(`[${new Date().toISOString()}] Could not stop the agent of work:${taskId}: ${error.message}`));
     }
   };

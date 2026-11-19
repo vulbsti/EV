@@ -222,7 +222,10 @@ export class AssistantWorkerService {
     accountWait = () => null,
     // The model a piece of work runs on, and the one its reviewer uses
     // (model-guide.mjs: EV's choice for the work). Null means the defaults.
-    models = null
+    models = null,
+    // What an agent's container sees of this machine (place.mjs):
+    // { forTask(task) -> containerFiles, note(task) -> what the agent is told }.
+    files = null
   }) {
     if (!supervisor) throw codedError("INVALID_SERVICE", "supervisor is required");
     if (typeof workerRoot !== "string" || !workerRoot) throw codedError("INVALID_SERVICE", "workerRoot is required");
@@ -244,6 +247,7 @@ export class AssistantWorkerService {
     this.relay = relay;
     this.accountWait = accountWait;
     this.models = models;
+    this.files = files;
     this.activeRuns = new Map();
     this.reviewer = reviewer;
     this.maxConcurrentWorkers = Math.max(1, Math.min(8, Number(maxConcurrentWorkers) || 3));
@@ -257,7 +261,11 @@ export class AssistantWorkerService {
       ? new OpenClawWorkerAdapter({
         taskId: task.taskId, workspacePath, sessionDir, stallMs: this.stallMs, homeDir: this._home(task.taskId), relay: this.relay,
         ...(this.models ? { model: this.models.forWork(task) } : {}),
-        sandbox: this.openClawSandbox && { ...this.openClawSandbox, mountRoot: task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath }
+        sandbox: this.openClawSandbox && {
+          ...this.openClawSandbox,
+          mountRoot: task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath,
+          files: this.files ? () => this.files.forTask(task) : null
+        }
       })
       : new PiWorkerAdapter({
       executable: this.executable,
@@ -823,7 +831,7 @@ export class AssistantWorkerService {
         "REVIEW.md": renderReviews(active.reviews ?? [])
       });
     }
-    return this._runWorker(active, executionPrompt({ request, brief: active.brief, sharedPath }), { phase: "Starting on the work" });
+    return this._runWorker(active, executionPrompt({ request, brief: active.brief, sharedPath, files: this.files?.note(task) }), { phase: "Starting on the work" });
   }
 
   /**
@@ -843,7 +851,7 @@ export class AssistantWorkerService {
     // The person has just answered, so the stuck check starts over from here.
     if (asked || resting) active.askedAt = { reviews: active.reviews?.length ?? 0, round: active.round };
     const said = await this._takeInstructions(active);
-    const prompt = continuationPrompt({ request, brief: active.brief, answers: asked ? said : [], instructions: asked || resting ? [] : said, cameBack: resting ? { after: stood, said } : null });
+    const prompt = continuationPrompt({ request, brief: active.brief, answers: asked ? said : [], instructions: asked || resting ? [] : said, cameBack: resting ? { after: stood, said } : null, files: this.files?.note(task) });
     // Only an interrupted run may hand in an answer it finished while EV was down.
     return this._runWorker(active, prompt, { reuseCompleted: !asked && !resting && !said.length, phase: asked ? "Carrying on with your answer" : resting ? "Picking this work back up" : "Carrying on where it left off" });
   }

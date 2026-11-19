@@ -7,20 +7,27 @@
 # container its agents run in (if docker is running), and links the `kenwise`
 # command into ~/.local/bin (KENWISE_BIN_DIR). It never uses sudo and installs
 # nothing system-wide. Run it again to update. Options (after `bash -s --`):
-#   --no-image   skip building the agent container
+#   --no-image        skip building the agent container
+#   --place cloud     this is a machine you rent for KenWise, not your own computer
+#                     (agents get a shared work folder instead of a read-only view
+#                     of your home; see docs/configuration.md). Default: local.
 set -euo pipefail
 
 main() {
   local repo=${KENWISE_REPO:-https://github.com/vulbsti/KenWise}
   local home=${KENWISE_HOME:-$HOME/.kenwise}
   local bin_dir=${KENWISE_BIN_DIR:-$HOME/.local/bin}
-  local need_node=22.19.0 build_image=yes
-  for arg in "$@"; do
-    case $arg in
+  local need_node=22.19.0 build_image=yes place=""
+  while [ $# -gt 0 ]; do
+    case $1 in
       --no-image) build_image="" ;;
-      *) fail "Unknown option: $arg" ;;
+      --place) place=${2:-}; shift ;;
+      --place=*) place=${1#--place=} ;;
+      *) fail "Unknown option: $1" ;;
     esac
+    shift
   done
+  case $place in ""|local|cloud) ;; *) fail "--place is local or cloud, not $place" ;; esac
 
   case $(uname -s) in
     Darwin) os=macos ;;
@@ -62,6 +69,13 @@ main() {
     chmod 600 "$home/.env"
     ok "Settings file created: $home/.env"
   fi
+  if [ -n "$place" ]; then
+    grep -v '^[[:space:]]*EV_PLACE[[:space:]]*=' "$home/.env" >"$home/.env.new" || true
+    echo "EV_PLACE=$place" >>"$home/.env.new"
+    mv "$home/.env.new" "$home/.env"
+    chmod 600 "$home/.env"
+    ok "KenWise runs here as: $place"
+  fi
 
   if [ -n "$build_image" ] && [ -n "$docker_ok" ]; then
     say "Building the agent container (a few minutes the first time)"
@@ -78,6 +92,12 @@ main() {
   if grep -q '^OPENCODE_API=$' "$home/.env"; then echo "  Put your model key in $home/.env (OPENCODE_API=...)."; fi
   echo "  Run: kenwise open"
   if [ -z "$docker_ok" ]; then echo "  Then start docker and run: kenwise update   (builds the agent container)"; fi
+  if grep -q '^EV_PLACE=cloud' "$home/.env"; then
+    echo
+    echo "KenWise listens only on this machine. To reach it from your own devices:"
+    echo "  Tailscale:  tailscale serve --bg 4317   (then open the address it prints, with ?token= from kenwise status)"
+    echo "  SSH:        ssh -N -L 4317:127.0.0.1:4317 <this machine>   (then open the kenwise status link on your computer)"
+  fi
   case ":$PATH:" in
     *":$bin_dir:"*) ;;
     *) echo; echo "$bin_dir is not on your PATH. Add this line to your shell profile, then open a new terminal:"

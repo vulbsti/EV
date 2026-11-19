@@ -1148,7 +1148,7 @@ function closeSheets({ restore = true } = {}) {
 $("open-find").addEventListener("click", (event) => openSheet("sheet-find", event.currentTarget));
 $("open-work").addEventListener("click", (event) => openSheet("sheet-work", event.currentTarget));
 $("open-you").addEventListener("click", (event) => { openSheet("sheet-you", event.currentTarget); void showUnderstanding(); });
-$("open-look").addEventListener("click", (event) => { openSheet("sheet-settings", event.currentTarget); settingsTab(["models", "accounts", "look"].find((name) => root.classList.contains(`stab-${name}`)) ?? "models"); });
+$("open-look").addEventListener("click", (event) => { openSheet("sheet-settings", event.currentTarget); settingsTab(["models", "accounts", "files", "look"].find((name) => root.classList.contains(`stab-${name}`)) ?? "models"); });
 $("scrim").addEventListener("click", () => closeSheets());
 for (const button of document.querySelectorAll("[data-close]")) button.addEventListener("click", () => closeSheets());
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSheets(); });
@@ -1745,6 +1745,60 @@ const LIMIT_EXPLAIN = {
 };
 let modelsView = null;
 
+// Files: what agents can read and change on this machine (the daemon's place.mjs).
+const SCOPE_LABEL = { always: "For all work", goal: "For one goal", work: "For one piece of work" };
+async function filesCall(path = "", { method = "GET", body } = {}) {
+  const response = await fetch(`/api/assistant/files${path}`, { method, cache: "no-store", ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }) });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `HTTP ${response.status}`);
+  return response.json();
+}
+let filesNow = null;
+const shortPath = (path) => filesNow && path.startsWith(`${filesNow.home}/`) ? `~/${path.slice(filesNow.home.length + 1)}` : filesNow && path === filesNow.home ? "~ (your home)" : path;
+const empty = (text) => `<div class="row"><div class="row-m"><span class="row-s">${escapeHtml(text)}</span></div></div>`;
+function renderFiles() {
+  const files = filesNow;
+  root.classList.toggle("place-cloud", files.place === "cloud");
+  $("files-lede").textContent = files.place === "cloud"
+    ? `KenWise runs on a cloud machine. Each piece of work has its own computer there, and all of them can change ${shortPath(files.workFolder)}.`
+    : "Each piece of work has its own computer. It can read your files, but changes only its own copy unless you let it change a folder here. When it needs a folder it can't change, it works on a copy and I ask you before applying it.";
+  $("files-grants").innerHTML = files.grants.map((grant) => `<div class="row"><div class="row-m"><span class="row-t mono">${escapeHtml(grant.shown)}</span><span class="row-s">${escapeHtml(SCOPE_LABEL[grant.scope] ?? grant.scope)}${grant.source?.startsWith("message:") ? ", from what you told me" : ""}</span></div><button class="lnk" type="button" data-revoke="${escapeHtml(grant.id)}">Take back</button></div>`).join("")
+    || empty(files.place === "cloud" ? "Only the work folder." : "No folders yet. Agents change only their own copies.");
+  $("files-read").innerHTML = files.readRoots.map((path, index) => `<div class="row"><div class="row-m"><span class="row-t mono">${escapeHtml(shortPath(path))}</span><span class="row-s">Read only</span></div>${index ? `<button class="lnk" type="button" data-unread="${escapeHtml(path)}">Remove</button>` : ""}</div>`).join("");
+  $("files-hidden-default").textContent = `Always hidden: keys and credentials (${files.defaultHidden.filter((name) => /ssh|gnupg|aws|azure|gcloud|kube|netrc|credentials/.test(name)).join(", ")}), browser profiles, password managers, other AI tools' sign-ins, shell history, KenWise's own data, and .env files in folders agents can change.`;
+  $("files-hidden").innerHTML = files.hidden.map((path) => `<div class="row"><div class="row-m"><span class="row-t mono">${escapeHtml(path)}</span></div><button class="lnk" type="button" data-unhide="${escapeHtml(path)}">Remove</button></div>`).join("") || "";
+}
+async function loadFiles() {
+  try { filesNow = await filesCall(); renderFiles(); $("files-status").textContent = ""; }
+  catch (error) { $("files-status").textContent = `Could not load your files settings: ${error.message}`; }
+}
+async function filesAct(run) {
+  $("files-status").textContent = "";
+  try { filesNow = await run(); renderFiles(); return true; } catch (error) { $("files-status").textContent = error.message; return false; }
+}
+$("grant-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const folder = $("grant-folder").value.trim();
+  if (folder && await filesAct(() => filesCall("/grants", { method: "POST", body: { folder, scope: "always" } }))) $("grant-folder").value = "";
+});
+$("read-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const folder = $("read-folder").value.trim();
+  if (folder && await filesAct(() => filesCall("", { method: "POST", body: { readRoots: [...filesNow.readRoots.slice(1), folder] } }))) $("read-folder").value = "";
+});
+$("hide-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const path = $("hide-path").value.trim();
+  if (path && await filesAct(() => filesCall("", { method: "POST", body: { hidden: [...filesNow.hidden, path] } }))) $("hide-path").value = "";
+});
+$("sheet-look").addEventListener("click", (event) => {
+  const revoke = event.target.closest("[data-revoke]")?.dataset.revoke;
+  if (revoke) void filesAct(() => filesCall(`/grants/${revoke}`, { method: "DELETE" }));
+  const unread = event.target.closest("[data-unread]")?.dataset.unread;
+  if (unread) void filesAct(() => filesCall("", { method: "POST", body: { readRoots: filesNow.readRoots.slice(1).filter((path) => path !== unread) } }));
+  const unhide = event.target.closest("[data-unhide]")?.dataset.unhide;
+  if (unhide) void filesAct(() => filesCall("", { method: "POST", body: { hidden: filesNow.hidden.filter((path) => path !== unhide) } }));
+});
+
 async function setupCall(path, { method = "GET", body } = {}) {
   const response = await fetch(`/api/assistant/setup${path}`, { method, cache: "no-store", ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }) });
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `HTTP ${response.status}`);
@@ -1812,11 +1866,12 @@ async function modelsAct(run) {
 }
 
 function settingsTab(name) {
-  root.classList.remove("stab-models", "stab-accounts", "stab-look");
+  root.classList.remove("stab-models", "stab-accounts", "stab-files", "stab-look");
   root.classList.add(`stab-${name}`);
   for (const tab of $("settings-tabs").querySelectorAll("[data-stab]")) tab.setAttribute("aria-pressed", String(tab.dataset.stab === name));
   if (name === "models") void loadModels();
   if (name === "accounts") void loadAccounts();
+  if (name === "files") void loadFiles();
 }
 $("settings-tabs").addEventListener("click", (event) => {
   const button = event.target.closest("[data-stab]");
