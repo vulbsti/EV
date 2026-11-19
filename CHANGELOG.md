@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - One-line installer for macOS and Linux (`install.sh`) and a `kenwise` command to start, stop, open and update the daemon.
+- Live steps for running work: KenWise reads each agent's transcript into steps with labels made by code (commands sorted into read, list, search or run), keeps finished steps in their own log, and keeps a status record per piece of work with its "now" line (the latest step, at most every 15 seconds), state, round and model. The page's stream carries steps and status records without resending the whole piece of work, and `GET /api/assistant/tasks/:id/steps` pages back through them. Steps replace the old fixed progress sentences.
 - README, docs and project files for open-source use: configuration guide, roadmap, contributing guide, AGENTS.md, security policy, code of conduct, issue and pull request templates, CI.
 
 ## [0.1.0] - 2026-11-13

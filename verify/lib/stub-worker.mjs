@@ -42,13 +42,13 @@ function standInUrl() {
 let provider = "opencode-go", model = "gpt-6-luna";
 try { [provider, model] = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8")).agents.defaults.model.primary.split(/\/(.*)/); } catch {}
 
-function record(message) {
+function record(message, role = "assistant") {
   const path = join(home, ".openclaw", "agents", "ev-worker", "agent", "openclaw-agent.sqlite");
   mkdirSync(dirname(path), { recursive: true });
   const database = new DatabaseSync(path);
   try {
     database.exec("PRAGMA busy_timeout = 2000; CREATE TABLE IF NOT EXISTS transcript_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, event_json TEXT, event_zstd BLOB)");
-    database.prepare("INSERT INTO transcript_events (session_id, event_json) VALUES (?, ?)").run(taskId, JSON.stringify({ type: "message", message: { role: "assistant", provider, model, ...message } }));
+    database.prepare("INSERT INTO transcript_events (session_id, event_json) VALUES (?, ?)").run(taskId, JSON.stringify({ type: "message", message: role === "assistant" ? { role, provider, model, ...message } : { role, ...message } }));
   } finally { database.close(); }
 }
 
@@ -59,10 +59,19 @@ const response = await fetch(`${url}/worker`, {
   body: JSON.stringify({ taskId, prompt: flag("--message") ?? "", cwd, home, files: listing(cwd), homeFiles: listing(join(home, ".openclaw"), 200), pid: process.pid })
 });
 const plan = await response.json();
+// An agent slow to stop: it keeps working through SIGTERM until it is killed.
+if (plan.ignoresStop) process.on("SIGTERM", () => {});
 
 for (const step of plan.steps ?? []) {
   if (step.waitMs) await sleep(step.waitMs);
   if (step.progress) record({ stopReason: "toolUse", content: [{ type: "text", text: step.progress }, { type: "toolCall", name: "exec" }], usage: step.usage ?? { input: 100, output: 20 } });
+  // A real tool call ({ name, arguments }), and its result after `takesMs`.
+  if (step.call) {
+    const id = `call-${Math.random().toString(36).slice(2, 10)}`;
+    record({ stopReason: "toolUse", content: [{ type: "toolCall", id, ...step.call }], usage: step.usage ?? { input: 100, output: 20 } });
+    if (step.takesMs) await sleep(step.takesMs);
+    record({ toolCallId: id, toolName: step.call.name, isError: Boolean(step.fails), content: [{ type: "text", text: step.output ?? "" }], details: { exitCode: step.fails ? 1 : 0 } }, "toolResult");
+  }
 }
 for (const [path, contents] of Object.entries(plan.files ?? {})) {
   const target = path.startsWith("~/") ? join(home, path.slice(2)) : isAbsolute(path) ? path : join(cwd, path);

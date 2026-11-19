@@ -218,8 +218,9 @@ function taskLine(task) {
   if (task.status === "completed") return task.result?.summary ?? (isOpenClaw ? report?.outcome === "blocked" ? "The agent could not achieve the requested outcome. The reason is in the details." : report?.outcome === "partial" ? "Useful work is ready, with unfinished parts or concerns listed in the details." : "The requested work is ready." : isR1 ? "Finished with a draft, review receipt, and materially different final." : "Finished and verified.");
   if (task.status === "queued") return "Saved and waiting for its agent.";
   if (task.status === "waiting") { const question = task.history?.findLast((event) => event.type === "input_needed")?.question; return question ? `Paused until you answer: ${question}` : "Paused until you answer the question above."; }
-  if (task.status === "verifying") return task.progress?.message ? `Now: ${task.progress.message}` : "Checking the result against its brief.";
-  return task.progress?.message ? `Now: ${task.progress.message}` : isOpenClaw ? "An agent is working in this task's workspace." : "The reviewed worker is using its task workspace.";
+  if (task.live?.now) return `Now: ${task.live.now}`;
+  if (task.status === "verifying") return "Checking the result against its brief.";
+  return isOpenClaw ? "An agent is working in this task's workspace." : "The reviewed worker is using its task workspace.";
 }
 
 const fileName = (file) => file.title || String(file.relativePath ?? "file").split("/").at(-1);
@@ -497,6 +498,11 @@ function applySnapshot(data) {
 function applyChange(data) {
   upsertMessages(data.messages);
   upsertTasks(data.tasks);
+  // A piece of work's status record comes whole; it replaces the one the page had.
+  for (const record of data.live ?? []) {
+    const task = tasks.get(record.taskId);
+    if (task) tasks.set(record.taskId, { ...task, live: record });
+  }
   if (typeof data.thinking === "boolean") thinking = data.thinking;
   render();
 }

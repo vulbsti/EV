@@ -216,7 +216,11 @@ export class OpenClawWorkerAdapter {
     this.executable = executable;
   }
 
-  async start({ runId, prompt, reuseCompleted = true, budget = null, onUsage = null, onProgress = null }) {
+  /**
+   * onEvents receives this turn's new transcript events as they are read
+   * (about once a second), for the live steps. It must not throw or block.
+   */
+  async start({ runId, prompt, reuseCompleted = true, budget = null, onUsage = null, onProgress = null, onEvents = null }) {
     if (!process.env.OPENCODE_API) {
       return { runId, completion: Promise.resolve({ status: "failed", code: "OPENCODE_KEY_MISSING", message: "OPENCODE_API is not configured" }) };
     }
@@ -262,7 +266,11 @@ export class OpenClawWorkerAdapter {
       live.seq = lastSeq;
       live.events.push(...events);
       accumulateUsage(events, live);
-      if (events.length) { live.progressAt = Date.now(); onProgress?.(); }
+      if (events.length) {
+        live.progressAt = Date.now();
+        onProgress?.();
+        try { onEvents?.(events); } catch { /* the live view never stops the agent */ }
+      }
     };
     run.completion = new Promise((resolve) => {
       let settled = false;
