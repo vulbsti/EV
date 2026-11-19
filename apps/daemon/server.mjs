@@ -210,7 +210,7 @@ async function streamSnapshot(conversationId) {
     if (isConversationWork(task, conversationId)) tasks.push(streamedTask(task));
   }
   const earlier = messages.length ? store.messagesBefore(conversationId, messages[0].sequence, 1).length > 0 : false;
-  return { seq, data: { messages: messages.map(publicMessage), tasks, thinking: thinkingIn(conversationId), earlier } };
+  return { seq, data: { messages: messages.map(publicMessage), tasks, thinking: thinkingIn(conversationId), earlier, look: store.setting("look") } };
 }
 
 /** One frame for the events after `after`: the latest version of each message and piece of work they touched. */
@@ -219,6 +219,7 @@ async function streamChange(conversationId, after) {
   if (!events.length) return null;
   const messageIds = new Set();
   const workIds = new Set();
+  const look = events.some((event) => event.type === "setting" && event.data?.key === "look");
   for (const event of events) {
     if (event.messageId) messageIds.add(event.messageId);
     if (event.workId) workIds.add(event.workId);
@@ -237,8 +238,8 @@ async function streamChange(conversationId, after) {
     if (isConversationWork(task, conversationId)) tasks.push(streamedTask(task));
   }
   const seq = events.at(-1).seq;
-  if (!messages.size && !tasks.length) return { seq, data: null };
-  return { seq, data: { messages: [...messages.values()], tasks, thinking: thinkingIn(conversationId) } };
+  if (!messages.size && !tasks.length && !look) return { seq, data: null };
+  return { seq, data: { messages: [...messages.values()], tasks, thinking: thinkingIn(conversationId), ...(look ? { look: store.setting("look") } : {}) } };
 }
 
 /**
@@ -534,6 +535,17 @@ async function handleApi(request, response, url) {
       return json(response, 200, { conversationId, messages: messages.map(publicMessage), earlier });
     }
     return json(response, 200, { conversationId, ...await publicConversation(conversationId, after) });
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/settings/look") {
+    // The page's look, saved here so it follows the person to every device; the page checks the choices.
+    const body = await readJson(request);
+    const look = body?.look;
+    if (!look || typeof look !== "object" || Array.isArray(look) || Object.keys(look).length > 20
+      || !Object.entries(look).every(([key, value]) => /^[a-z]{1,20}$/.test(key) && typeof value === "string" && /^[a-z-]{1,20}$/.test(value))) {
+      throw Object.assign(new Error("look must be a small object of short names"), { statusCode: 400 });
+    }
+    store.saveSetting("look", look);
+    return json(response, 200, { look });
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/stream") {
     return openStream(request, response, safeConversation(url));

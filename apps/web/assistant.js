@@ -489,6 +489,7 @@ function applySnapshot(data) {
   upsertTasks(data.tasks);
   thinking = Boolean(data.thinking);
   earlier = Boolean(data.earlier);
+  takeLook(data.look);
   loaded = true;
   render();
   toBottom();
@@ -498,6 +499,7 @@ function applyChange(data) {
   upsertMessages(data.messages);
   upsertTasks(data.tasks);
   if (typeof data.thinking === "boolean") thinking = data.thinking;
+  if (data.look) takeLook(data.look);
   render();
 }
 
@@ -737,6 +739,16 @@ try {
   for (const [key, choices] of Object.entries(LOOK_CHOICES)) if (choices.includes(saved?.[key])) look[key] = saved[key];
 } catch {}
 
+/** A look saved by KenWise (from this or another device) wins over the one this browser remembered. */
+function takeLook(saved) {
+  if (!saved || typeof saved !== "object") return;
+  let changed = false;
+  for (const [key, choices] of Object.entries(LOOK_CHOICES)) if (choices.includes(saved[key]) && look[key] !== saved[key]) { look[key] = saved[key]; changed = true; }
+  if (!changed) return;
+  try { localStorage.setItem(LOOK_KEY, JSON.stringify(look)); } catch {}
+  applyLook();
+}
+
 function applyLook() {
   for (const [key, choices] of Object.entries(LOOK_CHOICES)) for (const choice of choices) root.classList.toggle(`${key}-${choice}`, look[key] === choice);
   for (const button of document.querySelectorAll("[data-look]")) {
@@ -757,6 +769,7 @@ $("sheet-look").addEventListener("click", (event) => {
   look[key] = value;
   applyLook();
   try { localStorage.setItem(LOOK_KEY, JSON.stringify(look)); } catch {}
+  fetch("/api/assistant/settings/look", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ look }) }).catch(() => {});
 });
 
 // ---------- Search ----------
