@@ -293,6 +293,8 @@ export class AssistantMemoryStore {
       this.database.prepare("INSERT INTO memory_tombstones (tombstone_id, owner_id, target_type, target_id, action, scope, expires_at, erase_epoch, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(id, ownerId, targetType, targetId, action, scope, normalizedExpiresAt, epoch, timestamp);
       if (action === "erase") this._redact(targetType === "source" ? [targetId] : this._evidenceSourceIds(targetId), targetType === "claim" ? targetId : null);
+      // Stopped is stopped now: a portrait sentence resting on it is written again without it.
+      else if (targetType === "claim") this.store.dropFromPortrait(`memory:${targetId}`);
       this._nextMemoryRevision();
       return { tombstoneId: id, ownerId, targetType, targetId, action, scope, expiresAt: normalizedExpiresAt, eraseEpoch: epoch, createdAt: timestamp };
     });
@@ -307,6 +309,8 @@ export class AssistantMemoryStore {
     if (claimId) {
       this.database.prepare("UPDATE memory_revisions SET value_json = 'null' WHERE claim_id = ? AND revision_id IS NOT ?").run(claimId, keepRevisionId);
       if (!keepRevisionId) this.database.prepare("DELETE FROM memory_situations WHERE claim_id = ?").run(claimId);
+      // A portrait sentence resting on it may say what was forgotten.
+      this.store.dropFromPortrait(`memory:${claimId}`);
     }
     for (const sourceId of sourceIds) this.forgetEvent(sourceId);
     this.store.erased();

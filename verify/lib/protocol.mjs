@@ -28,7 +28,8 @@ export const TOOLS = {
   read: { name: "read", args: ({ id }) => ({ id }) },
   reply: { name: "reply", args: ({ text }) => ({ text }) },
   ask: { name: "ask", args: ({ questions, assumptions = [] }) => ({ questions, assumptions }) },
-  startWork: { name: "start_work", args: ({ title, request }) => ({ title, request }) },
+  // notes: memory ids EV names as bearing on the work (see memoryIdShown).
+  startWork: { name: "start_work", args: ({ title, request, notes }) => ({ title, request, ...(notes ? { notes: [].concat(notes) } : {}) }) },
   // Checks name work by its title; EV knows it by the id its work list shows.
   messageTask: { name: "message_task", args: ({ task, text = "", stop = false }, shown = "") => ({ task: workId(shown, task) ?? task, text, stop }) },
   // quote is the person's own words the memory rests on; without one it is a guess.
@@ -248,4 +249,25 @@ export function learnerView(text) {
     /** The person asked EV to forget something that another memory's situations name; that memory stays. */
     forgottenSituations: (said, about) => { const found = event(said), id = memoryId(about); return found && id ? { op: "forget", id, part: "situations", ...own(found) } : null; }
   };
+}
+
+/**
+ * What a portrait writer script needs from its prompt: the id of a note (n…)
+ * or of a current portrait sentence (p…), found by a few of its words.
+ */
+export function portraitWriterView(text) {
+  const find = (pattern, about) => {
+    for (const line of text.split("\n")) {
+      const match = pattern.exec(line);
+      if (match && line.toLowerCase().includes(String(about).toLowerCase())) return match[1];
+    }
+    return null;
+  };
+  return { noteId: (about) => find(/^(n\d+) \[/, about), lineId: (about) => find(/^(p\d+) "/, about) };
+}
+
+/** The memory:… id EV1 was shown on the line about `about`, or null. */
+export function memoryIdShown(text, about) {
+  for (const line of text.split("\n")) if (line.toLowerCase().includes(String(about).toLowerCase())) { const match = /\[(memory:[^\]]+)\]/.exec(line); if (match) return match[1]; }
+  return null;
 }

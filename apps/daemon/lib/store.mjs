@@ -209,6 +209,36 @@ CREATE TABLE IF NOT EXISTS memory_situations (
   PRIMARY KEY (claim_id, source_id)
 );
 CREATE INDEX IF NOT EXISTS memory_situations_source ON memory_situations (source_id);
+-- The portrait: a few sentences in EV's words about who the person is, each
+-- resting on evidence (ref: memory:<claim id>, or event:<event id> for a
+-- reaction). A version is the whole portrait as written at one time; every
+-- earlier one is kept. A line keeps its id across versions, so a sentence can
+-- be followed through its rewrites. revision is the memory's revision when
+-- the line was written. Erasing evidence blanks every line that rests on it.
+CREATE TABLE IF NOT EXISTS portrait_versions (
+  version_id TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  why TEXT NOT NULL,
+  question TEXT,
+  options_json TEXT,
+  memory_revision INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS portrait_lines (
+  version_id TEXT NOT NULL REFERENCES portrait_versions(version_id),
+  line_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  text TEXT,
+  why TEXT,
+  written_at TEXT NOT NULL,
+  PRIMARY KEY (version_id, line_id)
+);
+CREATE TABLE IF NOT EXISTS portrait_evidence (
+  version_id TEXT NOT NULL REFERENCES portrait_versions(version_id),
+  line_id TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  PRIMARY KEY (version_id, line_id, ref)
+);
+CREATE INDEX IF NOT EXISTS portrait_evidence_ref ON portrait_evidence (ref);
 CREATE TABLE IF NOT EXISTS memory_context_manifests (
   manifest_id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL,
@@ -807,7 +837,7 @@ export function openStore({ path = ":memory:" } = {}) {
       for (const id of ids) {
         db.prepare("UPDATE messages SET content = ?, intent_json = NULL WHERE message_id = ?").run(ERASED_TEXT, id);
         db.prepare("UPDATE events SET data_json = ? WHERE message_id = ?").run(ERASED_DATA, id);
-        for (const row of db.prepare("SELECT event_id FROM events WHERE message_id = ?").all(id)) { dropFromHistory(row.event_id); dropSituations(row.event_id); }
+        for (const row of db.prepare("SELECT event_id FROM events WHERE message_id = ?").all(id)) { dropFromHistory(row.event_id); dropSituations(row.event_id); dropFromPortrait(`event:${row.event_id}`); }
         dropFromThreads(`message:${id}`);
       }
       // So an open page hears that these words are gone.
@@ -824,6 +854,23 @@ export function openStore({ path = ":memory:" } = {}) {
     db.prepare("DELETE FROM memory_situations WHERE source_id = ?").run(eventId);
   }
 
+  /**
+   * Blanks the words of every portrait line, in every version, that rests on
+   * `ref` (memory:<claim id> or event:<event id>), and that version's
+   * question, which may name it too. The portrait is then written again from
+   * what remains (meta portrait_forgot).
+   */
+  function dropFromPortrait(ref) {
+    const hit = db.prepare("SELECT DISTINCT version_id, line_id FROM portrait_evidence WHERE ref = ?").all(ref);
+    if (!hit.length) return;
+    for (const { version_id: version, line_id: line } of hit) {
+      db.prepare("UPDATE portrait_lines SET text = NULL, why = NULL WHERE version_id = ? AND line_id = ?").run(version, line);
+      db.prepare("UPDATE portrait_versions SET question = NULL, options_json = NULL WHERE version_id = ?").run(version);
+    }
+    db.prepare("INSERT INTO meta (key, value) VALUES ('portrait_forgot', 1) ON CONFLICT(key) DO UPDATE SET value = 1").run();
+    scrubAfterCommit = true;
+  }
+
   /** Blanks one event, takes it out of the history, and follows its link to the message it records. */
   function eraseEvent(eventId) {
     tx(() => {
@@ -832,6 +879,7 @@ export function openStore({ path = ":memory:" } = {}) {
       db.prepare("UPDATE events SET data_json = ? WHERE event_id = ?").run(ERASED_DATA, eventId);
       dropFromHistory(eventId);
       dropSituations(eventId);
+      dropFromPortrait(`event:${eventId}`);
       if (row.message_id) eraseMessage(row.message_id);
       scrubAfterCommit = true;
     });
@@ -873,7 +921,7 @@ export function openStore({ path = ":memory:" } = {}) {
   return {
     db, path, tx, now, counter, bump, event, events, getEvent, onChange, setting, saveSetting, lastSeq, eventsAfter,
     receive, toAgent, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messagesByIds, messageWithReplies, listTurns,
-    eraseMessage, eraseEvent, eraseOutsideMessage, erased, search,
+    eraseMessage, eraseEvent, eraseOutsideMessage, erased, dropFromPortrait, search,
     close: () => db.close()
   };
 }

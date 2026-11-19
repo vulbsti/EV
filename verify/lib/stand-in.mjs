@@ -6,7 +6,7 @@
 // decision ("EV1 searches, then answers") is tested without a real model.
 import { createServer } from "node:http";
 import {
-  NotBuilt, TOOLS, dialectOf, learnerView, offeredTools, personMessage, roleOf, shownText,
+  NotBuilt, TOOLS, dialectOf, learnerView, offeredTools, portraitWriterView, personMessage, roleOf, shownText,
   streamEvents, textResponse, today, toolCallResponse, toolResults, workerReport, workerTurnKind
 } from "./protocol.mjs";
 
@@ -65,7 +65,8 @@ export async function startStandIn(script = {}) {
       reply: (text) => ({ final: true, said: String(text) }),
       accept: (review = {}) => ({ final: true, review: { ...review, verdict: "accept" } }),
       revise: (review = {}) => ({ final: true, review: { ...review, verdict: "revise" } }),
-      ...(role === "learner" ? learnerView(call.text) : {})
+      ...(role === "learner" ? learnerView(call.text) : {}),
+      ...(role === "portrait" ? portraitWriterView(call.text) : {})
     };
     // The turn's last call: once its result comes back, the turn ends.
     const lastCall = (name, args) => { const id = `call_${++callSeq}`; closing.add(id); return toolCallResponse(dialect, { id, name, args }); };
