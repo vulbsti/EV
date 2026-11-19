@@ -65,10 +65,14 @@ An account that hits its usage limit is marked limited until its reset time, and
 - `EV_PLACE` (default `local`): `local` is your own computer, `cloud` a machine you rent for KenWise. The installer writes it (`install.sh --place cloud`). The code is the same in both; the place only sets what agents see:
   - **local**: each piece of work runs in its own container (its own system, tools and browser, where it may do anything). Your home is shown inside read-only at its real path; secret places are hidden (SSH and cloud keys, browser profiles, password managers, other AI tools' sign-ins, shell history, KenWise's own settings file and data, and `.env` files in folders agents can change). Agents change only their own workspace and the folders you let them change.
   - **cloud**: nothing of the machine's home is shown, and every piece of work may change one work folder, `EV_WORK_FOLDER` (default `~/work`).
-- Letting agents change a folder: Settings, Files, or tell KenWise in the conversation ("yes, you can edit ~/proj/site"). A grant lasts for all work, one goal, or one piece of work, and can be taken back on the Files screen. Running work picks up a change at its next step. Nothing an agent or a web page says can make a folder writable. Without a grant, an agent works on a copy in its workspace and KenWise asks you before applying it.
+- Letting agents change a folder: Settings, Files, or tell KenWise in the conversation ("yes, you can edit ~/proj/site"); a grant made from your words shows under KenWise's reply with Take back. A grant lasts for all work, one goal, or one piece of work (until it is delivered), and can be taken back on the Files screen. Running work picks up a change at its next step. Nothing an agent or a web page says can make a folder writable. Without a grant, an agent works on a copy in its workspace and KenWise asks you before applying it.
+- Never writable: the secret places above and KenWise itself (its program and data). Your whole home, or a place you added to read, can be made writable only with your own click on the Files screen; even then KenWise's program and what your shell runs at start (`.bashrc`, `.zshrc`, `.profile`, `~/.local/bin` and the like) stay read-only.
+- Not hidden: a secret inside a folder agents can only read, such as a `.env` file in another project, can be read by them.
+- In the cloud, grants are not used: every piece of work may change the work folder.
+- If no docker or podman answers, work does not start and says so, and the Files screen says why.
 - More places to read, and more to hide, are on the same screen.
 - `EV_CONTAINER_CLI` (default: `docker`, else `podman` if that is what is installed): the container command. Docker Desktop, OrbStack and Colima on macOS all provide `docker`. `EV_OPENCLAW_IMAGE` overrides the image name.
-- `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you, with none of the above. Only for testing.
+- `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you, with none of the above; agents, KenWise and the Files screen all say so. Only for testing.
 
 ### Reaching a cloud KenWise
 

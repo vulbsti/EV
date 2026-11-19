@@ -343,7 +343,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       const staged = work ? started.find((entry) => `work:${entry.taskId}` === work || entry.taskId === work) : null;
       const task = staged ?? (work ? await findWork(work) : null);
       if (scope !== "always" && !task) throw codedError("INVALID_TOOL_INPUT", "work is required for a grant to one piece of work or one goal");
-      const shown = files.check({ folder, scope, task });
+      const shown = files.check({ folder, scope, task, fromWords: true });
       granted.push({ folder, scope, task });
       done.push(`made ${shown} writable${scope === "always" ? "" : scope === "goal" ? ` for the goal of work:${task.taskId}` : ` for work:${task.taskId}`}`);
       return JSON.stringify({ folder: shown, scope, outcome: "granted", note: "Written when this turn ends. Running work it covers is told at its next step and can write there from then on. To have finished work apply its changes now, also tell that work to apply them." });

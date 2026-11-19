@@ -33,7 +33,7 @@ import { StandingResponsibilityScheduler } from "./lib/standing-scheduler.mjs";
 import { assertLoopbackHost, ensurePrivateDirectorySync } from "./lib/file-permissions.mjs";
 import { localRequestRejection } from "./lib/local-request-guard.mjs";
 import { carriesToken, createDaemonToken, sessionCookie, tokenMatches } from "./lib/daemon-token.mjs";
-import { createFiles, grantsFor, placeFromEnv } from "./lib/place.mjs";
+import { containerCli, containerProblem, createFiles, grantsFor, placeFromEnv } from "./lib/place.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const webRoot = join(projectRoot, "apps", "web");
@@ -99,7 +99,9 @@ void modelLearning.kick();
 const files = createFiles({
   store,
   place: placeFromEnv(),
+  contained: process.env.EV_OPENCLAW_SANDBOX !== "host",
   privatePaths: [join(projectRoot, ".env"), dataRoot],
+  programPaths: [projectRoot],
   workFolder: resolve(process.env.EV_WORK_FOLDER || join(homedir(), "work")),
   changed: (grant, how) => void filesChanged(grant, how)
 });
@@ -241,7 +243,8 @@ async function publicResponsibility(responsibility) {
 function publicMessage({ intent, ...message }) {
   // toAgent: typed straight to one piece of work's agent in the pane, not to EV.
   // readAs: EV's readings of this message for the work it started or told, which the person can strike.
-  return { ...message, readAs: intent?.readAs ?? [], status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", toAgent: Boolean(message.clientMessageId?.startsWith("pane:")), threads: facts.messageThreads(message.messageId) };
+  // grants: folders agents may change on the words of this message, shown under EV's reply with a way to take them back.
+  return { ...message, readAs: intent?.readAs ?? [], ...(message.role === "user" ? { grants: files.grantsFrom(message.messageId) } : {}), status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", toAgent: Boolean(message.clientMessageId?.startsWith("pane:")), threads: facts.messageThreads(message.messageId) };
 }
 
 /** Whether EV is thinking: something waits in this conversation's inbox. */
@@ -409,6 +412,8 @@ async function workList(conversationId) {
 
 /** Called by the worker service whenever a task settles. */
 function postTaskUpdate(task) {
+  // A grant for one piece of work ends when the work is delivered.
+  if (task.status === "completed") files.endWork(task.taskId);
   const content = taskUpdate(task);
   const conversationId = task.input?.metadata?.conversationId;
   if (task.input?.capability === "openclaw-general-v1") {
@@ -775,7 +780,8 @@ async function handleApi(request, response, url) {
     return json(response, 200, { look });
   }
   // Files: what agents can read and change on this machine. Only the person, through this page, or their own words to EV, makes a folder writable.
-  if (url.pathname === "/api/assistant/files" && request.method === "GET") return json(response, 200, files.view());
+  const filesView = async () => files.view({ runtime: files.contained ? await containerProblem(containerCli()) : null });
+  if (url.pathname === "/api/assistant/files" && request.method === "GET") return json(response, 200, await filesView());
   if (url.pathname === "/api/assistant/files" && request.method === "POST") {
     const body = await readJson(request);
     const list = (value, name) => {
@@ -783,8 +789,9 @@ async function handleApi(request, response, url) {
       if (!Array.isArray(value) || value.length > 100 || !value.every((item) => typeof item === "string" && item.length <= 1_000)) throw Object.assign(new Error(`${name} must be a list of paths`), { statusCode: 400 });
       return value;
     };
-    try { return json(response, 200, files.saveLists({ readRoots: list(body?.readRoots, "readRoots"), hidden: list(body?.hidden, "hidden") })); }
+    try { files.saveLists({ readRoots: list(body?.readRoots, "readRoots"), hidden: list(body?.hidden, "hidden") }); }
     catch (error) { throw Object.assign(error, { statusCode: error.statusCode ?? 400 }); }
+    return json(response, 200, await filesView());
   }
   if (url.pathname === "/api/assistant/files/grants" && request.method === "POST") {
     const body = await readJson(request);
@@ -792,12 +799,12 @@ async function handleApi(request, response, url) {
     if (body?.work && !task) throw Object.assign(new Error("No such work"), { statusCode: 404 });
     try { files.grant({ folder: body?.folder, scope: body?.scope ?? "always", task, source: "settings" }); }
     catch (error) { throw Object.assign(error, { statusCode: error.statusCode ?? 400 }); }
-    return json(response, 200, files.view());
+    return json(response, 200, await filesView());
   }
   const grantMatch = url.pathname.match(/^\/api\/assistant\/files\/grants\/([0-9a-f-]{36})$/);
   if (grantMatch && request.method === "DELETE") {
     if (!files.revoke(grantMatch[1])) throw Object.assign(new Error("No such grant"), { statusCode: 404 });
-    return json(response, 200, files.view());
+    return json(response, 200, await filesView());
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/stream") {
     return openStream(request, response, safeConversation(url));
@@ -1179,6 +1186,8 @@ let stopping = false;
 server.listen(config.port, config.host, async () => {
   console.log(`EV: http://${config.host}:${config.port}/?token=${daemonToken.token}`);
   console.log(`Standing responsibility poll: ${config.standingPollMs} ms`);
+  console.log(`Place: ${files.place}${files.contained ? "" : " (agents run without a container: EV_OPENCLAW_SANDBOX=host)"}`);
+  if (files.contained) void containerProblem(containerCli()).then((problem) => { if (problem) console.log(`Agents cannot start yet: ${problem}`); });
   // What arrived before a crash or stop and was not handled yet.
   for (const conversationId of store.waitingConversations()) void drainInbox(conversationId);
 });

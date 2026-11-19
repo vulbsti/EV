@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -119,48 +119,80 @@ function projectSecrets(root, depth = 3) {
 }
 
 /**
- * What one agent's container sees of this machine, for one turn:
- * `read` folders mounted read-only, `write` folders read-write, and `hiddenDirs`
- * and `hiddenFiles` covered by an empty folder or an empty file. Only paths
- * that exist are named (a mount point cannot be made inside a read-only folder).
- * `private` are KenWise's own folders (its settings file and data), always hidden.
+ * Places that stay read-only inside a folder agents may change: KenWise's own
+ * program, and what the person's shell or desktop runs at start. An agent that
+ * could change them could give itself everything at the next start.
  */
-export function containerFiles({ place, settings, task, home = homedir(), privatePaths = [], workFolder = null }) {
+export const START_FILES = [
+  ".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".config/fish",
+  ".local/bin", "bin", ".config/autostart", ".config/systemd", "Library/LaunchAgents", ".ssh", ".gitconfig", ".config/git"
+];
+
+/**
+ * What one agent's container sees of this machine, for one turn:
+ * `read` folders mounted read-only, `write` folders read-write, `readOnly`
+ * places inside a writable folder kept read-only, and `hiddenDirs` and
+ * `hiddenFiles` covered by an empty folder or an empty file. Only paths that
+ * exist are named (a mount point cannot be made inside a read-only folder).
+ * `privatePaths` (KenWise's settings file and data) are always hidden;
+ * `programPaths` (KenWise's code) are always read-only. In the cloud the
+ * stored grants are not used: every work may change the work folder.
+ */
+export function containerFiles({ place, settings, task, home = homedir(), privatePaths = [], programPaths = [], workFolder = null }) {
   const files = fileSettings(settings);
   const read = place === "local" ? [...new Set([home, ...files.readRoots.map((root) => real(resolve(expandHome(root, home))))].filter(Boolean))] : [];
-  const granted = grantsFor(files.grants, task).map((grant) => real(grant.path)).filter(Boolean);
+  const granted = place === "local" ? grantsFor(files.grants, task).map((grant) => real(grant.path)).filter(Boolean) : [];
   if (place === "cloud" && workFolder) { mkdirSync(workFolder, { recursive: true }); granted.push(real(workFolder)); }
   const write = [...new Set(granted)];
-  const hiddenNames = [...DEFAULT_HIDDEN, ...files.hidden];
+  const seen = (path) => read.some((root) => inside(root, path)) || write.some((root) => inside(root, path));
   const hiddenDirs = [];
   const hiddenFiles = [];
   const hide = (path) => {
     const found = real(path);
-    if (!found || !read.some((root) => inside(root, found)) && !write.some((root) => inside(root, found))) return;
+    if (!found || !seen(found)) return;
     (lstatSync(found).isDirectory() ? hiddenDirs : hiddenFiles).push(found);
   };
-  if (read.length) for (const name of hiddenNames) for (const root of read) hide(isAbsolute(expandHome(name, home)) ? expandHome(name, home) : join(root, name));
+  if (read.length) for (const name of [...DEFAULT_HIDDEN, ...files.hidden]) for (const root of read) hide(isAbsolute(expandHome(name, home)) ? expandHome(name, home) : join(root, name));
   for (const path of privatePaths) hide(path);
   for (const root of write) for (const path of projectSecrets(root)) hide(path);
   // A hidden folder wins over a grant inside it: the grant is dropped, not the hiding.
   const writable = write.filter((path) => !hiddenDirs.some((dir) => inside(dir, path)));
-  return { read, write: writable, hiddenDirs: [...new Set(hiddenDirs)], hiddenFiles: [...new Set(hiddenFiles)] };
+  const readOnly = [...new Set([...programPaths, ...START_FILES.map((name) => join(home, name))].map(real).filter(Boolean))]
+    .filter((path) => writable.some((root) => inside(root, path)) && !hiddenDirs.some((dir) => inside(dir, path)) && !hiddenFiles.includes(path));
+  // A folder both read and granted is mounted once, writable.
+  return { read: read.filter((path) => !writable.includes(path)), write: writable, readOnly, hiddenDirs: [...new Set(hiddenDirs)], hiddenFiles: [...new Set(hiddenFiles)] };
 }
 
-/** The `--mount` arguments for those files. Docker orders nested mounts by depth itself. */
-export function mountArgs({ read = [], write = [], hiddenDirs = [], hiddenFiles = [] } = {}) {
-  const bind = (path, readonly) => ["--mount", `type=bind,src=${path},dst=${path}${readonly ? ",readonly" : ""}`];
+/**
+ * The `--mount` arguments for those files. Docker orders nested mounts by
+ * depth itself. Docker reads each --mount as one CSV record, so every field
+ * that holds a path is quoted: a comma or quote in a folder's name cannot add
+ * or change a key (a later key wins, so `dst=` in a name would move a mount).
+ * Podman splits on commas without quoting, so there a path holding a comma or
+ * a quote stops the run. A line break or NUL stops it everywhere.
+ */
+export function mountArgs({ read = [], write = [], readOnly = [], hiddenDirs = [], hiddenFiles = [] } = {}, cli = "docker") {
+  const podman = isPodman(cli);
+  const field = (key, path) => {
+    if (/[\0\r\n]/.test(path) || (podman && /[,"]/.test(path))) {
+      throw Object.assign(new Error(`The agent cannot be started safely: the path ${JSON.stringify(path)} cannot be given to ${podman ? "podman" : "the container"} as written. Rename it, or take it out of the folders KenWise shows agents.`), { code: "UNSAFE_PATH" });
+    }
+    return podman ? `${key}=${path}` : `"${`${key}=${path}`.replaceAll('"', '""')}"`;
+  };
+  const bind = (path, readonly) => ["--mount", ["type=bind", field("src", path), field("dst", path), ...(readonly ? ["readonly"] : [])].join(",")];
   return [
     ...read.flatMap((path) => bind(path, true)),
     ...write.flatMap((path) => bind(path, false)),
-    ...hiddenDirs.flatMap((path) => ["--mount", `type=tmpfs,dst=${path},tmpfs-mode=0500`]),
-    ...hiddenFiles.flatMap((path) => ["--mount", `type=bind,src=/dev/null,dst=${path},readonly`])
+    ...readOnly.flatMap((path) => bind(path, true)),
+    ...hiddenDirs.flatMap((path) => ["--mount", ["type=tmpfs", field("dst", path), "tmpfs-mode=0500"].join(",")]),
+    ...hiddenFiles.flatMap((path) => ["--mount", ["type=bind", "src=/dev/null", field("dst", path), "readonly"].join(",")])
   ];
 }
 
-/** What an agent is told about its files, in the brief. */
-export function filesNote({ place, read = [], write = [] }, home = homedir()) {
+/** What an agent is told about its files, in the brief. `contained` is false when agents run on the machine itself. */
+export function filesNote({ place, contained = true, read = [], write = [] }, home = homedir()) {
   const show = (path) => path === home ? "~" : path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
+  if (!contained) return "You run directly on the person's machine, as them, with no container: nothing stops you reading or changing their files, so change files only in your workspace unless the brief says otherwise, and never touch their keys, credentials or KenWise's own files.";
   const lines = [];
   if (place === "local") lines.push(`You run in your own container: install and run whatever you need, it is yours. The person's files are visible at their real paths, read-only: ${read.map(show).join(", ")}. Some secret places (keys, browser profiles, credentials) are hidden.`);
   else lines.push("You run in your own container on a machine the person rents for this: install and run whatever you need.");
@@ -170,19 +202,22 @@ export function filesNote({ place, read = [], write = [] }, home = homedir()) {
 }
 
 /** What EV is shown about files, so it can judge when work needs a folder made writable. */
-export function filesPicture({ place, settings, home = homedir() }) {
+export function filesPicture({ place, contained = true, settings, home = homedir() }) {
   const files = fileSettings(settings);
   const show = (path) => path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
-  if (place === "cloud") return "KenWise runs on a cloud machine the person rents. Agents cannot see the person's own computer; they share one work folder on the machine.";
+  if (!contained) return "Agents run directly on this machine with no container (a testing setup): nothing limits what they read or change, and grants change nothing.";
+  if (place === "cloud") return "KenWise runs on a cloud machine the person rents. Agents cannot see the person's own computer; they share one work folder on the machine and can change it.";
   const grants = files.grants.map((grant) => `${show(grant.path)} (${grant.scope === "always" ? "always" : grant.scope === "goal" ? `for the goal of work:${grant.workId ?? "?"}` : `for work:${grant.workId}`})`);
   return `KenWise runs on the person's own computer. Agents can read their files but change only their own workspace${grants.length ? ` and these folders: ${grants.join(", ")}` : ""}. Use grant when they let you change a folder; without a grant, agents work on a copy and the person is asked to apply it.`;
 }
 
 /** The container command line (docker, or podman), from EV_CONTAINER_CLI or what is installed. */
+let foundCli = null;
 export function containerCli(env = process.env) {
   if (env.EV_CONTAINER_CLI) return env.EV_CONTAINER_CLI;
+  if (foundCli) return foundCli;
   for (const name of ["docker", "podman"]) {
-    try { execFileSync(name, ["--version"], { stdio: "ignore" }); return name; } catch {}
+    try { execFileSync(name, ["--version"], { stdio: "ignore" }); return (foundCli = name); } catch {}
   }
   return "docker";
 }
@@ -191,50 +226,86 @@ export function containerCli(env = process.env) {
 export const isPodman = (cli) => /(^|\/)podman$/.test(cli);
 
 /**
+ * Why agents cannot be started in a container right now, in the person's
+ * terms, or null when the runtime answers. Asked again at most once a minute.
+ */
+let probed = { at: 0, problem: null, cli: null };
+export async function containerProblem(cli) {
+  if (probed.cli === cli && Date.now() - probed.at < 60_000) return probed.problem;
+  const problem = await new Promise((done) => {
+    execFile(cli, ["info"], { timeout: 15_000 }, (error) => {
+      if (!error) return done(null);
+      if (error.code === "ENOENT") return done(`No docker or podman is installed, and KenWise runs every agent in a container of its own. Install Docker Desktop, OrbStack or Colima on a Mac, Docker Engine or Podman on Linux, then run: kenwise update`);
+      done(`${cli} is installed but not answering (is it running, and may your user use it?). Start it, then the work carries on.`);
+    });
+  });
+  probed = { at: Date.now(), problem, cli };
+  return problem;
+}
+
+/**
  * The files setup for one KenWise: what agents see, and the grants. Grants
  * and lists live in the `files` setting of the store. `changed(grant, how)`
  * is called after a grant is added or taken back, so running work it covers
- * can be told at its next step.
+ * can be told at its next step. `contained` is false when agents run on the
+ * machine itself (EV_OPENCLAW_SANDBOX=host), so nothing here is enforced.
  */
-export function createFiles({ store, place = placeFromEnv(), home = homedir(), privatePaths = [], workFolder = join(home, "work"), changed = () => {} }) {
+export function createFiles({ store, place = placeFromEnv(), contained = true, home = homedir(), privatePaths = [], programPaths = [], workFolder = join(home, "work"), changed = () => {} }) {
   const settings = () => fileSettings(store.setting("files"));
   const save = (value) => store.saveSetting("files", value);
-  const show = (path) => path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
+  const show = (path) => path === home ? "~" : path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
+  const refuse = (message, code = "NOT_GRANTABLE") => { throw Object.assign(new Error(message), { code }); };
   const api = {
     place,
     home,
+    contained,
     settings,
-    forTask: (task) => containerFiles({ place, settings: settings(), task, home, privatePaths, workFolder: place === "cloud" ? workFolder : null }),
-    note: (task) => filesNote({ place, ...api.forTask(task) }, home),
-    picture: () => filesPicture({ place, settings: settings(), home }),
+    forTask: (task) => containerFiles({ place, settings: settings(), task, home, privatePaths, programPaths, workFolder: place === "cloud" ? workFolder : null }),
+    note: (task) => filesNote({ place, contained, ...api.forTask(task) }, home),
+    picture: () => filesPicture({ place, contained, settings: settings(), home }),
     /** What the page shows: the place, read roots, hidden list and grants, with paths as the person writes them. */
-    view() {
+    view({ runtime = null } = {}) {
       const files = settings();
       return {
         place,
         home,
+        contained,
+        runtime,
         readRoots: place === "local" ? [home, ...files.readRoots] : [],
         defaultHidden: place === "local" ? DEFAULT_HIDDEN : [],
         hidden: files.hidden,
         workFolder: place === "cloud" ? workFolder : null,
-        grants: files.grants.map((grant) => ({ ...grant, shown: show(grant.path) }))
+        grants: place === "local" ? files.grants.map((grant) => ({ ...grant, shown: show(grant.path) })) : []
       };
     },
-    /** Checks a grant could be made, without making it; throws why not. */
-    check({ folder, scope = "always", task = null }) {
+    /** The grants made on the words of one of the person's messages, as the conversation shows them. */
+    grantsFrom(messageId) {
+      return settings().grants.filter((grant) => grant.source === `message:${messageId}`).map((grant) => ({ id: grant.id, shown: show(grant.path), scope: grant.scope }));
+    },
+    /**
+     * Checks a grant could be made and returns the folder as shown; throws why
+     * not. `fromWords` is a grant on the person's words to EV: the home and the
+     * read roots can only be granted with their own click on the Files screen.
+     */
+    check({ folder, scope = "always", task = null, fromWords = false }) {
+      if (place === "cloud") refuse(`On a cloud machine every piece of work can already change ${show(workFolder)}; grants are for your own computer.`, "NOT_NEEDED");
       const path = folderPath(folder, { home });
+      const hidden = DEFAULT_HIDDEN.concat(settings().hidden).map((name) => real(isAbsolute(expandHome(name, home)) ? expandHome(name, home) : join(home, name))).filter(Boolean);
+      if (hidden.some((secret) => inside(secret, path))) refuse(`${show(path)} is one of the hidden secret places, so it cannot be made writable`, "HIDDEN_FOLDER");
+      const own = [...privatePaths, ...programPaths].map(real).filter(Boolean);
+      if (own.some((dir) => inside(dir, path))) refuse(`${show(path)} is part of KenWise itself, so agents cannot be given it`, "HIDDEN_FOLDER");
+      if (fromWords) {
+        const roots = [home, ...settings().readRoots].map(real).filter(Boolean);
+        if (roots.includes(path) || own.some((dir) => inside(path, dir))) refuse(`${show(path)} is too wide to grant from a message: it holds KenWise itself or a whole place agents read. The person can allow it with their own click under Settings, Files.`, "TOO_WIDE");
+      }
       newGrant({ path, scope, workId: task?.taskId ?? null, goal: scope === "goal" ? goalOf(task) : null, source: "check" });
       return show(path);
     },
     changed,
     /** Adds a grant the person made. `source` is "settings" or the message:… they said it in. */
     grant({ folder, scope = "always", task = null, source, notify = true }) {
+      api.check({ folder, scope, task, fromWords: source !== "settings" });
       const path = folderPath(folder, { home });
-      const hidden = DEFAULT_HIDDEN.concat(settings().hidden).map((name) => real(isAbsolute(expandHome(name, home)) ? expandHome(name, home) : join(home, name))).filter(Boolean);
-      if (hidden.some((secret) => inside(secret, path))) {
-        throw Object.assign(new Error(`${show(path)} is one of the hidden secret places, so it cannot be made writable`), { code: "HIDDEN_FOLDER" });
-      }
-      if (privatePaths.some((own) => inside(own, path))) throw Object.assign(new Error(`${show(path)} holds KenWise's own data, so agents cannot be given it`), { code: "HIDDEN_FOLDER" });
       const files = settings();
       const record = newGrant({ path, scope, workId: task?.taskId ?? null, goal: scope === "goal" ? goalOf(task) : null, source });
       const same = files.grants.find((grant) => grant.path === path && grant.scope === scope && (grant.workId ?? null) === (record.workId ?? null) && (grant.goal ?? null) === (record.goal ?? null));
@@ -250,6 +321,12 @@ export function createFiles({ store, place = placeFromEnv(), home = homedir(), p
       save({ ...files, grants: files.grants.filter((item) => item.id !== id) });
       changed(grant, "revoked");
       return grant;
+    },
+    /** A grant for one piece of work ends when that work is delivered. */
+    endWork(taskId) {
+      const files = settings();
+      const kept = files.grants.filter((grant) => !(grant.scope === "work" && grant.workId === taskId));
+      if (kept.length !== files.grants.length) save({ ...files, grants: kept });
     },
     /** The person's extra read roots and hidden places. */
     saveLists({ readRoots, hidden }) {

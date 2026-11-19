@@ -9,7 +9,7 @@ import { ensurePrivateDirectorySync } from "./file-permissions.mjs";
 import { publicUsage } from "./pi-worker-adapter.mjs";
 import { readTranscript } from "./openclaw-transcript.mjs";
 import { TailBuffer, addCallUsage, emptyUsage, exceededBudget, writeDiagnosticsLog } from "./worker-usage.mjs";
-import { containerCli, isPodman, mountArgs } from "./place.mjs";
+import { containerCli, containerProblem, isPodman, mountArgs } from "./place.mjs";
 
 // docker, or podman (EV_CONTAINER_CLI, else whichever is installed).
 let cli = null;
@@ -162,7 +162,7 @@ export function openClawCommand({ executable, args, sandbox, workspacePath, sess
       "--user", `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`, ...(isPodman(cli) ? ["--userns=keep-id"] : []),
       "--cpus", String(sandbox.cpus ?? 2), "--memory", sandbox.memory ?? "4g", "--pids-limit", "1024", "--shm-size", "1g",
       "--security-opt", "no-new-privileges", "--cap-drop", "ALL",
-      ...mountArgs(files ?? {}), ...own, ...relay, "-v", `${sessionDir}:${sessionDir}:ro`, "-w", workspacePath,
+      ...mountArgs(files ?? {}, cli), ...own, ...relay, "-v", `${sessionDir}:${sessionDir}:ro`, "-w", workspacePath,
       "-e", `HOME=${homeDir}`, "-e", "OPENCLAW_CONFIG_PATH",
       sandbox.image, ...command
     ]
@@ -255,6 +255,15 @@ export class OpenClawWorkerAdapter {
       if (prior?.status === "completed") return { runId, completion: Promise.resolve(prior) };
     }
     if (!this.relay) return { runId, completion: Promise.resolve({ status: "failed", code: "MODEL_RELAY_MISSING", message: "EV's model relay is not running, so the agent cannot reach a model" }) };
+    // What it sees of the machine is read now, so a grant made since the last turn applies.
+    const files = this.sandbox?.files?.() ?? null;
+    if (this.sandbox) {
+      // No container runtime, or a path that cannot be mounted safely: the run does not start, and says why.
+      const problem = await containerProblem(containers());
+      if (problem) return { runId, completion: Promise.resolve({ status: "failed", code: "CONTAINER_RUNTIME_MISSING", message: problem }) };
+      try { mountArgs(files ?? {}, containers()); }
+      catch (error) { return { runId, completion: Promise.resolve({ status: "failed", code: error.code ?? "UNSAFE_PATH", message: error.message }) }; }
+    }
     ensurePrivateDirectorySync(this.sessionDir);
     // Valid for this run only; revoked when it ends.
     const grant = await this.relay.grant({ taskId: this.taskId, model: this.model, socket: Boolean(this.sandbox) });
@@ -268,8 +277,7 @@ export class OpenClawWorkerAdapter {
     const containerName = `ev-openclaw-${runId.slice(0, 12)}-${randomBytes(3).toString("hex")}`;
     const { command, args } = openClawCommand({
       containerName, executable: this.executable, sandbox: this.sandbox, workspacePath: this.workspacePath, sessionDir: this.sessionDir, homeDir: this.homeDir, runId, taskId: this.taskId, relaySocket: grant.socket,
-      // What it sees of the machine is read now, so a grant made since the last turn applies.
-      files: this.sandbox?.files?.() ?? null,
+      files,
       args: ["agent", "--local", "--agent", "ev-worker", "--session-id", this.taskId, "--message", prompt, "--json", "--timeout", String(OPENCLAW_TURN_SECONDS)]
     });
     const child = spawn(command, args, {

@@ -13,7 +13,7 @@ export default {
   checks: [
     {
       id: "F-01",
-      expect: "EV can make a folder writable only on the person's own words in their message; without them nothing is granted and EV is told why.",
+      expect: "EV can make a folder writable only on the person's own words in their message, and the conversation then shows the folder with a way to take it back; without their words nothing is granted and EV is told why.",
       async run({ start, assert }) {
         const ev = await start({
           script: {
@@ -36,6 +36,8 @@ export default {
         const now = await grants(ev);
         assert.equal(now.length, 1, `The person's own words did not make the folder writable: ${second.reply}`);
         assert.match(now[0].source ?? "", /^message:/, "The grant does not point to the message it rests on");
+        const theirs = (await ev.conversation()).find((message) => message.messageId === now[0].source.slice("message:".length));
+        assert.equal(theirs?.grants?.[0]?.id, now[0].id, "The conversation does not show the person that a folder became writable on their words");
       }
     },
     {

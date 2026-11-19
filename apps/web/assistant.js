@@ -400,6 +400,7 @@ function messageNode(message) {
   } else {
     setHtml(node.querySelector(".answer"), renderAnswer(message.content));
     drawReadAs(node, message);
+    drawGrants(node, message);
   }
   return node;
 }
@@ -416,6 +417,29 @@ function drawReadAs(node, message) {
   if (!box) { box = make("div", "readas"); node.insertBefore(box, node.querySelector(".cards")); }
   setHtml(box, html);
 }
+
+// Folders agents may now change because of what the person said: a fact the code shows under the reply, with a way to take it back.
+const GRANT_SCOPE = { always: "for all work", goal: "for this goal", work: "for this piece of work" };
+function drawGrants(node, message) {
+  const grants = (message.replyTo ? messages.get(message.replyTo)?.grants : null) ?? [];
+  const html = grants.map((grant) => `<p class="granted">${grant.taken ? `No longer writable by agents: <code>${escapeHtml(grant.shown)}</code>` : `Agents can now change <code>${escapeHtml(grant.shown)}</code>, ${escapeHtml(GRANT_SCOPE[grant.scope] ?? grant.scope)}. <button type="button" class="lnk" data-take-back="${escapeHtml(grant.id)}">Take back</button>`}</p>`).join("");
+  let box = node.querySelector(".grants");
+  if (!box && !html) return;
+  if (!box) { box = make("div", "grants"); node.insertBefore(box, node.querySelector(".cards")); }
+  setHtml(box, html);
+}
+elements.col.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-take-back]");
+  if (!button) return;
+  const reply = messages.get(button.closest("[data-message-id]")?.dataset.messageId);
+  const grant = messages.get(reply?.replyTo)?.grants?.find((item) => item.id === button.dataset.takeBack);
+  if (!grant) return;
+  button.disabled = true;
+  const response = await fetch(`/api/assistant/files/grants/${encodeURIComponent(grant.id)}`, { method: "DELETE" });
+  if (response.ok || response.status === 404) grant.taken = true;
+  button.disabled = false;
+  drawGrants(button.closest("[data-message-id]"), reply);
+});
 
 elements.col.addEventListener("click", (event) => {
   const chip = event.target.closest("[data-strike]");
@@ -1758,17 +1782,21 @@ const empty = (text) => `<div class="row"><div class="row-m"><span class="row-s"
 function renderFiles() {
   const files = filesNow;
   root.classList.toggle("place-cloud", files.place === "cloud");
-  $("files-lede").textContent = files.place === "cloud"
+  root.classList.toggle("files-open", !files.contained);
+  $("files-lede").textContent = !files.contained
+    ? "Agents run directly on this machine, as you, with no container (EV_OPENCLAW_SANDBOX=host). Nothing below is enforced in this mode: they can read and change anything you can."
+    : files.place === "cloud"
     ? `KenWise runs on a cloud machine. Each piece of work has its own computer there, and all of them can change ${shortPath(files.workFolder)}.`
     : "Each piece of work has its own computer. It can read your files, but changes only its own copy unless you let it change a folder here. When it needs a folder it can't change, it works on a copy and I ask you before applying it.";
   $("files-grants").innerHTML = files.grants.map((grant) => `<div class="row"><div class="row-m"><span class="row-t mono">${escapeHtml(grant.shown)}</span><span class="row-s">${escapeHtml(SCOPE_LABEL[grant.scope] ?? grant.scope)}${grant.source?.startsWith("message:") ? ", from what you told me" : ""}</span></div><button class="lnk" type="button" data-revoke="${escapeHtml(grant.id)}">Take back</button></div>`).join("")
     || empty(files.place === "cloud" ? "Only the work folder." : "No folders yet. Agents change only their own copies.");
   $("files-read").innerHTML = files.readRoots.map((path, index) => `<div class="row"><div class="row-m"><span class="row-t mono">${escapeHtml(shortPath(path))}</span><span class="row-s">Read only</span></div>${index ? `<button class="lnk" type="button" data-unread="${escapeHtml(path)}">Remove</button>` : ""}</div>`).join("");
-  $("files-hidden-default").textContent = `Always hidden: keys and credentials (${files.defaultHidden.filter((name) => /ssh|gnupg|aws|azure|gcloud|kube|netrc|credentials/.test(name)).join(", ")}), browser profiles, password managers, other AI tools' sign-ins, shell history, KenWise's own data, and .env files in folders agents can change.`;
+  $("files-status").textContent = files.runtime ?? "";
+  $("files-hidden-default").textContent = `Not hidden: secrets inside folders agents can only read, such as a .env file in another project, can be read. Always hidden: keys and credentials (${files.defaultHidden.filter((name) => /ssh|gnupg|aws|azure|gcloud|kube|netrc|credentials/.test(name)).join(", ")}), browser profiles, password managers, other AI tools' sign-ins, shell history, KenWise's own data, and .env files in folders agents can change.`;
   $("files-hidden").innerHTML = files.hidden.map((path) => `<div class="row"><div class="row-m"><span class="row-t mono">${escapeHtml(path)}</span></div><button class="lnk" type="button" data-unhide="${escapeHtml(path)}">Remove</button></div>`).join("") || "";
 }
 async function loadFiles() {
-  try { filesNow = await filesCall(); renderFiles(); $("files-status").textContent = ""; }
+  try { $("files-status").textContent = ""; filesNow = await filesCall(); renderFiles(); }
   catch (error) { $("files-status").textContent = `Could not load your files settings: ${error.message}`; }
 }
 async function filesAct(run) {

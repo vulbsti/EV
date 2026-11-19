@@ -89,34 +89,68 @@ test("a sandboxed OpenClaw worker mounts only its goal, its config and its own h
   assert.ok(!args.includes("--privileged") && !args.some((arg) => arg.includes("docker.sock")));
 });
 
-test("on the person's computer an agent reads the home, never its secrets or KenWise's data, and writes only what was granted", async () => {
+test("on the person's computer an agent reads the home, never its secrets or KenWise, and writes only what was granted", async () => {
   const home = await mkdtemp(join(tmpdir(), "ev-home-"));
   try {
-    for (const dir of [".ssh", "proj/site", "docs", "kenwise/data/work/goal"]) await mkdir(join(home, dir), { recursive: true });
+    for (const dir of [".ssh", "proj/site", "docs", "kenwise/data/work/goal", "kenwise/apps"]) await mkdir(join(home, dir), { recursive: true });
     await writeFile(join(home, ".netrc"), "pw");
+    await writeFile(join(home, ".bashrc"), "");
     await writeFile(join(home, "proj/site/.env"), "SECRET=1");
     const saved = new Map();
-    const files = createFiles({ store: { setting: (key) => saved.get(key), saveSetting: (key, value) => saved.set(key, value) }, place: "local", home, privatePaths: [join(home, "kenwise/data")] });
+    const files = createFiles({ store: { setting: (key) => saved.get(key), saveSetting: (key, value) => saved.set(key, value) }, place: "local", home,
+      privatePaths: [join(home, "kenwise/data")], programPaths: [join(home, "kenwise")] });
     const task = { taskId: "t1", input: { sharedWorkspace: "goal/shared" } };
+    // Each --mount as docker reads it: one CSV record of key=value fields.
     const mounts = (files) => {
       const { args } = openClawCommand({ executable: "openclaw", args: ["agent"], sandbox: { image: "ev-openclaw", mountRoot: join(home, "kenwise/data/work/goal") }, files, cli: "docker",
         workspacePath: join(home, "kenwise/data/work/goal/tasks/t1"), sessionDir: "/ev/sessions/t1", homeDir: "/ev/homes/t1", runId: "run-1234567890ab", taskId: "t1" });
-      return args.flatMap((arg, index) => args[index - 1] === "--mount" ? [arg] : []);
+      return args.flatMap((arg, index) => args[index - 1] === "--mount" ? [Object.fromEntries(csv(arg).map((field) => field.includes("=") ? [field.slice(0, field.indexOf("=")), field.slice(field.indexOf("=") + 1)] : [field, true]))] : []);
     };
+    const writable = (list) => list.filter((mount) => mount.type === "bind" && !mount.readonly).map((mount) => mount.dst);
     const before = mounts(files.forTask(task));
-    assert.ok(before.includes(`type=bind,src=${home},dst=${home},readonly`), "the home is not shown read-only");
-    for (const secret of [".ssh", "kenwise/data"]) assert.ok(before.some((mount) => mount.startsWith("type=tmpfs") && mount.includes(`dst=${join(home, secret)},`)), `${secret} is not hidden`);
-    assert.ok(before.includes(`type=bind,src=/dev/null,dst=${join(home, ".netrc")},readonly`), ".netrc is not hidden");
-    assert.ok(!before.some((mount) => mount.startsWith("type=bind") && !mount.endsWith(",readonly")), "something of the machine is writable without a grant");
+    assert.ok(before.some((mount) => mount.type === "bind" && mount.dst === home && mount.readonly), "the home is not shown read-only");
+    for (const secret of [".ssh", "kenwise/data"]) assert.ok(before.some((mount) => mount.type === "tmpfs" && mount.dst === join(home, secret)), `${secret} is not hidden`);
+    assert.ok(before.some((mount) => mount.src === "/dev/null" && mount.dst === join(home, ".netrc")), ".netrc is not hidden");
+    assert.deepEqual(writable(before), [], "something of the machine is writable without a grant");
     assert.throws(() => files.grant({ folder: "~/.ssh", source: "settings" }), /hidden/);
-    assert.throws(() => files.grant({ folder: "~/kenwise/data/work", source: "settings" }), /KenWise's own data/);
-    files.grant({ folder: "~/proj/site", scope: "work", task, source: "settings" });
+    assert.throws(() => files.grant({ folder: "~/kenwise/apps", source: "settings" }), /KenWise itself/);
+    assert.throws(() => files.grant({ folder: "~", source: "message:m1" }), /too wide/);
+    files.grant({ folder: "~/proj/site", scope: "work", task, source: "message:m1" });
     const after = mounts(files.forTask(task));
-    assert.ok(after.includes(`type=bind,src=${join(home, "proj/site")},dst=${join(home, "proj/site")}`), "the granted folder is not writable");
-    assert.ok(after.includes(`type=bind,src=/dev/null,dst=${join(home, "proj/site/.env")},readonly`), "a .env in a writable folder is not hidden");
-    assert.ok(!mounts(files.forTask({ taskId: "t2", input: {} })).some((mount) => mount.includes("proj/site,dst") && !mount.endsWith("readonly")), "a grant for one piece of work reached another");
+    assert.deepEqual(writable(after), [join(home, "proj/site")], "the granted folder is not the one writable folder");
+    assert.ok(after.some((mount) => mount.src === "/dev/null" && mount.dst === join(home, "proj/site/.env")), "a .env in a writable folder is not hidden");
+    assert.deepEqual(writable(mounts(files.forTask({ taskId: "t2", input: {} }))), [], "a grant for one piece of work reached another");
+    // The home granted with the person's own click: KenWise and what the shell runs at start stay read-only.
+    files.grant({ folder: "~", source: "settings" });
+    const wide = mounts(files.forTask(task));
+    for (const path of [join(home, "kenwise"), join(home, ".bashrc")]) assert.ok(wide.some((mount) => mount.dst === path && mount.readonly), `${path} is writable under a home grant`);
+    // A folder named to look like more mount fields stays one path.
+    const trick = join(home, "proj/site/d,src=", "x", ".ssh,dst=");
+    await mkdir(trick, { recursive: true });
+    await writeFile(join(trick, ".env"), "planted");
+    const planted = mounts(files.forTask(task)).find((mount) => mount.dst?.endsWith(".env") && mount.dst.includes("d,src="));
+    assert.equal(planted?.dst, join(trick, ".env"), "a comma in a folder name changed a mount");
+    assert.equal(planted.src, "/dev/null");
+    assert.throws(() => openClawCommand({ executable: "openclaw", args: [], sandbox: { image: "i", mountRoot: "/w" }, files: files.forTask(task), cli: "podman", workspacePath: "/w", sessionDir: "/s", homeDir: "/h", runId: "run-1234567890ab", taskId: "t1" }), /cannot be started safely/);
   } finally { await rm(home, { recursive: true, force: true }); }
 });
+
+/** Splits one CSV record the way docker reads --mount: quoted fields may hold commas, and "" is a quote. */
+function csv(line) {
+  const fields = [];
+  let field = "", quoted = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quoted) {
+      if (char === '"' && line[index + 1] === '"') { field += '"'; index++; }
+      else if (char === '"') quoted = false;
+      else field += char;
+    } else if (char === '"') quoted = true;
+    else if (char === ",") { fields.push(field); field = ""; }
+    else field += char;
+  }
+  return [...fields, field];
+}
 
 test("a sandboxed worker gets the model relay's socket and no key in its environment", () => {
   const { args } = openClawCommand({
