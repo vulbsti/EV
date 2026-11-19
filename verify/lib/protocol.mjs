@@ -244,6 +244,8 @@ export function learnerView(text) {
     /** The person said it is different now. */
     changed: (said, about, memory) => { const found = event(said), id = memoryId(about); return found && id ? { op: "update", id, text: memory, explicit: true, change: "changed", ...own(found) } : null; },
     /** The person asked EV to forget it. */
-    forgotten: (said, about) => { const found = event(said), id = memoryId(about); return found && id ? { op: "forget", id, part: "all", ...own(found) } : null; }
+    forgotten: (said, about) => { const found = event(said), id = memoryId(about); return found && id ? { op: "forget", id, part: "all", ...own(found) } : null; },
+    /** The person asked EV to forget something that another memory's situations name; that memory stays. */
+    forgottenSituations: (said, about) => { const found = event(said), id = memoryId(about); return found && id ? { op: "forget", id, part: "situations", ...own(found) } : null; }
   };
 }

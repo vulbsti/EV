@@ -402,6 +402,17 @@ export class AssistantMemoryStore {
     this.database.prepare("INSERT INTO memory_situations (claim_id, source_id, situation) VALUES (?, ?, ?) ON CONFLICT(claim_id, source_id) DO UPDATE SET situation = excluded.situation").run(claimId, sourceId, words);
   }
 
+  /** Deletes what a claim's situations say, keeping the claim and its evidence ("forget that I was in Goa" reaches "while travelling in Goa"). */
+  eraseSituations({ ownerId, claimId }) {
+    const claim = this._requireClaim(claimId);
+    if (claim.owner_id !== ownerId) throw codedError("MEMORY_SCOPE_DENIED", "Memory belongs to another owner");
+    this._transaction(() => {
+      this.database.prepare("DELETE FROM memory_situations WHERE claim_id = ?").run(claimId);
+      this.store.erased();
+      this._nextMemoryRevision();
+    });
+  }
+
   /** Distinct sources behind any revision of a claim. */
   _evidenceSourceIds(claimId) {
     return this.database.prepare("SELECT DISTINCT rs.source_id FROM memory_revision_sources rs JOIN memory_revisions r ON r.revision_id = rs.revision_id WHERE r.claim_id = ?")

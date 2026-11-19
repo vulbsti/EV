@@ -1,3 +1,4 @@
+import { memoryShown } from "../lib/protocol.mjs";
 import { lookUp, on, remembersAndForgets } from "../lib/scripts.mjs";
 
 const claimsWith = (claims, text) => claims.filter((claim) => JSON.stringify(claim.current?.value ?? "").includes(text));
@@ -137,6 +138,33 @@ export default {
         await ev.say("forget my gym locker");
         await ev.learned();
         assert.ok(!JSON.stringify(await ev.timeline()).includes(marker), "The history still contains what the person asked EV to forget");
+      }
+    },
+    {
+      id: "M-08",
+      expect: "Forgetting something also removes it from what was going on when EV noted other things, while those other things stay.",
+      async run({ start, assert }) {
+        const place = "QUILLON";
+        const ev = await start({ script: {
+          ev: (turn) => turn.reply("Noted."),
+          learner: (pass) => [
+            pass.stated(`travelling in ${place}`, "state", `Travelling in ${place}.`, { situation: "mentioned in passing" }),
+            pass.guessed("ok fine", "preference", "Replies to a status update in a word.", { situation: `replying in two words to a status update while travelling in ${place}` }),
+            pass.forgotten("forget that I was", place),
+            pass.forgottenSituations("forget that I was", "status update")
+          ].filter(Boolean)
+        } });
+        await ev.say(`travelling in ${place} this week`);
+        await ev.say("ok fine");
+        await ev.learned();
+        assert.ok(JSON.stringify(await ev.memory()).includes(`while travelling in ${place}`), "The situation never reached memory, so forgetting cannot be judged");
+        await ev.say(`forget that I was in ${place}`);
+        await ev.learned();
+        const claims = await ev.memory();
+        assert.ok(claims.some((claim) => JSON.stringify(claim.current?.value ?? "").includes("in a word")), "The note whose situation named the forgotten place was lost too; only what it said about the place should go");
+        assert.ok(!JSON.stringify(claims).includes(place), "The memory page still shows the forgotten place in a note's situation");
+        await ev.say("how should you answer me?");
+        assert.ok(!memoryShown(ev.standIn.calls("ev").at(-1).text).includes(place), "EV is still shown the forgotten place in a note's situation");
       }
     }
   ]
