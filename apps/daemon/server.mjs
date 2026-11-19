@@ -158,21 +158,120 @@ async function publicResponsibility(responsibility) {
 }
 
 /**
- * The conversation as the page shows it. A message carries the work it
- * started, was sent into or reports on, so the page can show that work's
- * result under it.
+ * A message as the page shows it. It lists every piece of work it is about
+ * (`work`: started, told, stopped, reports), so the page can show each one
+ * where it belongs.
  */
+function publicMessage({ intent, ...message }) {
+  return { ...message, status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update" };
+}
+
+/** Whether EV is thinking: something waits in this conversation's inbox. */
+const thinkingIn = (conversationId) => store.nextItem(conversationId) !== null;
+
 async function publicConversation(conversationId = "default", afterSequence = 0) {
-  const messages = store.listMessages(conversationId);
-  const tasks = new Map();
-  for (const taskId of new Set(messages.map((message) => message.taskId).filter(Boolean))) tasks.set(taskId, await assistantSupervisor.getTask(taskId).catch(() => null));
-  const all = messages.map(({ intent, ...message }) => {
-    const task = tasks.get(message.taskId) ?? null;
-    const status = message.role === "user" ? "received" : message.replyTo ? task?.status ?? "answered" : "update";
-    return { ...message, status, taskId: task?.taskId ?? null, taskStatus: task?.status ?? null };
-  });
-  // EV is thinking while anything waits in this conversation's inbox.
-  return { messages: all.filter((message) => message.sequence > afterSequence), revision: all.at(-1)?.sequence ?? 0, thinking: store.nextItem(conversationId) !== null };
+  const all = store.listMessages(conversationId).map(publicMessage);
+  return { messages: all.filter((message) => message.sequence > afterSequence), revision: all.at(-1)?.sequence ?? 0, thinking: thinkingIn(conversationId) };
+}
+
+/** A piece of work for the stream: what publicTask gives, without the whole history every time. */
+function streamedTask(task) {
+  const { history, ...rest } = publicTask(task);
+  return rest;
+}
+
+const isConversationWork = (task, conversationId) => task && (task.input?.metadata?.conversationId ?? "default") === conversationId;
+
+/**
+ * What a page that opens now needs: the newest messages (older ones are
+ * loaded on request), the work they are about, and every piece of work in
+ * this conversation that is not delivered yet.
+ */
+async function streamSnapshot(conversationId) {
+  const seq = store.lastSeq();
+  const messages = store.messagesBefore(conversationId, undefined, 100);
+  const ids = new Set([
+    ...messages.flatMap((message) => message.work.map((link) => link.taskId)),
+    ...store.db.prepare("SELECT work_id FROM work WHERE conversation_id = ? AND status <> 'completed' AND parent_id IS NULL").all(conversationId).map((row) => row.work_id)
+  ]);
+  const tasks = [];
+  for (const id of ids) {
+    const task = await assistantSupervisor.getTask(id).catch(() => null);
+    if (isConversationWork(task, conversationId)) tasks.push(streamedTask(task));
+  }
+  const earlier = messages.length ? store.messagesBefore(conversationId, messages[0].sequence, 1).length > 0 : false;
+  return { seq, data: { messages: messages.map(publicMessage), tasks, thinking: thinkingIn(conversationId), earlier } };
+}
+
+/** One frame for the events after `after`: the latest version of each message and piece of work they touched. */
+async function streamChange(conversationId, after) {
+  const events = store.eventsAfter(after);
+  if (!events.length) return null;
+  const messageIds = new Set();
+  const workIds = new Set();
+  for (const event of events) {
+    if (event.messageId) messageIds.add(event.messageId);
+    if (event.workId) workIds.add(event.workId);
+  }
+  const messages = new Map();
+  for (const messageId of messageIds) {
+    for (const message of store.messageWithReplies(messageId)) {
+      if (message.conversationId !== conversationId) continue;
+      messages.set(message.messageId, publicMessage(message));
+      for (const link of message.work) workIds.add(link.taskId);
+    }
+  }
+  const tasks = [];
+  for (const workId of workIds) {
+    const task = await assistantSupervisor.getTask(workId).catch(() => null);
+    if (isConversationWork(task, conversationId)) tasks.push(streamedTask(task));
+  }
+  const seq = events.at(-1).seq;
+  if (!messages.size && !tasks.length) return { seq, data: null };
+  return { seq, data: { messages: [...messages.values()], tasks, thinking: thinkingIn(conversationId) } };
+}
+
+/**
+ * The page's one open stream of changes (server-sent events). It opens with
+ * a snapshot, then sends a frame whenever something in the conversation
+ * changes. Each frame's id is the position of the last change it covers, and
+ * positions survive a restart, so a page that reconnects with Last-Event-ID
+ * gets exactly what it missed: nothing lost, nothing twice.
+ */
+const streams = new Set();
+async function openStream(request, response, conversationId) {
+  const asked = request.headers["last-event-id"];
+  let after = asked !== undefined && /^\d+$/.test(asked) ? Number(asked) : null;
+  response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+  const send = (type, id, data) => response.write(`id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  // A position from before this store existed (a fresh data folder) cannot be resumed.
+  if (after === null || after > store.lastSeq()) {
+    const snapshot = await streamSnapshot(conversationId);
+    send("snapshot", snapshot.seq, snapshot.data);
+    after = snapshot.seq;
+  }
+  let busy = false, again = false, closed = false;
+  const pump = async () => {
+    if (busy) { again = true; return; }
+    busy = true;
+    try {
+      do {
+        again = false;
+        for (let change = await streamChange(conversationId, after); change && !closed; change = await streamChange(conversationId, after)) {
+          if (change.data) send("change", change.seq, change.data);
+          after = change.seq;
+        }
+      } while (again && !closed);
+    } catch (error) {
+      if (!closed) console.error(`[${new Date().toISOString()}] Stream for ${conversationId} failed: ${error.message}`);
+    } finally { busy = false; }
+  };
+  const stop = store.onChange(() => { if (!closed) void pump(); });
+  const heartbeat = setInterval(() => response.write(": still here\n\n"), 20_000);
+  const entry = { end: () => response.end() };
+  streams.add(entry);
+  request.on("close", () => { closed = true; stop(); clearInterval(heartbeat); streams.delete(entry); });
+  await pump();
 }
 
 const time = (iso) => `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
@@ -335,6 +434,12 @@ async function readJson(request) {
   catch { throw Object.assign(new Error("Invalid JSON body"), { statusCode: 400 }); }
 }
 
+function safeConversation(url) {
+  const conversationId = url.searchParams.get("conversationId") ?? "default";
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
+  return conversationId;
+}
+
 async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/health") {
     return json(response, 200, { ok: true });
@@ -342,9 +447,19 @@ async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/assistant/conversation") {
     const after = Number(url.searchParams.get("after") ?? 0);
     if (!Number.isInteger(after) || after < 0) throw Object.assign(new Error("after must be a non-negative integer"), { statusCode: 400 });
-    const conversationId = url.searchParams.get("conversationId") ?? "default";
-    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
+    const conversationId = safeConversation(url);
+    // ?before= loads a page of older messages for a page scrolled back in time.
+    if (url.searchParams.has("before")) {
+      const before = Number(url.searchParams.get("before"));
+      if (!Number.isInteger(before) || before < 1) throw Object.assign(new Error("before must be a positive integer"), { statusCode: 400 });
+      const messages = store.messagesBefore(conversationId, before, 100);
+      const earlier = messages.length ? store.messagesBefore(conversationId, messages[0].sequence, 1).length > 0 : false;
+      return json(response, 200, { conversationId, messages: messages.map(publicMessage), earlier });
+    }
     return json(response, 200, { conversationId, ...await publicConversation(conversationId, after) });
+  }
+  if (request.method === "GET" && url.pathname === "/api/assistant/stream") {
+    return openStream(request, response, safeConversation(url));
   }
   if (request.method === "POST" && url.pathname === "/api/assistant/connections/github/verify") {
     const body = await readJson(request);
@@ -625,6 +740,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     if (stopping) return;
     stopping = true;
     standingScheduler.stop();
+    for (const stream of streams) stream.end();
     await assistantWorkers.shutdown().catch((error) => console.error(`Worker shutdown failed: ${error.message}`));
     store.close();
     server.close(() => process.exit(0));

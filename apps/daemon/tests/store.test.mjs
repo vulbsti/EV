@@ -19,9 +19,9 @@ test("a message is saved on arrival, survives reopening, and is handled once wit
     const item = reopened.nextItem("c1");
     assert.equal(item.message.messageId, message.messageId);
     assert.deepEqual(reopened.waitingConversations(), ["c1"]);
-    assert.throws(() => reopened.tx(() => { reopened.handled(item.itemId, { reply: "On it.", workId: "w1" }); throw new Error("crash before the work was created"); }));
+    assert.throws(() => reopened.tx(() => { reopened.handled(item.itemId, { reply: "On it.", work: [{ workId: "w1", how: "started" }] }); throw new Error("crash before the work was created"); }));
     assert.equal(reopened.nextItem("c1").itemId, item.itemId);
-    reopened.handled(item.itemId, { reply: "On it.", workId: "w1" });
+    reopened.handled(item.itemId, { reply: "On it.", work: [{ workId: "w1", how: "started" }] });
     assert.throws(() => reopened.handled(item.itemId, { reply: "Again?" }), { code: "ITEM_HANDLED" });
     assert.equal(reopened.nextItem("c1"), null);
     reopened.recordUpdate({ conversationId: "c1", key: "done:w1", content: "The poem is done.", workId: "w1" });

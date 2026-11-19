@@ -98,7 +98,7 @@ export function lookups({ store, supervisor, memory }) {
     const around = store.listMessages(target.conversation_id).filter((message) => Math.abs(message.sequence - target.seq) <= 4);
     return [
       `Conversation "${target.conversation_id}", around message:${messageId} (marked »):`,
-      ...around.map((message) => `${message.messageId === messageId ? "» " : ""}[${when(message.createdAt)}] ${message.role === "user" ? "Person" : "EV"}: ${clip(message.content, message.messageId === messageId ? READ_LIMIT : 1_500)}${message.taskId ? ` (about work:${message.taskId})` : ""}`)
+      ...around.map((message) => `${message.messageId === messageId ? "» " : ""}[${when(message.createdAt)}] ${message.role === "user" ? "Person" : "EV"}: ${clip(message.content, message.messageId === messageId ? READ_LIMIT : 1_500)}${message.work.length ? ` (about ${message.work.map((link) => `work:${link.taskId}`).join(", ")})` : ""}`)
     ].join("\n");
   }
 
@@ -336,7 +336,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
      * transaction, then sets the agents going.
      */
     commit({ reply, recentWork = "" }) {
-      const workId = started[0]?.taskId ?? told[0]?.taskId ?? stopped[0]?.taskId ?? null;
+      const work = [...started.map(({ taskId }) => ({ workId: taskId, how: "started" })), ...told.map(({ taskId }) => ({ workId: taskId, how: "told" })), ...stopped.map(({ taskId }) => ({ workId: taskId, how: "stopped" }))];
       const queued = [];
       store.tx(() => {
         for (const work of started) supervisor.insertTask(work);
@@ -351,7 +351,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
           else memory.forgetHistoryLine(key);
         }
         if (forgotten.length) store.eraseMessage(message.messageId);
-        const { eventId } = store.handled(item.itemId, { reply, workId, data: { action: done.join("; ") || "reply", recentWork } });
+        const { eventId } = store.handled(item.itemId, { reply, work, data: { action: done.join("; ") || "reply", recentWork } });
         if (remembered.length) {
           // What EV saved rests on this turn, so forgetting it later follows the link back here.
           memory.addSource({ sourceId: eventId, ownerId, sourceType: "conversation", sourceRef: `event:${eventId}`, metadata: { conversationId } });
