@@ -1771,12 +1771,14 @@ function renderModels(view) {
     const all = atlas.length ? `<div class="all">${atlas.map((claim) => claimLine(claim, false, { sources: true })).join("")}</div>` : "";
     const more = atlas.length ? `<button class="lnk" type="button" data-more aria-expanded="false">${atlas.length > 2 ? `${atlas.length - 2} more, and sources` : "Sources"}</button>` : "";
     const lines = [...own, shown].join("");
-    return `<div class="tile mem"><div class="card-h"><span class="card-t">${escapeHtml(model.name)}</span><span class="row-x">${escapeHtml(model.via.join(", "))}</span></div>`
+    const via = model.own ? `Your own server, ${model.via.join(", ")}` : model.via.join(", ");
+    return `<div class="tile mem"><div class="card-h"><span class="card-t">${escapeHtml(model.name)}</span><span class="row-x">${escapeHtml(via)}</span></div>`
       + `${lines || `<p class="why">Nothing known yet. I learn it from the work it does for you.</p>`}`
       + `${all}<div class="links">${more}<button class="lnk" type="button" data-model-off="${escapeHtml(model.key)}">Don't use this model</button></div></div>`;
   });
   const off = view.off.map((key) => `<div class="tile mem off"><div class="card-h"><span class="card-t">${escapeHtml(key)}</span><span class="row-x">Not used</span></div><div class="links"><button class="lnk" type="button" data-model-on="${escapeHtml(key)}">Use it again</button></div></div>`);
-  $("models-list").innerHTML = [...cards, ...off].join("") || `<p class="note">No models are reachable yet. Connect an account to start.</p>`;
+  const thinking = view.thinking ? `<p class="note">I'm thinking with ${escapeHtml(view.thinking.name)} myself, since no account reaches my usual model.</p>` : "";
+  $("models-list").innerHTML = thinking + ([...cards, ...off].join("") || `<p class="note">No models are reachable yet. Connect an account to start.</p>`);
   const unknown = $("models-unknown");
   unknown.hidden = !view.unknown.length;
   unknown.textContent = view.unknown.length ? `Also within your subscriptions, with nothing known yet: ${view.unknown.map((model) => model.name).join(", ")}.` : "";
@@ -1879,7 +1881,8 @@ const dotFor = (provider) => DOTS[[...provider].reduce((sum, character) => sum +
 
 function accountLine(connection) {
   const name = `${connection.providerName}${connection.label ? ` (${connection.label})` : ""}`;
-  const how = connection.method === "oauth" ? `Signed in${connection.hint && connection.hint !== "signed in" ? ` as ${connection.hint}` : ""}`
+  const how = connection.endpoint ? `Your own endpoint at ${connection.endpoint.baseUrl}, model ${connection.endpoint.model}${connection.hint ? `, key ending ${connection.hint.replace(/^…/, "")}` : ""}`
+    : connection.method === "oauth" ? `Signed in${connection.hint && connection.hint !== "signed in" ? ` as ${connection.hint}` : ""}`
     : connection.method === "env" || connection.source ? `Key ${connection.hint ? `ending ${connection.hint.replace(/^…/, "")}, ` : ""}from ${connection.source ?? "the environment"}`
       : `Key${connection.hint ? ` ending ${connection.hint.replace(/^…/, "")}` : ""}`;
   const several = setup.connections.filter((other) => other.provider === connection.provider).length > 1;
@@ -1962,12 +1965,13 @@ async function accountsAct(run) {
 }
 
 function addMode(mode) {
-  root.classList.remove("add-sub", "add-key");
-  if (mode === "sub" || mode === "key") root.classList.add(`add-${mode}`);
+  root.classList.remove("add-sub", "add-key", "add-own");
+  if (["sub", "key", "own"].includes(mode)) root.classList.add(`add-${mode}`);
   for (const option of document.querySelectorAll(".st-accounts [data-add].opt")) option.setAttribute("aria-pressed", String(option.dataset.add === mode));
   if (mode !== "sub" && signIn && ["started", "waiting", "completing"].includes(signIn.state)) void cancelSignIn();
   if (mode === "sub" && !signIn) signInView("idle");
   if (mode === "key") requestAnimationFrame(() => $("key-value").focus());
+  if (mode === "own") requestAnimationFrame(() => $("own-name").focus());
 }
 
 function signInView(view) {
@@ -2054,6 +2058,33 @@ $("sheet-look").addEventListener("click", (event) => {
   }
 });
 $("signin-cancel").addEventListener("click", () => void cancelSignIn());
+const API_NOTES = {
+  "openai-responses": "OpenAI's newer shape. Some servers speak it alongside Chat Completions.",
+  "openai-completions": "The most widely supported shape. Most open models and local servers use it.",
+  "anthropic-messages": "Anthropic's shape, for servers that copy Claude's API."
+};
+let ownApi = "openai-completions";
+$("own-api").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-api]");
+  if (!button) return;
+  ownApi = button.dataset.api;
+  for (const option of $("own-api").querySelectorAll("[data-api]")) option.setAttribute("aria-pressed", String(option === button));
+  $("own-api-note").textContent = API_NOTES[ownApi];
+});
+$("own-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("own-save").disabled = true;
+  $("own-note").textContent = "Trying it…";
+  try {
+    const { connection } = await setupCall("/endpoints", { method: "POST", body: { name: $("own-name").value, baseUrl: $("own-url").value, api: ownApi, model: $("own-model").value, key: $("own-key").value } });
+    for (const id of ["own-name", "own-url", "own-model", "own-key"]) $(id).value = "";
+    $("own-note").textContent = "";
+    addMode("none");
+    $("accounts-status").textContent = `${connection.providerName ?? "Your endpoint"} is connected.`;
+    await loadAccounts();
+  } catch (error) { $("own-note").textContent = error.message; }
+  finally { $("own-save").disabled = false; }
+});
 $("signin-code-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const code = $("signin-code").value.trim();

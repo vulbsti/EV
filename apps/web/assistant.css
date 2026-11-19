@@ -535,4 +535,5 @@ body { background: #0a0d13; }
 .ev.view-first #empty { display: none !important; }
 .ev.model-waiting .waitbar.status { bottom: 140px; }
 .ev .restbar-text { min-width: 0; }
+.ev .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 12px; }
 .ev #limit-allow { white-space: normal; min-height: 38px; height: auto; padding: 8px 14px; text-align: center; }

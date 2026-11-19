@@ -60,8 +60,32 @@ export class ModelGuide {
   /** The default model for agents, as a record, or null when it cannot be named. */
   _default() { try { return workerModel(); } catch { return null; } }
 
+  /**
+   * A model to think with when the default has no account: from the person's
+   * own endpoints and subscriptions first, then any account; a model the atlas
+   * knows before one it does not, then the cheapest.
+   */
+  fallback() {
+    const known = new Set(this.atlas.flatMap((entry) => entry.keys ?? []));
+    const providers = [...new Set(this.connections.list().filter((connection) => this.connections.usable(connection)).map((connection) => connection.provider))];
+    providers.sort((a, b) => Number(this._plan(b)) - Number(this._plan(a)));
+    for (const provider of providers) {
+      const models = this.connections.models.getModels(provider).filter((record) => this.allowed(record));
+      const pick = models.find((record) => known.has(modelKey(record.id))) ?? models.sort((a, b) => (a.cost?.input ?? 0) - (b.cost?.input ?? 0))[0];
+      if (pick) return pick;
+    }
+    return null;
+  }
+
+  /** The model KenWise itself thinks with when no account reaches the default (and none is set), else null. */
+  thinking() {
+    const fallback = this._default();
+    if (this.env.EV_MODEL || (fallback && this.routes.routes(fallback).length)) return null;
+    return this.fallback();
+  }
+
   /** Whether this provider's account is a subscription (quota already paid for), not pay per token. */
-  _plan(providerId) { return PLAN_PROVIDERS.has(providerId) || this.connections.serving(providerId)?.method === "oauth"; }
+  _plan(providerId) { return PLAN_PROVIDERS.has(providerId) || this.connections.isOwn?.(providerId) || this.connections.serving(providerId)?.method === "oauth"; }
 
   /**
    * A catalogue record for one of these model keys at a provider the person
@@ -118,12 +142,19 @@ export class ModelGuide {
       if (seen.has(key) || !this.allowed(record)) return;
       seen.add(key);
       out.push({
-        key, name: entry?.name ?? record.name ?? record.id, spec: `${record.provider}/${record.id}`, record, subscription: this._plan(record.provider),
+        key, name: entry?.name ?? record.name ?? record.id, spec: `${record.provider}/${record.id}`, record, subscription: this._plan(record.provider), own: Boolean(this.connections.isOwn?.(record.provider)),
         claims: entry?.claims.filter((claim) => claim.state !== "dropped") ?? [], atlasUpdated: entry?.updated ?? null,
         personal: this.personal?.claims(key) ?? [], speed: this.routes.speed(record.provider, record.id)
       });
     };
     if (fallback && this.routes.routes(fallback).length) add(fallback, this.atlas.find((entry) => entry.keys.includes(modelKey(fallback.id))));
+    // The person's own endpoints are always shown, known or not: they run on their own server.
+    for (const connection of this.connections.list()) {
+      if (!this.connections.isOwn?.(connection.provider) || !this.connections.usable(connection)) continue;
+      for (const record of this.connections.models.getModels(connection.provider)) add(record, this.atlas.find((entry) => entry.keys.includes(modelKey(record.id))));
+    }
+    const thinking = this.thinking();
+    if (thinking) add(thinking, this.atlas.find((entry) => entry.keys.includes(modelKey(thinking.id))));
     for (const entry of this.atlas) {
       const record = this._reachable(entry.keys, fallback?.provider);
       if (record) add(record, entry);
@@ -156,7 +187,9 @@ export class ModelGuide {
     const line = (claim, indent) => `${indent}- ${claim.text} (${PERSONAL[claim.state]}${claim.why ? `: ${claim.why}` : ""}${claim.state === "said" ? `; model:${claim.id}` : ""})`;
     const general = (this.personal?.claims(null) ?? []).map((claim) => line(claim, ""));
     const models = entries.map((entry) => {
-      const cost = entry.subscription
+      const cost = entry.own
+        ? `on the person's own server ${this.connections.providerName(entry.record.provider)} (already paid for)`
+        : entry.subscription
         ? `within the person's ${this.connections.providerName(entry.record.provider)} subscription (quota already paid for)`
         : entry.record.cost ? `${money(entry.record.cost.input)} in / ${money(entry.record.cost.output)} out per million tokens` : "price unknown";
       const context = entry.record.contextWindow ? `, reads up to ${Math.round(entry.record.contextWindow / 1000)}k tokens` : "";
@@ -168,7 +201,9 @@ export class ModelGuide {
       return lines.join("\n");
     });
     const unknown = this.unknown();
+    const thinking = this.thinking();
     return [
+      ...(thinking ? [`You are thinking with ${thinking.provider}/${thinking.id} yourself: no account reaches the default model.`] : []),
       ...(general.length ? [`What this person has said or shown about choosing models:\n${general.join("\n")}`] : []),
       ...models,
       ...(unknown.length ? [`Also within their subscriptions, with nothing known yet: ${unknown.map((item) => item.spec).join(", ")}.`] : [])

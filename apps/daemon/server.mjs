@@ -12,7 +12,7 @@ import { executionPrompt, workBrief } from "./lib/ev-work-prompts.mjs";
 import { takeTurn, taskUpdate, turnPrompt } from "./lib/ev-main-agent.mjs";
 import { createTurn, lookups, workState } from "./lib/ev-tools.mjs";
 import { importSessions } from "./lib/outside-sessions.mjs";
-import { currentRoutes, sessionHeader, tryKey, useConnections } from "./lib/ev-model.mjs";
+import { currentRoutes, sessionHeader, tryKey, useConnections, useFallbackModel } from "./lib/ev-model.mjs";
 import { Connections } from "./lib/connections.mjs";
 import { SignIns } from "./lib/sign-in.mjs";
 import { ModelRelay } from "./lib/model-relay.mjs";
@@ -86,6 +86,8 @@ const modelGuide = new ModelGuide({ routes: currentRoutes(), store });
 // The personal layer: a weekly analysis of the person's own work rewrites their claims about models.
 const modelLearning = new ModelLearning({ store, guide: modelGuide });
 modelLearning.noticeAtlas(modelGuide.atlas);
+// With no model set and no account for the default, EV thinks with a model the person can reach.
+useFallbackModel(() => modelGuide.fallback());
 useTimeZone(store.setting("timeZone"));
 useClock(store.setting("hour12"));
 // When a subscription runs out: switch to a paid route or wait (issue 21). A switch is told once in the conversation.
@@ -676,6 +678,20 @@ async function handleSetup(request, response, url) {
     if (tried.status === 429) connection = connections.limited(connection);
     return json(response, 201, { connection });
   }
+  // The person's own endpoint: tried with one small call before it is kept, like a key.
+  if (method === "POST" && path === "/endpoints") {
+    const body = await readJson(request);
+    const key = String(body.key ?? "").trim().slice(0, 4_096);
+    const endpoint = connections.addEndpoint({ name: body.name, baseUrl: body.baseUrl, api: body.api, model: body.model });
+    const tried = await tryKey(endpoint.id, key || "none");
+    if (!tried.ok && tried.status !== 429) {
+      connections.removeEndpoint(endpoint.id);
+      throw Object.assign(new Error(`${endpoint.name} did not answer: ${tried.status ? `HTTP ${tried.status}, ` : ""}${tried.error}`), { statusCode: 400, code: "ENDPOINT_REFUSED" });
+    }
+    let connection = connections.save({ provider: endpoint.id, method: "key", credential: { type: "api_key", key }, label: null });
+    if (tried.status === 429) connection = connections.limited(connection);
+    return json(response, 201, { connection: connections.list().find((one) => one.id === connection.id) ?? connection });
+  }
   const one = /^\/connections\/([^/]+)$/.exec(path);
   if (one && method === "DELETE") { connections.remove(decodeURIComponent(one[1])); return json(response, 200, { removed: true }); }
   if (one && (method === "PATCH" || method === "POST")) {
@@ -699,9 +715,10 @@ function guideView() {
   return {
     models: modelGuide.entries().map((entry) => ({
       key: entry.key, name: entry.name, spec: entry.spec, via: [...new Set(currentRoutes().routes(entry.record).map((route) => connections.providerName(route.model.provider)))],
-      subscription: entry.subscription, personal: entry.personal.map(view), atlas: entry.claims.map(view), speed: entry.speed
+      subscription: entry.subscription, own: entry.own, personal: entry.personal.map(view), atlas: entry.claims.map(view), speed: entry.speed
     })),
     unknown: modelGuide.unknown(),
+    thinking: (({ provider, id, name } = {}) => provider ? { spec: `${provider}/${id}`, name: name ?? id } : null)(modelGuide.thinking() ?? undefined),
     general: modelLearning.claims(null).map(view),
     changes: modelLearning.changes({ since: Date.now() - 30 * 24 * 60 * 60 * 1000 }),
     off: modelGuide.off(),

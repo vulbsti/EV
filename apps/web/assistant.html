@@ -55,10 +55,11 @@
   <section id="first" class="center first" aria-label="Connect a model">
     <svg class="mark big" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><circle class="pupil" cx="14.6" cy="9.4" r="2.3"></circle></svg>
     <h1 class="hero">First, a model to think with.</h1>
-    <p class="sub">Use a subscription you already pay for, or a key. Add as many as you like. I'll learn which one suits which work.</p>
+    <p class="sub">Use a subscription you already pay for, a key, or a model on your own machine. Add as many as you like. I'll learn which one suits which work.</p>
     <div class="opts">
       <button class="opt glass" type="button" data-first="sub"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M4 12h11M11 8l4 4-4 4"></path></svg><b>Sign in</b><span>Use a subscription you already pay for</span></button>
       <button class="opt glass" type="button" data-first="key"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 19a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM11 12l9-9M16 7l3 3"></path></svg><b>Paste a key</b><span>From a provider or a coding plan</span></button>
+      <button class="opt glass" type="button" data-first="own"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v6H5zM5 13h14v6H5zM8.5 8h.01M8.5 16h.01"></path></svg><b>Your own endpoint</b><span>Ollama, LM Studio, or any compatible server</span></button>
     </div>
     <p class="note">Sign-ins and keys stay on this machine.</p>
   </section>
@@ -241,6 +242,7 @@
           <div class="opts">
             <button class="opt" type="button" data-add="sub" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M4 12h11M11 8l4 4-4 4"></path></svg><b>Sign in</b><span>A subscription you already pay for</span></button>
             <button class="opt" type="button" data-add="key" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 19a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM11 12l9-9M16 7l3 3"></path></svg><b>Paste a key</b><span>A provider or a coding plan</span></button>
+            <button class="opt" type="button" data-add="own" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v6H5zM5 13h14v6H5zM8.5 8h.01M8.5 16h.01"></path></svg><b>Your own endpoint</b><span>Ollama, LM Studio, any compatible server</span></button>
           </div>
           <div class="addp ap-sub">
             <div id="signin-providers" class="tile rows si si-idle"></div>
@@ -265,6 +267,26 @@
             <div class="field"><label for="key-value">Key</label><input id="key-value" class="in mono" type="password" autocomplete="off" maxlength="4096" placeholder="Paste the key"></div>
             <div class="field"><label for="key-label">Name, if you have more than one</label><input id="key-label" class="in" type="text" maxlength="80" placeholder="Work account"></div>
             <div class="acts"><button id="key-save" class="btn primary" type="submit">Test and save</button><span id="key-note" class="row-s" role="status"></span></div>
+          </form>
+          <form id="own-form" class="addp ap-own">
+            <div class="pair">
+              <div class="field"><label for="own-name">Name</label><input id="own-name" class="in" type="text" maxlength="60" placeholder="Home server"></div>
+              <div class="field"><label for="own-url">Address</label><input id="own-url" class="in mono" type="url" maxlength="300" placeholder="http://localhost:11434/v1"></div>
+            </div>
+            <div class="field"><span class="lbl">How it is spoken to</span>
+              <div id="own-api" class="seg" aria-label="How it is spoken to">
+                <button type="button" data-api="openai-responses" aria-pressed="false">Responses</button>
+                <button type="button" data-api="openai-completions" aria-pressed="true">Chat Completions</button>
+                <button type="button" data-api="anthropic-messages" aria-pressed="false">Messages</button>
+              </div>
+              <p id="own-api-note" class="row-s">The most widely supported shape. Most open models and local servers use it.</p>
+            </div>
+            <div class="pair">
+              <div class="field"><label for="own-model">Model</label><input id="own-model" class="in mono" type="text" maxlength="200" placeholder="As the server names it"></div>
+              <div class="field"><label for="own-key">Key</label><input id="own-key" class="in mono" type="password" autocomplete="off" maxlength="4096" placeholder="Optional"></div>
+            </div>
+            <div class="acts"><button id="own-save" class="btn primary" type="submit">Test and save</button><span id="own-note" class="row-s" role="status"></span></div>
+            <p class="row-s">For providers I know, every model already carries its own shape. You only choose it here.</p>
           </form>
         </div>
       </section>
