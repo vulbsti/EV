@@ -61,7 +61,9 @@ function portraitVersion(store, row, { all = false } = {}) {
       reaction: latestReaction(store, `line:${line.line_id}`, line.written_at),
       evidence: store.db.prepare("SELECT ref FROM portrait_evidence WHERE version_id = ? AND line_id = ? ORDER BY ref").all(row.version_id, line.line_id).map((ref) => ref.ref)
     }));
-  const answer = row.question ? latestReaction(store, `question:${row.version_id}`) : null;
+  // The same question carried into a later version keeps the answer given to it in an earlier one.
+  const asked = row.question ? store.db.prepare("SELECT version_id FROM portrait_versions WHERE question = ?").all(row.question) : [];
+  const answer = asked.map((version) => latestReaction(store, `question:${version.version_id}`)).filter(Boolean).sort((a, b) => b.at.localeCompare(a.at))[0] ?? null;
   return { versionId: row.version_id, at: row.at, why: row.why, question: row.question ? { text: row.question, options: JSON.parse(row.options_json ?? "[]"), answer } : null, memoryRevision: row.memory_revision, lines };
 }
 
@@ -92,6 +94,21 @@ export function callsLog(store, { limit = 12 } = {}) {
     const callId = `${turn.event_id}:${index}`;
     return { callId, at: turn.at, messageId: turn.message_id, made: call.made, why: call.why, other: call.other, reaction: latestReaction(store, `call:${callId}`) };
   })).slice(0, limit);
+}
+
+/**
+ * The person's reactions to the calls behind EV's reply to `messageId`, as
+ * lines EV reads beside that reply from its very next turn, before the
+ * learner has made anything of them.
+ */
+export function callReactions(store, messageId) {
+  const turn = store.db.prepare("SELECT event_id, data_json FROM events WHERE type = 'turn' AND message_id = ? ORDER BY seq DESC LIMIT 1").get(messageId ?? "");
+  return (parse(turn?.data_json, {}).calls ?? []).flatMap((call, index) => {
+    const reaction = latestReaction(store, `call:${turn.event_id}:${index}`);
+    if (!reaction) return [];
+    const said = reaction.words ? `, "${clip(reaction.words, 300)}"` : "";
+    return [`[Your call here: ${call.made}. On ${day(reaction.at)} they reacted: ${reaction.verdict === "right" ? "Right call" : `${call.other || "Not the right call"}`}${said}]`];
+  });
 }
 
 /**
@@ -155,6 +172,13 @@ export class Portrait {
   _meta(key) { return this.store.counter(key); }
   _setMeta(key, value) { this.db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value); }
 
+  /** A sentence was said to be not quite right since the last run, and the learner has read that. */
+  _challenged() {
+    return Boolean(this.db.prepare(`SELECT 1 FROM events e LEFT JOIN learning l ON l.event_id = e.event_id
+      WHERE e.type = 'reaction' AND json_extract(e.data_json, '$.verdict') = 'not_quite' AND e.seq > ?
+        AND (l.analysed_at IS NOT NULL OR COALESCE(l.attempts, 0) >= 3) LIMIT 1`).get(this._meta("portrait_read_reaction")));
+  }
+
   _reactionSeq() { return this.db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE type = 'reaction'").get().seq; }
 
   /** What the writer would read, now: the notes about the person (no passing states, no lessons about the work). */
@@ -172,7 +196,7 @@ export class Portrait {
     const changed = forgot || this.store.counter("memory_revision") > this._meta("portrait_read_revision") || this._reactionSeq() > this._meta("portrait_read_reaction");
     if (!changed) return null;
     const last = this._meta("portrait_ran_at");
-    if (forgot) return last + HOUR;
+    if (forgot || this._challenged()) return last + HOUR;
     if (!this.every) return null;
     return last + this.every;
   }
@@ -189,7 +213,9 @@ export class Portrait {
   }
 
   schedule(due) {
-    if (this.timer || this.stopped) return;
+    if (this.stopped || (this.timer && this.timerDue <= due)) return;
+    clearTimeout(this.timer);
+    this.timerDue = due;
     this.timer = setTimeout(() => { this.timer = null; void this.kick(); }, Math.max(1_000, Math.min(due - this.now(), 6 * HOUR)));
     this.timer.unref?.();
   }

@@ -92,6 +92,7 @@ EV holds an understanding of the person, not a list of facts: notes keep the sit
 - ✓ **U-03** Nothing from the portrait reaches an agent. Its brief carries only the notes EV named for that work, as background with their situation.
 - ✓ **U-04** When the person says a sentence of the portrait is not quite right, EV is shown it as challenged on its very next turn, before anything rewrites it.
 - ✓ **U-05** Forgetting a message takes away the calls EV made on its reading of the person in answering it, and the person's reactions to those calls.
+- ✓ **U-06** When the person reacts to a call EV made, EV is shown that reaction, with their words, beside the reply it was on from its very next turn, before the learner has made anything of it.
 
 ## Task 3: One store with real ids
 

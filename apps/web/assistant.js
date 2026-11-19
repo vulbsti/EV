@@ -388,9 +388,33 @@ function messageNode(message) {
     told.hidden = !message.toAgent;
   } else {
     setHtml(node.querySelector(".answer"), renderAnswer(message.content));
+    drawReadAs(node, message);
   }
   return node;
 }
+
+// "Read as": how KenWise read the person's message for each piece of work.
+// Striking one tells KenWise, in the person's name, so the next turn corrects the brief.
+const strikeText = (reading) => `About “${tasks.get(reading.workId)?.title ?? "that work"}”: not “${reading.text}”`;
+function drawReadAs(node, message) {
+  const readings = (message.replyTo ? messages.get(message.replyTo)?.readAs : null) ?? [];
+  const said = new Set([...messages.values()].filter((item) => item.role === "user").map((item) => item.content).concat([...pending.values()].map((item) => item.text)));
+  const html = readings.length ? `<div class="read"><span>Read as</span>${readings.map((reading, index) => `<button type="button" class="chip" data-strike="${index}" aria-pressed="${said.has(strikeText(reading))}" title="Strike this if it's not what you meant">${escapeHtml(reading.text)}</button>`).join("")}</div><p class="fix${readings.some((reading) => said.has(strikeText(reading))) ? " on" : ""}">Struck. Tell me what it should be and I'll change the brief.</p>` : "";
+  let box = node.querySelector(".readas");
+  if (!box && !html) return;
+  if (!box) { box = make("div", "readas"); node.insertBefore(box, node.querySelector(".cards")); }
+  setHtml(box, html);
+}
+
+elements.col.addEventListener("click", (event) => {
+  const chip = event.target.closest("[data-strike]");
+  if (!chip || chip.getAttribute("aria-pressed") === "true") return;
+  const reply = messages.get(chip.closest("[data-message-id]")?.dataset.messageId);
+  const reading = messages.get(reply?.replyTo)?.readAs?.[Number(chip.dataset.strike)];
+  if (!reading) return;
+  following = true;
+  void sendPending({ clientMessageId: crypto.randomUUID(), text: strikeText(reading), createdAt: new Date().toISOString(), failed: false });
+});
 
 function cardNode(task) {
   let card = cards.get(task.taskId);
@@ -1508,13 +1532,114 @@ async function memoryCommand(command) {
   return body;
 }
 
+// ---------- How I understand you: the portrait, calls, ways of working, the question ----------
+
+let understanding = null;
+let openLine = null;
+const FIRMNESS = { said: "Firm", relied: "Usually", guess: "Trying this" };
+
+async function loadUnderstanding() {
+  const response = await fetch("/api/assistant/understanding", { cache: "no-store" });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error ?? `Could not load the understanding: HTTP ${response.status}`);
+  understanding = body;
+  renderUnderstanding();
+}
+
+function renderUnderstanding() {
+  if (!understanding) return;
+  const { rightNow = [], portrait, calls = [] } = understanding;
+  const under = workGroups();
+  const busy = under.under.length + under.needs.length;
+  const now = [...rightNow.map((item) => item.text), ...(busy ? [busy === 1 ? "One thing under way" : `${busy} things under way`] : [])];
+  $("you-now").hidden = !now.length;
+  setHtml($("you-now-chips"), now.map((text) => `<span class="chip">${escapeHtml(text)}</span>`).join(""));
+
+  const lines = portrait?.lines ?? [];
+  if (!lines.some((line) => line.lineId === openLine)) openLine = null;
+  const box = $("you-portrait");
+  box.classList.toggle("opened", Boolean(openLine));
+  setHtml(box, lines.map((line) => {
+    const verdict = line.reaction?.verdict;
+    const open = line.lineId === openLine;
+    return `<button type="button" data-line="${escapeHtml(line.lineId)}" aria-pressed="${open}" aria-expanded="${open}"${verdict === "not_quite" ? ` class="challenged"` : ""}>${escapeHtml(line.text)}${verdict === "not_quite" ? `<span class="firm">You said not quite</span>` : ""}</button>
+      <div class="whybox${open ? " open" : ""}" data-for="${escapeHtml(line.lineId)}">
+        ${line.why ? `<p>${escapeHtml(line.why)}</p>` : ""}
+        ${verdict === "not_quite" ? `<p class="said-off">You said this isn't quite right${line.reaction.words ? `: “${escapeHtml(line.reaction.words)}”` : ""}. I'm not leaning on it, and I'll rewrite it.</p>` : verdict === "thats_me" ? `<p>You said that's you.</p>` : ""}
+        <div class="acts"><button type="button" class="mini" data-verdict="thats_me" aria-pressed="${verdict === "thats_me"}">That's me</button><button type="button" class="mini" data-verdict="not_quite" aria-pressed="${verdict === "not_quite"}">Not quite</button><input class="in" type="text" maxlength="1000" aria-label="Say what is off" placeholder="Say what's off, in your own words"></div>
+      </div>`;
+  }).join(""));
+  setText($("you-portrait-note"), lines.length ? "Tap a line to see why I think it, or to tell me it's off." : "Nothing yet. After we've talked a while, I'll write here who I think you are to work with, and why.");
+
+  $("you-calls").hidden = !calls.length;
+  setHtml($("you-calls-list"), calls.map((call) => `<div class="tile call" data-call="${escapeHtml(call.callId)}"><b>${escapeHtml(call.made)}</b>${call.why ? `<p class="why">${escapeHtml(call.why)}</p>` : ""}
+    <div class="acts"><button type="button" class="mini" data-verdict="right" aria-pressed="${call.reaction?.verdict === "right"}">Right call</button><button type="button" class="mini" data-verdict="other" aria-pressed="${call.reaction?.verdict === "other"}">${escapeHtml(call.other || "Not the right call")}</button></div></div>`).join(""));
+
+  const order = Object.keys(FIRMNESS);
+  const ways = memoryClaims.filter((claim) => claim.kind === "agreement" && FIRMNESS[claimStanding(claim).kind]).sort((a, b) => order.indexOf(claimStanding(a).kind) - order.indexOf(claimStanding(b).kind));
+  $("you-ways").hidden = !ways.length;
+  setHtml($("you-ways-list"), ways.map((claim) => `<div class="row"><div class="row-m"><span>${escapeHtml(claimText(claim))}</span></div><span class="firm">${FIRMNESS[claimStanding(claim).kind]}</span></div>`).join(""));
+
+  const question = portrait?.question;
+  $("you-question").hidden = !question;
+  if (question) setHtml($("you-question-box"), `<p>${escapeHtml(question.text)}</p>${question.answer
+    ? `<p class="q-done">${escapeHtml(question.answer.option ?? `“${question.answer.words ?? ""}”`)}. Thanks. I'll weigh that with what's at stake each time.</p>`
+    : `<div class="acts" data-question="${escapeHtml(portrait.versionId)}">${(question.options ?? []).map((option) => `<button type="button" class="mini" data-option="${escapeHtml(option)}">${escapeHtml(option)}</button>`).join("")}<input class="in" type="text" maxlength="1000" aria-label="Answer in your own words" placeholder="Or say it in your own words"></div>`}`);
+}
+
+async function reactTo(on, verdict, { words = "", option = "" } = {}) {
+  const status = $("you-status");
+  status.textContent = "Saving…";
+  try {
+    const response = await fetch("/api/assistant/understanding/react", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on, verdict, words, option }) });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+    await loadUnderstanding();
+    status.textContent = verdict === "not_quite" ? "Thanks. I won't lean on that line, and I'll rewrite it from what you said." : "Thanks. I learn from this case, not a rule.";
+  } catch (error) { status.textContent = `Not saved: ${error.message}`; }
+}
+
+$("you-portrait").addEventListener("click", (event) => {
+  const line = event.target.closest("[data-line]");
+  if (line) { openLine = openLine === line.dataset.line ? null : line.dataset.line; renderUnderstanding(); return; }
+  const button = event.target.closest("[data-verdict]");
+  const box = button?.closest("[data-for]");
+  if (box) void reactTo(`line:${box.dataset.for}`, button.dataset.verdict, { words: box.querySelector("input").value.trim() });
+});
+$("you-portrait").addEventListener("keydown", (event) => {
+  const box = event.target.closest("[data-for]");
+  if (event.key !== "Enter" || !box || !event.target.value.trim()) return;
+  void reactTo(`line:${box.dataset.for}`, "not_quite", { words: event.target.value.trim() });
+});
+$("you-calls-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-verdict]");
+  if (button) void reactTo(`call:${button.closest("[data-call]").dataset.call}`, button.dataset.verdict);
+});
+$("you-question-box").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-option]");
+  if (button) void reactTo(`question:${button.closest("[data-question]").dataset.question}`, "answer", { option: button.dataset.option });
+});
+$("you-question-box").addEventListener("keydown", (event) => {
+  const acts = event.target.closest("[data-question]");
+  if (event.key === "Enter" && acts && event.target.value.trim()) void reactTo(`question:${acts.dataset.question}`, "answer", { words: event.target.value.trim() });
+});
+$("you-tabs").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-ytab]");
+  if (!button) return;
+  root.classList.remove("ytab-portrait", "ytab-notes");
+  root.classList.add(`ytab-${button.dataset.ytab}`);
+  for (const tab of $("you-tabs").querySelectorAll("[data-ytab]")) tab.setAttribute("aria-pressed", String(tab === button));
+});
+
 async function showUnderstanding() {
   elements.memoryStatus.textContent = "Loading what I've noted…";
   try {
     await loadMemory();
+    await loadUnderstanding();
     elements.memoryStatus.textContent = "Changes apply to work started from now on, not work already running.";
   } catch (error) {
     elements.memoryStatus.textContent = error.message;
+    $("you-status").textContent = error.message;
   }
 }
 

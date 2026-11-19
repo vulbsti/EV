@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="assistant.css">
 </head>
 <body>
-<div id="ev" class="ev focus-all theme-aurora accent-sky glass-frosted layout-column density-cosy font-sans">
+<div id="ev" class="ev ytab-portrait focus-all theme-aurora accent-sky glass-frosted layout-column density-cosy font-sans">
   <div class="bg" aria-hidden="true"></div>
 
   <header class="top">
@@ -117,19 +117,50 @@
       </button>
     </div>
     <div class="sheet-b">
-      <p class="lede">The single things I've noted, where each came from, and what has happened. Correct, stop or erase any of them. Memory changes how I help; it never grants tools or permission.</p>
-      <div id="memory-filter" class="seg" aria-label="Filter">
-        <button type="button" data-filter="all" aria-pressed="true">All</button>
-        <button type="button" data-filter="said" aria-pressed="false">You said</button>
-        <button type="button" data-filter="guess" aria-pressed="false">My guesses</button>
-        <button type="button" data-filter="relied" aria-pressed="false">Relied on</button>
+      <div id="you-tabs" class="seg" aria-label="Show">
+        <button type="button" data-ytab="portrait" aria-pressed="true">Understanding</button>
+        <button type="button" data-ytab="notes" aria-pressed="false">Notes and history</button>
       </div>
-      <p id="memory-status" class="note" role="status"></p>
-      <div id="memory-list" class="stack"></div>
-      <section>
-        <h3>What has happened</h3>
-        <div id="history-list" class="tile rows"></div>
-      </section>
+      <div class="ytab yt-portrait">
+        <section id="you-now" hidden>
+          <h3>Right now</h3>
+          <div id="you-now-chips" class="chips"></div>
+        </section>
+        <section>
+          <h3>Who I'm working with</h3>
+          <div id="you-portrait" class="portrait"></div>
+          <p id="you-portrait-note" class="note tap"></p>
+        </section>
+        <section id="you-calls" hidden>
+          <h3>Calls I made recently</h3>
+          <p class="lede">Judging these is the fastest way to teach me. I learn from the case, not a rule.</p>
+          <div id="you-calls-list" class="calls"></div>
+        </section>
+        <section id="you-ways" hidden>
+          <h3>How work should be done for you</h3>
+          <div id="you-ways-list" class="tile rows"></div>
+        </section>
+        <section id="you-question" hidden>
+          <h3>Something I'd like to know</h3>
+          <div id="you-question-box" class="tile box"></div>
+        </section>
+        <p id="you-status" class="note" role="status"></p>
+      </div>
+      <div class="ytab yt-notes">
+        <p class="lede">The single things I've noted, where each came from, and what has happened. Correct, stop or erase any of them. Memory changes how I help; it never grants tools or permission.</p>
+        <div id="memory-filter" class="seg" aria-label="Filter">
+          <button type="button" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" data-filter="said" aria-pressed="false">You said</button>
+          <button type="button" data-filter="guess" aria-pressed="false">My guesses</button>
+          <button type="button" data-filter="relied" aria-pressed="false">Relied on</button>
+        </div>
+        <p id="memory-status" class="note" role="status"></p>
+        <div id="memory-list" class="stack"></div>
+        <section>
+          <h3>What has happened</h3>
+          <div id="history-list" class="tile rows"></div>
+        </section>
+      </div>
     </div>
     <form id="memory-form" class="sheet-f">
       <input id="memory-value" class="in" type="text" maxlength="2000" aria-label="Tell KenWise about yourself" placeholder="Tell me how you work, or where I've got you wrong">

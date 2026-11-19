@@ -483,7 +483,8 @@ export class MemoryLearner {
     try {
       const { ops, history: summary } = await this.analyse({ events, prior, claims: snapshot, history });
       const result = applyLearning(this.memory, { ownerId: this.ownerId, events, ops, seen });
-      if (result.applied.length) this.changed();
+      // A reaction read is news for the portrait even when it changed no note (a challenge brings its run forward).
+      if (result.applied.length || events.some((event) => event.type === "reaction")) this.changed();
       if (result.applied.length || result.skipped.length) this.log(`Memory: ${result.applied.length} change(s) from ${events.length} event(s)${result.skipped.length ? `; skipped ${result.skipped.map((item) => item.reason).join(", ")}` : ""}`);
       // Reactions to EV's reading are not things that happened in the work; they stay out of the history.
       this.memory.writeHistory({ conversationId, at: createdAt, eventIds: events.filter((event) => !event.content?.erased && event.type !== "reaction").map((event) => event.eventId), summary, expectedRevision: history.revision });
