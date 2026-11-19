@@ -335,9 +335,8 @@ export function normalizeReview(value) {
  */
 export async function reviewOpenClawReport({
   taskId, request, report, brief = null, round = 1, previousReviews = [], hostNotes = [], personal = "", delivered = null,
-  apiKey = process.env.OPENCODE_API, fetchImpl = fetch, localRoots = [], sessionEvents = [], workspacePath = null
+  apiKey, fetchImpl = fetch, localRoots = [], sessionEvents = [], workspacePath = null
 }) {
-  if (!apiKey) throw Object.assign(new Error("OpenCode Go review key is unavailable"), { code: "QUALITY_REVIEW_UNAVAILABLE" });
   const evidence = Array.isArray(report.evidence) ? report.evidence : [];
   const selected = [...evidence.filter((source) => source.url.startsWith("file:")).slice(0, 20), ...evidence.filter((source) => !source.url.startsWith("file:")).slice(0, 3)];
   if (workspacePath && !selected.some((source) => source.url === pathToFileURL(workspacePath).href)) {

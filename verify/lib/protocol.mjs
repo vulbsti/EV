@@ -89,7 +89,7 @@ export function toolResults(dialect, body) {
 export function roleOf({ userAgent = "", text = "" }) {
   const label = /^ev-([a-z0-9-]+)\//.exec(userAgent)?.[1] ?? "";
   if (label === "main-agent") return "ev";
-  return { "quality-gate": "reviewer", memory: "learner" }[label] ?? (label || "unknown");
+  return { "quality-gate": "reviewer", memory: "learner", "openclaw-prototype": "agent" }[label] ?? (label || "unknown");
 }
 
 /** The person's new message, as EV1 was shown it. */

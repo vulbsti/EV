@@ -12,7 +12,11 @@ import { executionPrompt, workBrief } from "./lib/ev-work-prompts.mjs";
 import { takeTurn, taskUpdate, turnPrompt } from "./lib/ev-main-agent.mjs";
 import { createTurn, lookups, workState } from "./lib/ev-tools.mjs";
 import { importSessions } from "./lib/outside-sessions.mjs";
-import { sessionHeader } from "./lib/ev-model.mjs";
+import { sessionHeader, tryKey, useConnections } from "./lib/ev-model.mjs";
+import { Connections } from "./lib/connections.mjs";
+import { SignIns } from "./lib/sign-in.mjs";
+import { ModelRelay } from "./lib/model-relay.mjs";
+import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView } from "./lib/ev-memory.mjs";
 import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
@@ -34,6 +38,10 @@ const daemonToken = createDaemonToken({ dataRoot });
 // Everything EV keeps: one SQLite file, delivered files beside it, and one
 // folder per piece of work (its workspace, session and home).
 const store = openStore({ path: join(dataRoot, "ev.sqlite") });
+// The accounts EV reaches models through; keys live in data/secrets/, never in the store.
+const connections = await Connections.open({ store, dataRoot });
+useConnections(connections);
+const signIns = new SignIns({ connections });
 const assistantWorkerRoot = join(dataRoot, "work");
 const assistantSupervisor = await AssistantSupervisor.open({ store, artifactRoot: join(dataRoot, "files") });
 const assistantMemory = AssistantMemoryStore.open({ store });
@@ -42,7 +50,9 @@ const assistantOwnerId = "default-person";
 // left unanalysed by a restart.
 const memoryLearner = new MemoryLearner({ memory: assistantMemory, ownerId: assistantOwnerId });
 memoryLearner.kick();
-const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate });
+// Agents reach their model through EV, so no key enters their container.
+const modelRelay = await new ModelRelay({ connections }).start();
+const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait });
 await assistantWorkers.start();
 const standingStore = StandingResponsibilityStore.open({ store });
 const githubStandingConnector = new GitHubPullRequestConnector();
@@ -350,7 +360,6 @@ function newWork({ taskId, conversationId, message, title, request }) {
 }
 
 function unavailableReply(status) {
-  if (!process.env.OPENCODE_API) return "My model isn’t configured (OPENCODE_API is not set), so I can’t work on anything yet.";
   if (status >= 400 && status < 500 && status !== 429) return `My model is rejecting requests (HTTP ${status}), which looks like a setup problem rather than a blip, so I haven’t started anything. The daemon log has the details.`;
   return "I couldn’t think this through just now because my model didn’t answer, so I haven’t started anything. Send it again in a moment.";
 }
@@ -380,6 +389,8 @@ async function handleItem(item) {
       session: sessionHeader(`ev:${message.messageId}`)
     }));
   } catch (error) {
+    // No account can reach the model now: the message stays in the inbox.
+    if (error.wait) throw Object.assign(error, { item });
     // Fail closed: nothing EV was in the middle of deciding is carried out.
     console.error(`[${new Date().toISOString()}] EV could not finish its turn on message ${message.messageId}: ${error.message}`);
     const reply = error.code === "TURN_TOO_LONG" ? "I went round in circles on this and stopped without doing anything. Could you say it another way?" : unavailableReply(error.status ?? null);
@@ -391,6 +402,29 @@ async function handleItem(item) {
   if (!reply && !turn.acted()) return store.handled(item.itemId, { reply: "I didn’t come up with an answer to this, so I haven’t started anything. Send it again, or say it another way.", data: { action: "nothing (EV gave no answer)", recentWork: work } });
   turn.commit({ reply, recentWork: work });
 }
+
+/**
+ * A message that needs a model while no account can reach one waits in the
+ * inbox, with everything after it. The person is told once per conversation
+ * and account episode (the account's status since), and the inbox is tried
+ * again at the reset time, or as soon as an account is added or changes.
+ */
+const inboxTimers = new Map();
+function waitForAccount(conversationId, item, wait) {
+  const who = `${wait.providerName}${wait.label ? ` (${wait.label})` : ""}`;
+  const content = wait.reason === "limited"
+    ? `My ${who} account has reached its usage limit, so I’m holding your message until about ${time(wait.until)} UTC and will answer it then. Adding another account in settings would let me carry on sooner.`
+    : wait.reason === "needs-sign-in"
+      ? `My ${who} account is no longer being accepted (${String(wait.message ?? "").slice(0, 160)}), so I’m holding your message. Sign in again or add a key in settings and I’ll answer it straight away.`
+      : `I have no account to reach my model at ${who} yet, so I’m holding your message. Add one in settings and I’ll answer it straight away.`;
+  store.recordUpdate({ conversationId, key: `wait:${conversationId}:${wait.connectionId ?? wait.provider}:${wait.since ?? item.itemId}`, content });
+  clearTimeout(inboxTimers.get(conversationId));
+  if (wait.until) inboxTimers.set(conversationId, setTimeout(() => { inboxTimers.delete(conversationId); void drainInbox(conversationId); }, Math.max(0, Date.parse(wait.until) - Date.now()) + 100));
+}
+connections.onChange(() => {
+  for (const conversationId of store.waitingConversations()) void drainInbox(conversationId);
+  memoryLearner.kick();
+});
 
 /**
  * One inbox per conversation, handled one item at a time in arrival order, so
@@ -407,6 +441,7 @@ async function drainInbox(conversationId) {
       try { await handleItem(item); }
       catch (error) {
         if (stopping) return;
+        if (error.wait) return waitForAccount(conversationId, error.item, error.wait);
         // Tell the person once rather than retrying a message that cannot be handled.
         console.error(`[${new Date().toISOString()}] Could not handle message ${item.message.messageId}: ${error.stack ?? error.message}`);
         try { store.handled(item.itemId, { reply: `Something went wrong on my side while handling this (${error.message}), so I haven’t started anything. Send it again if you still want it.`, data: { action: "failed" } }); }
@@ -432,6 +467,48 @@ async function readJson(request) {
   const body = await readBody(request, 1024 * 1024);
   try { return JSON.parse(body.toString("utf8")); }
   catch { throw Object.assign(new Error("Invalid JSON body"), { statusCode: 400 }); }
+}
+
+/**
+ * The settings screen's calls: the accounts EV reaches models through. No
+ * answer ever carries a key or token, only a hint (its last characters, or
+ * the account it signed in as).
+ */
+async function handleSetup(request, response, url) {
+  const path = url.pathname.slice("/api/assistant/setup".length);
+  const { method } = request;
+  if (method === "GET" && path === "") return json(response, 200, { providers: connections.providers(), connections: connections.list() });
+  if (method === "POST" && path === "/connections") {
+    const body = await readJson(request);
+    const provider = String(body.provider ?? "");
+    const key = String(body.key ?? "").trim();
+    if (!connections.models.getProvider(provider)) throw Object.assign(new Error(`Unknown provider: ${provider}`), { statusCode: 400, code: "UNKNOWN_PROVIDER" });
+    if (!key || key.length > 4_096) throw Object.assign(new Error("Paste the key to add"), { statusCode: 400, code: "KEY_MISSING" });
+    // Tried before it is kept, so a typo shows now rather than mid-conversation.
+    const tried = await tryKey(provider, key);
+    if (!tried.ok && tried.status !== 429) {
+      const why = tried.status === 401 || tried.status === 403 ? `${connections.providerName(provider)} refused this key (HTTP ${tried.status})` : `The key could not be checked: ${tried.error}`;
+      throw Object.assign(new Error(why), { statusCode: 400, code: "KEY_REFUSED" });
+    }
+    let connection = connections.save({ provider, method: "key", credential: { type: "api_key", key }, label: typeof body.label === "string" ? body.label.trim().slice(0, 80) || null : null });
+    if (tried.status === 429) connection = connections.limited(connection);
+    return json(response, 201, { connection });
+  }
+  const one = /^\/connections\/([^/]+)$/.exec(path);
+  if (one && method === "DELETE") { connections.remove(decodeURIComponent(one[1])); return json(response, 200, { removed: true }); }
+  if (one && (method === "PATCH" || method === "POST")) {
+    const body = await readJson(request);
+    return json(response, 200, { connection: connections.update(decodeURIComponent(one[1]), { active: body.active === true, label: body.label }) });
+  }
+  if (method === "POST" && path === "/signin") {
+    const body = await readJson(request);
+    return json(response, 201, signIns.start({ provider: String(body.provider ?? ""), label: typeof body.label === "string" ? body.label.trim().slice(0, 80) || null : null }));
+  }
+  const attempt = /^\/signin\/([^/]+)(\/code)?$/.exec(path);
+  if (attempt && method === "GET" && !attempt[2]) return json(response, 200, signIns.get(decodeURIComponent(attempt[1])));
+  if (attempt && method === "DELETE" && !attempt[2]) return json(response, 200, signIns.cancel(decodeURIComponent(attempt[1])));
+  if (attempt && method === "POST" && attempt[2]) return json(response, 200, signIns.answer(decodeURIComponent(attempt[1]), (await readJson(request)).code));
+  return false;
 }
 
 function safeConversation(url) {
@@ -477,6 +554,7 @@ async function handleApi(request, response, url) {
       }
     });
   }
+  if (url.pathname.startsWith("/api/assistant/setup")) return handleSetup(request, response, url);
   if (request.method === "GET" && url.pathname === "/api/assistant/responsibilities") {
     const responsibilities = await standingStore.listResponsibilities();
     return json(response, 200, { responsibilities: await Promise.all(responsibilities.map(publicResponsibility)) });
@@ -720,7 +798,9 @@ const server = createServer(async (request, response) => {
       CONNECTOR_RESOURCE_UNAVAILABLE: 404,
       CONNECTOR_RATE_LIMITED: 429,
       CONNECTOR_TIMEOUT: 504,
-      CONNECTOR_READ_FAILED: 502
+      CONNECTOR_READ_FAILED: 502,
+      CONNECTION_NOT_FOUND: 404,
+      CONNECTION_FROM_ENVIRONMENT: 409
     }[error.code];
     if (!response.headersSent) json(response, error.statusCode ?? codedStatus ?? 500, { error: error.message, code: error.code ?? null });
     else response.end();
