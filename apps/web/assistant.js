@@ -1806,7 +1806,13 @@ async function filesAct(run) {
 $("grant-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const folder = $("grant-folder").value.trim();
-  if (folder && await filesAct(() => filesCall("/grants", { method: "POST", body: { folder, scope: "always" } }))) $("grant-folder").value = "";
+  const wide = /^~\/?$/.test(folder) || folder === filesNow?.home || folder === `${filesNow?.home}/`;
+  if (wide && $("grant-folder").dataset.warned !== folder) {
+    $("grant-folder").dataset.warned = folder;
+    $("files-status").textContent = "Your whole home: agents could then change almost everything in it, including creating files your shell runs at start. Your secrets stay hidden and KenWise stays read-only. Press Enter again to allow it.";
+    return;
+  }
+  if (folder && await filesAct(() => filesCall("/grants", { method: "POST", body: { folder, scope: "always" } }))) { $("grant-folder").value = ""; delete $("grant-folder").dataset.warned; }
 });
 $("read-form").addEventListener("submit", async (event) => {
   event.preventDefault();
