@@ -315,6 +315,8 @@ export function applyLearning(memory, { ownerId, events, ops, seen, now = Date.n
         if (op.part === "situations") {
           // The note stays; what its situations say goes (they can name what was forgotten).
           memory.eraseSituations({ ownerId, claimId: target.claimId });
+          // The request itself often repeats what is being forgotten.
+          memory.forgetEvent(event.eventId);
           applied.push({ op: "forget", claimId: target.claimId, kind, part: "situations" });
           continue;
         }

@@ -15,9 +15,10 @@ async function portraitSays(ev, words) {
 
 // The person states two things; the learner notes both, each with its situation.
 const learner = (pass) => [
-  pass.stated("one word is enough for status", "preference", "Wants a status update in a word.", { situation: "asking where the work stood while boarding" }),
+  pass.stated("one word is enough for status", "preference", "Wants a status update in a word.", { situation: "asking where the work stood while boarding at GATE-77" }),
   pass.stated("my dog is called", "fact", "Has a dog called ORRIN-4.", { situation: "chatting at the start of the day" }),
-  pass.forgotten("forget my dog", "ORRIN-4")
+  pass.forgotten("forget my dog", "ORRIN-4"),
+  pass.forgottenSituations("forget the gate", "status update")
 ].filter(Boolean);
 
 export default {
@@ -53,13 +54,13 @@ export default {
     },
     {
       id: "U-02",
-      expect: "Forgetting a note takes every portrait sentence resting on it away at once, from the page, from what EV is shown, and from every earlier version.",
+      expect: "Forgetting a note, or what was going on when it was seen, takes every portrait sentence resting on it away at once, from the page, from what EV is shown, and from every earlier version.",
       async run({ start, assert }) {
         const ev = await start({ env: { EV_PORTRAIT_EVERY: "1s" }, script: {
           ev: (turn) => turn.reply("Noted."),
           learner,
           portrait: (call) => ({ lines: [
-            { text: "You want a status in a word.", why: "You said so while boarding.", evidence: [call.noteId("status update")] },
+            { text: "You want a status in a word.", why: call.text.includes("GATE-77") ? "You said so while boarding at GATE-77." : "You said so.", evidence: [call.noteId("status update")] },
             ...(call.noteId("ORRIN-4") ? [{ text: "You start the day with ORRIN-4, your dog.", why: "You told me.", evidence: [call.noteId("ORRIN-4")] }] : [])
           ], question: null })
         } });
@@ -75,6 +76,12 @@ export default {
         assert.ok(!JSON.stringify(history).includes("ORRIN-4"), "An earlier version of the portrait still says what the person asked EV to forget");
         await ev.say("morning");
         assert.ok(!ev.standIn.calls("ev").at(-1).text.includes("ORRIN-4"), "EV is still shown a portrait sentence about what the person asked EV to forget");
+        // A note stays while what was going on when it was seen is forgotten.
+        assert.ok(JSON.stringify(await understanding(ev)).includes("GATE-77"), "The portrait never quoted the situation, so forgetting it cannot be judged");
+        await ev.say("forget the gate");
+        await ev.learned();
+        await ev.until("the forget to land", async () => !JSON.stringify(await ev.memory()).includes("GATE-77") ? true : null);
+        assert.ok(!JSON.stringify(await understanding(ev)).includes("GATE-77") && !JSON.stringify((await ev.api("/api/assistant/understanding/history")).value).includes("GATE-77"), "The portrait still quotes a situation the person asked EV to forget");
       }
     },
     {

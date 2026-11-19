@@ -88,7 +88,7 @@ The one conversation is grouped by the work it is about. A small model files eac
 EV holds an understanding of the person, not a list of facts: notes keep the situation they were seen in, and a portrait of a few sentences, written by a decent model following the portrait skill, says who they are to work with. What the sentences say, and how EV weighs them case by case, is judgement: it was walked through once (design/build/verification/understanding-you.md) and is tested in pairs in the real-model run. What is checked here holds whatever the models decide: every sentence rests on evidence, forgetting reaches the portrait, and the portrait never reaches an agent.
 
 - ✓ **U-01** Every sentence of the portrait rests on at least one note. A sentence the writer gives with nothing behind it is never shown, to the person or to EV.
-- ✓ **U-02** Forgetting a note takes every portrait sentence resting on it away at once, from the page, from what EV is shown, and from every earlier version.
+- ✓ **U-02** Forgetting a note, or what was going on when it was seen, takes every portrait sentence resting on it away at once, from the page, from what EV is shown, and from every earlier version.
 - ✓ **U-03** Nothing from the portrait reaches an agent. Its brief carries only the notes EV named for that work, as background with their situation.
 
 ## Task 3: One store with real ids
@@ -114,7 +114,7 @@ A conversation is a queue. Whatever happens in it (a message from the person, wo
 - ✓ **Q-02** Two messages sent in quick succession are handled in order: the second is read knowing the first and what it started.
 - ✓ **Q-03** A message EV has received survives a crash and is answered afterwards without being sent again.
 - ✓ **Q-04** A change sent while the result is being reviewed reaches the agent before the work can be called done.
-- ✗ **Q-05** Work that finishes after a restart is announced exactly once.
+- ✓ **Q-05** Work that finishes after a restart is announced exactly once.
 - ✓ **Q-06** Opening a long conversation lands on the newest message, not the oldest.
 - ✓ **Q-07** The page shows the message at once and that EV is thinking, for as long as it is.
 

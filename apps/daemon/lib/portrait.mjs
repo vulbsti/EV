@@ -174,15 +174,17 @@ export class Portrait {
    */
   _changedSince(line, at, refs = line.evidence) {
     if (line.text === null) return true;
-    for (const ref of refs) {
-      if (!ref.startsWith("memory:")) continue;
-      const claimId = ref.slice(7);
-      const claim = this._notes().find((note) => note.claimId === claimId);
-      if (!claim) return true;
-      if (claim.current.createdAt > at) return true;
-      if (this.memory.evidence(claimId).some((item) => item.at > at)) return true;
-    }
-    return false;
+    return refs.some((ref) => this._refChanged(ref, at));
+  }
+
+  /** True when a note gained a revision or evidence after `at`, or is no longer usable. */
+  _refChanged(ref, at) {
+    if (!ref.startsWith("memory:")) return false;
+    const claimId = ref.slice(7);
+    const claim = this._notes().find((note) => note.claimId === claimId);
+    if (!claim) return true;
+    if (claim.current.createdAt > at) return true;
+    return this.memory.evidence(claimId).some((item) => item.at > at);
   }
 
   async _run() {
@@ -216,6 +218,8 @@ export class Portrait {
     const lines = [];
     const at = new Date(this.now()).toISOString();
     const placed = new Set();
+    // What the current sentences already rest on: a new sentence needs something beyond it, or something in it that changed.
+    const cited = new Set((current?.lines ?? []).filter((line) => line.text !== null).flatMap((line) => line.evidence));
     const keep = (old) => { lines.push({ lineId: old.lineId, text: old.text, why: old.why, writtenAt: old.writtenAt, evidence: old.evidence }); placed.add(old.lineId); };
     for (const entry of Array.isArray(answer?.lines) ? answer.lines.slice(0, 12) : []) {
       const old = lineIds.get(String(entry?.line ?? "")) ?? null;
@@ -225,6 +229,7 @@ export class Portrait {
       const text = clip(entry?.text, 400);
       if (!text) { skipped.push("a sentence with no words"); continue; }
       if (!evidence.length) { skipped.push(`"${clip(text, 60)}" rests on nothing`); continue; }
+      if (!old && current && !evidence.some((ref) => !cited.has(ref) || this._refChanged(ref, current.at))) { skipped.push(`"${clip(text, 60)}" has nothing new behind it`); continue; }
       lines.push({ lineId: old?.lineId ?? randomUUID(), text, why: clip(entry?.why, 800) || null, writtenAt: at, evidence });
       if (old) placed.add(old.lineId);
     }

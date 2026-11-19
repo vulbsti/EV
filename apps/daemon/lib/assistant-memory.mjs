@@ -412,6 +412,8 @@ export class AssistantMemoryStore {
     if (claim.owner_id !== ownerId) throw codedError("MEMORY_SCOPE_DENIED", "Memory belongs to another owner");
     this._transaction(() => {
       this.database.prepare("DELETE FROM memory_situations WHERE claim_id = ?").run(claimId);
+      // A portrait sentence resting on it may quote a situation in its why.
+      this.store.dropFromPortrait(`memory:${claimId}`);
       this.store.erased();
       this._nextMemoryRevision();
     });
