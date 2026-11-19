@@ -772,6 +772,8 @@ async function handleApi(request, response, url) {
     const body = await readJson(request);
     const item = String(body.item ?? "");
     if (!/^(message|work|import):[A-Za-z0-9._:-]{1,128}$/.test(item)) throw Object.assign(new Error("item must be message:…, work:… or import:…"), { statusCode: 400 });
+    // "Not this thread": out of that one thread, free to be placed anywhere else. Otherwise a pinned move.
+    if ((body.to === null || body.to === undefined) && body.from) return json(response, 200, threadsEngine.takeOut(item, String(body.from)));
     return json(response, 200, threadsEngine.move(item, body.to === null || body.to === undefined ? null : String(body.to)));
   }
   if (request.method === "POST" && url.pathname === "/api/assistant/threads/regroup") {

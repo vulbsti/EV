@@ -376,6 +376,13 @@ CREATE TABLE IF NOT EXISTS regroup_threads (
   merged_into TEXT,
   PRIMARY KEY (regroup_id, thread_id)
 );
+-- The person took an item out of a thread ("not this thread"). No model or code puts it back there; it may go anywhere else.
+CREATE TABLE IF NOT EXISTS thread_out (
+  item TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  PRIMARY KEY (item, thread_id)
+);
 CREATE TABLE IF NOT EXISTS regroup_links (
   regroup_id TEXT NOT NULL REFERENCES regroups(regroup_id),
   item TEXT NOT NULL,
@@ -748,6 +755,7 @@ export function openStore({ path = ":memory:" } = {}) {
     const touched = db.prepare("SELECT thread_id FROM thread_links WHERE item = ?").all(item).map((row) => row.thread_id);
     db.prepare("DELETE FROM thread_links WHERE item = ?").run(item);
     db.prepare("DELETE FROM regroup_links WHERE item = ?").run(item);
+    db.prepare("DELETE FROM thread_out WHERE item = ?").run(item);
     for (const threadId of touched) {
       db.prepare("UPDATE threads SET name = ?, card = NULL, updated_at = ? WHERE thread_id = ?").run(FORGOTTEN_NAME, now(), threadId);
       db.prepare("UPDATE regroup_threads SET name = ?, card = NULL WHERE thread_id = ?").run(FORGOTTEN_NAME, threadId);
@@ -757,6 +765,7 @@ export function openStore({ path = ":memory:" } = {}) {
       for (let index = 0; index < gone.length; index++) gone.push(...db.prepare("SELECT thread_id FROM threads WHERE merged_into = ?").all(gone[index]).map((row) => row.thread_id));
       for (const id of gone.reverse()) {
         db.prepare("DELETE FROM thread_links WHERE thread_id = ?").run(id);
+        db.prepare("DELETE FROM thread_out WHERE thread_id = ?").run(id);
         db.prepare("UPDATE regroup_threads SET name = ?, card = NULL WHERE thread_id = ?").run(FORGOTTEN_NAME, id);
         db.prepare("DELETE FROM threads WHERE thread_id = ?").run(id);
       }

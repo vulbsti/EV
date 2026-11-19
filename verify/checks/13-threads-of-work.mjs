@@ -96,6 +96,36 @@ export default {
       }
     },
     {
+      id: "G-07",
+      expect: "When the person takes a message out of a thread, no model puts it back in that thread: not the filer, not an organise run, not by merging another thread into it.",
+      async run({ start, assert }) {
+        let round = 0;
+        const ev = await start({ script: {
+          ev: (turn) => turn.reply("Noted."),
+          // The filer puts everything it sees into Pricing.
+          filer: (call) => ({ items: [...call.text.matchAll(/\[((?:message|work):[A-Za-z0-9-]+)\]/g)].map((match) => ({ item: match[1], gist: "", threads: [threadId(call.text, "Pricing")].filter(Boolean) })) }),
+          grouper: (call) => {
+            round++;
+            const item = itemFor(call.text, "pricing comparison");
+            if (round === 1) return { ops: [{ op: "create", key: "a", name: "Pricing", items: [item, itemFor(call.text, "pricing call")] }, { op: "create", key: "b", name: "Website", items: [itemFor(call.text, "onboarding")] }] };
+            const pricing = `thread:${threadId(call.text, "Pricing")}`, website = `thread:${threadId(call.text, "Website")}`;
+            return { ops: [{ op: "move", item, to: pricing }, { op: "add", item, thread: pricing }, { op: "move", item, to: website }, { op: "merge", from: website, into: pricing }] };
+          }
+        } });
+        for (const text of SAID) await ev.say(text);
+        const first = await organise(ev);
+        const pricing = first.threads.find((thread) => thread.name === "Pricing");
+        const { value } = await ev.api(`/api/assistant/threads/${encodeURIComponent(pricing.threadId)}`);
+        const message = value.messages.find((entry) => entry.content === SAID[1]);
+        const out = await ev.api("/api/assistant/threads/move", { item: `message:${message.messageId}`, to: null, from: pricing.threadId });
+        assert.ok(out.ok, `Taking a message out of a thread failed: ${out.value?.error}`);
+        await ev.say("one more thing for later");
+        await organise(ev);
+        const where = await placement(ev);
+        assert.ok(!(where.Pricing ?? []).includes(SAID[1]), `The message the person took out of Pricing is back in it: ${JSON.stringify(where)}`);
+      }
+    },
+    {
       id: "G-03",
       expect: "An organise run changes the threads all at once or not at all, and undoing it puts back exactly what was there before.",
       async run({ start, assert }) {

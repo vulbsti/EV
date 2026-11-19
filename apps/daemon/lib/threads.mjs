@@ -21,6 +21,8 @@ import { callModel, modelTurn, parseModelJson, sessionHeader, toolResult, userMe
  *   operations; code applies them in one transaction and keeps what was there
  *   before, so the latest run can be undone whole.
  * - person: a move the person made. It is pinned: nothing else moves it.
+ *   Taking an item out of a thread ("not this thread") is not a pin: the item
+ *   may be placed anywhere else, but never back in that thread (thread_out).
  *
  * Code owns these facts: an item with no thread is listed as "not grouped
  * yet", so nothing is ever lost; a pinned item is never moved by a model; a
@@ -154,10 +156,18 @@ export function threadFacts(store) {
     return "";
   }
 
-  /** A line about an item for the grouper and EV: its date, ref and gist (or its words when it has none). */
-  const itemLine = (row) => `- [${when(row.at)}] ${row.item}: ${row.gist ?? describe(row.item).replace(/\n/g, " ")}`;
+  /** Threads the person took this item out of, as they now are (a merged thread counts as the one it became). */
+  const outOf = (item) => [...new Set(db.prepare("SELECT thread_id FROM thread_out WHERE item = ?").all(item).map((row) => live(row.thread_id)).filter(Boolean))];
+  /** Whether the person took the item out of this thread. */
+  const keptOut = (item, threadId) => outOf(item).includes(threadId);
 
-  return { live, linksOf, threadsOfItem, itemsOfMessage, messageThreads, refThreads, thread, liveThreads, items, unlinked, describe, itemLine };
+  /** A line about an item for the grouper and EV: its date, ref and gist (or its words when it has none), and any thread the person took it out of. */
+  const itemLine = (row) => {
+    const out = outOf(row.item).map((threadId) => `thread:${threadId} "${thread(threadId)?.name ?? ""}"`);
+    return `- [${when(row.at)}] ${row.item}: ${row.gist ?? describe(row.item).replace(/\n/g, " ")}${out.length ? ` (the person took this out of ${out.join(" and ")}: never put it back there)` : ""}`;
+  };
+
+  return { live, linksOf, outOf, keptOut, threadsOfItem, itemsOfMessage, messageThreads, refThreads, thread, liveThreads, items, unlinked, describe, itemLine };
 }
 
 // ------------------------------------------------------------- models
@@ -258,9 +268,10 @@ export class Threads {
     }
   }
 
+  /** Links an item to threads. A thread the person took it out of is never linked again, except by the person. */
   _link(item, threadIds, by, sure = null) {
     const at = this.iso();
-    for (const threadId of threadIds) this.db.prepare("INSERT OR IGNORE INTO thread_links (item, thread_id, by, sure, at) VALUES (?, ?, ?, ?, ?)").run(item, threadId, by, sure, at);
+    for (const threadId of threadIds) if (by === "person" || !this.facts.keptOut(item, threadId)) this.db.prepare("INSERT OR IGNORE INTO thread_links (item, thread_id, by, sure, at) VALUES (?, ?, ?, ?, ?)").run(item, threadId, by, sure, at);
   }
 
   _filed(item, { gist = undefined } = {}) {
@@ -506,7 +517,7 @@ export class Threads {
           saveThread(from); saveThread(into);
           for (const { item } of db.prepare("SELECT item FROM thread_links WHERE thread_id = ?").all(from)) {
             saveItem(item);
-            db.prepare("INSERT OR IGNORE INTO thread_links (item, thread_id, by, sure, at) SELECT item, ?, by, sure, at FROM thread_links WHERE item = ? AND thread_id = ?").run(into, item, from);
+            if (!facts.keptOut(item, into)) db.prepare("INSERT OR IGNORE INTO thread_links (item, thread_id, by, sure, at) SELECT item, ?, by, sure, at FROM thread_links WHERE item = ? AND thread_id = ?").run(into, item, from);
             db.prepare("DELETE FROM thread_links WHERE item = ? AND thread_id = ?").run(item, from);
           }
           db.prepare("UPDATE threads SET merged_into = ?, updated_at = ? WHERE thread_id = ?").run(into, at, from);
@@ -547,7 +558,7 @@ export class Threads {
 
   /** Puts back what the latest organise run changed, as a whole. A move the person made since is kept. */
   undo(regroupId) {
-    const { db } = this;
+    const { facts, db } = this;
     const latest = db.prepare("SELECT * FROM regroups ORDER BY at DESC, rowid DESC LIMIT 1").get();
     if (!latest || latest.regroup_id !== regroupId) throw codedError("REGROUP_NOT_UNDOABLE", "Only the latest organise run can be undone");
     if (latest.undone_at) throw codedError("REGROUP_NOT_UNDOABLE", "That organise run was already undone");
@@ -568,7 +579,7 @@ export class Threads {
         if (pinned(row.item)) continue;
         db.prepare("DELETE FROM thread_links WHERE item = ?").run(row.item);
         // A thread removed since (emptied by a forget) is not brought back.
-        for (const link of JSON.parse(row.links_json)) if (db.prepare("SELECT 1 FROM threads WHERE thread_id = ?").get(link.thread_id)) db.prepare("INSERT OR IGNORE INTO thread_links (item, thread_id, by, sure, at) VALUES (?, ?, ?, ?, ?)").run(row.item, link.thread_id, link.by, link.sure, link.at);
+        for (const link of JSON.parse(row.links_json)) if (db.prepare("SELECT 1 FROM threads WHERE thread_id = ?").get(link.thread_id) && !facts.keptOut(row.item, facts.live(link.thread_id))) db.prepare("INSERT OR IGNORE INTO thread_links (item, thread_id, by, sure, at) VALUES (?, ?, ?, ?, ?)").run(row.item, link.thread_id, link.by, link.sure, link.at);
         items.push(row.item);
       }
       for (const thread of threads) {
@@ -596,8 +607,27 @@ export class Threads {
     if (threadId !== null && !to) throw codedError("THREAD_NOT_FOUND", `No thread ${threadId}`);
     this.store.tx(() => {
       db.prepare("DELETE FROM thread_links WHERE item = ?").run(item);
-      if (to) this._link(item, [to], "person");
+      if (to) { db.prepare("DELETE FROM thread_out WHERE item = ? AND thread_id = ?").run(item, to); this._link(item, [to], "person"); }
       db.prepare("INSERT INTO filing (item, filed_at, pinned) VALUES (?, ?, 1) ON CONFLICT(item) DO UPDATE SET filed_at = excluded.filed_at, pinned = 1").run(item, this.iso());
+      this._announce([item]);
+    });
+    return { item, threads: facts.threadsOfItem(item) };
+  }
+
+  /**
+   * The person says an item is not part of this thread. It leaves that thread
+   * for good, keeps any other thread it is in, and is not pinned: if it is in
+   * none, the next organise run may place it anywhere else.
+   */
+  takeOut(item, threadId) {
+    const { facts, db } = this;
+    if (!facts.items("x.item = ?", [item]).length) throw codedError("ITEM_NOT_FOUND", `Nothing to move called ${item}`);
+    const from = facts.live(String(threadId).replace(/^thread:/, ""));
+    if (!from) throw codedError("THREAD_NOT_FOUND", `No thread ${threadId}`);
+    this.store.tx(() => {
+      db.prepare("DELETE FROM thread_links WHERE item = ? AND thread_id = ?").run(item, from);
+      db.prepare("INSERT OR IGNORE INTO thread_out (item, thread_id, at) VALUES (?, ?, ?)").run(item, from, this.iso());
+      db.prepare("INSERT INTO filing (item, filed_at, pinned) VALUES (?, ?, 0) ON CONFLICT(item) DO UPDATE SET filed_at = excluded.filed_at, pinned = 0").run(item, this.iso());
       this._announce([item]);
     });
     return { item, threads: facts.threadsOfItem(item) };
