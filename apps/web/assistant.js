@@ -1147,13 +1147,13 @@ function claimStanding(claim) {
   return { kind: "other", badge: "", className: "" };
 }
 const day = (iso) => String(iso ?? "").slice(0, 10);
-const evidenceItem = (item) => `<li>${escapeHtml(day(item.at))}: ${item.forgotten ? "(forgotten)" : item.said ? `“${escapeHtml(item.said)}”` : item.work ? `work “${escapeHtml(item.work)}”` : "entered by hand"}</li>`;
+const evidenceItem = (item) => `<li>${escapeHtml(day(item.at))}: ${item.forgotten ? "(forgotten)" : item.said ? `“${escapeHtml(item.said)}”` : item.work ? `work “${escapeHtml(item.work)}”` : "entered by hand"}${item.situation && !item.forgotten ? `, when ${escapeHtml(item.situation)}` : ""}</li>`;
 
 function renderMemory() {
   const shown = memoryClaims.filter((claim) => memoryFilter === "all" || claimStanding(claim).kind === memoryFilter);
   elements.memoryList.innerHTML = shown.length ? shown.map((claim) => {
     const standing = claimStanding(claim);
-    const meta = [KIND_LABELS[claim.kind] ?? claim.kind, claim.current.value?.state ? String(claim.current.value.state).replace("_", " ") : "", `revision ${claim.current.revision}`].filter(Boolean);
+    const meta = [KIND_LABELS[claim.kind] ?? claim.kind, claim.current.value?.state ? String(claim.current.value.state).replace("_", " ") : "", claim.kind === "state" && claim.current.value?.until ? `until ${claim.current.value.until}` : "", `revision ${claim.current.revision}`].filter(Boolean);
     return `<article class="tile mem" data-claim-id="${escapeHtml(claim.claimId)}">
       <p>${escapeHtml(claimText(claim))}</p>
       <div class="meta">${standing.badge ? `<span class="badge ${standing.className}">${escapeHtml(standing.badge)}</span>` : ""}<span>${escapeHtml(meta.join(" · "))}</span></div>

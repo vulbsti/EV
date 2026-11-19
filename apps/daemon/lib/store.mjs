@@ -199,6 +199,16 @@ CREATE TABLE IF NOT EXISTS memory_links (
   created_at TEXT NOT NULL,
   PRIMARY KEY (from_claim_id, to_claim_id, link_type)
 );
+-- What was going on when a memory was seen, once per piece of evidence: a
+-- preference is never stored alone, so nothing downstream can read it as a
+-- rule. Erasing the evidence (an event) or the memory deletes it.
+CREATE TABLE IF NOT EXISTS memory_situations (
+  claim_id TEXT NOT NULL REFERENCES memory_claims(claim_id),
+  source_id TEXT NOT NULL REFERENCES memory_sources(source_id),
+  situation TEXT NOT NULL,
+  PRIMARY KEY (claim_id, source_id)
+);
+CREATE INDEX IF NOT EXISTS memory_situations_source ON memory_situations (source_id);
 CREATE TABLE IF NOT EXISTS memory_context_manifests (
   manifest_id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL,
@@ -797,7 +807,7 @@ export function openStore({ path = ":memory:" } = {}) {
       for (const id of ids) {
         db.prepare("UPDATE messages SET content = ?, intent_json = NULL WHERE message_id = ?").run(ERASED_TEXT, id);
         db.prepare("UPDATE events SET data_json = ? WHERE message_id = ?").run(ERASED_DATA, id);
-        for (const row of db.prepare("SELECT event_id FROM events WHERE message_id = ?").all(id)) dropFromHistory(row.event_id);
+        for (const row of db.prepare("SELECT event_id FROM events WHERE message_id = ?").all(id)) { dropFromHistory(row.event_id); dropSituations(row.event_id); }
         dropFromThreads(`message:${id}`);
       }
       // So an open page hears that these words are gone.
@@ -809,6 +819,11 @@ export function openStore({ path = ":memory:" } = {}) {
     });
   }
 
+  /** What was going on when an event was seen, as memory recorded it, goes with the event. */
+  function dropSituations(eventId) {
+    db.prepare("DELETE FROM memory_situations WHERE source_id = ?").run(eventId);
+  }
+
   /** Blanks one event, takes it out of the history, and follows its link to the message it records. */
   function eraseEvent(eventId) {
     tx(() => {
@@ -816,6 +831,7 @@ export function openStore({ path = ":memory:" } = {}) {
       if (!row) return;
       db.prepare("UPDATE events SET data_json = ? WHERE event_id = ?").run(ERASED_DATA, eventId);
       dropFromHistory(eventId);
+      dropSituations(eventId);
       if (row.message_id) eraseMessage(row.message_id);
       scrubAfterCommit = true;
     });

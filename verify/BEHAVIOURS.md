@@ -177,6 +177,7 @@ EV knows the person the way a long-time colleague does. It keeps a short dated h
 - ✓ **M-05** When something about the person changes, what EV knew before can still be found, marked as no longer current.
 - ✓ **M-06** EV keeps a dated history of what happened that stays short however much happens, and every line opens back to its source.
 - ✓ **M-07** Forgetting something removes it from the history as well.
+- ✓ **M-08** Forgetting something also removes it from what was going on when EV noted other things, while those other things stay.
 
 Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 

@@ -18,7 +18,7 @@ import { SignIns } from "./lib/sign-in.mjs";
 import { ModelRelay } from "./lib/model-relay.mjs";
 import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
-import { MemoryLearner, historyView, memoryView } from "./lib/ev-memory.mjs";
+import { MemoryLearner, historyView, memoryView, rightNow } from "./lib/ev-memory.mjs";
 import { Threads } from "./lib/threads.mjs";
 import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
 import { StandingResponsibilityStore } from "./lib/standing-responsibility.mjs";
@@ -837,6 +837,10 @@ async function handleApi(request, response, url) {
     if (!/^[A-Za-z0-9:._-]{1,128}$/.test(scope)) throw Object.assign(new Error("scope is invalid"), { statusCode: 400 });
     const claims = assistantMemory.recall({ ownerId: assistantOwnerId, scope, includeCandidates: true }).map((claim) => ({ ...claim, evidence: assistantMemory.evidence(claim.claimId) }));
     return json(response, 200, { ownerId: assistantOwnerId, scope, claims });
+  }
+  if (request.method === "GET" && url.pathname === "/api/assistant/understanding") {
+    // How EV understands the person, as the page shows it.
+    return json(response, 200, { rightNow: rightNow(assistantMemory, assistantOwnerId) });
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/timeline") {
     // Oldest first; each line lists the events it summarises, read through their links.
