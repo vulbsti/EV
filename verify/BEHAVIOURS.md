@@ -77,6 +77,7 @@ The one conversation is grouped by the work it is about. A small model files eac
 
 - ✓ **G-01** Whatever the models decide, every message the person sent is either in a thread or listed under "not grouped yet". Nothing drops out of sight.
 - ✓ **G-02** When the person puts a message in a thread themselves, no model moves it again: not the filer, not a later organise run.
+- ✓ **G-07** When the person takes a message out of a thread, no model puts it back in that thread: not the filer, not an organise run, not by merging another thread into it.
 - ✓ **G-03** An organise run changes the threads all at once or not at all, and undoing it puts back exactly what was there before.
 - ✓ **G-04** A thread keeps its id when it is renamed or merged into another, so a link to it still opens the work it became.
 - ✓ **G-05** Filing never holds up a reply: while the filer is still working on one message, the person's next message is answered.

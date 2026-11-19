@@ -746,7 +746,7 @@ elements.col.addEventListener("change", (event) => {
 
 /** Moves one item out of the focused thread (to null, or into another), then shows the thread as it now is. */
 async function placeItem(item, to) {
-  if (await threadCommand("move", { item, to })) await loadFocus();
+  if (await threadCommand("move", { item, to, ...(to === null ? { from: focus?.threadId } : {}) })) await loadFocus();
 }
 
 elements.col.addEventListener("click", (event) => {
