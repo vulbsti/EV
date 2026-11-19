@@ -13,6 +13,7 @@ KenWise reads `.env` in its folder (`~/.kenwise/.env` after the installer) each 
 ## Agents and review
 
 - `EV_OPENCLAW_MODEL`: a different model for agents, named the same way.
+- `EV_MODEL_EV`, `EV_MODEL_REVIEWER`, `EV_MODEL_LEARNER` (unset by default): a model for one role only, overriding `EV_MODEL` for it, so cheap work can run on a cheap model.
 - `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you. The default is docker: each agent sees only its goal folder plus its own home folder. Either way each piece of work has its own home, never yours. `EV_OPENCLAW_IMAGE` overrides the image name.
 - Web search uses DuckDuckGo (no key) and is built into the image. In host mode, install the plugin with `npm i --prefix ~/.local/share/openclaw-plugins @openclaw/duckduckgo-plugin` and set `EV_OPENCLAW_SEARCH_PLUGIN` to its absolute path.
 - `EV_REVIEW_HOLD_MS` (default `30000,120000`): how long KenWise waits before retrying an unavailable reviewer. A result is never delivered unchecked.

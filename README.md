@@ -22,9 +22,9 @@ Most AI assistants are an empty chat window and a list of facts about you. KenWi
 
 KenWise is a working daemon you can run today, and an interface that is still being built.
 
-- **Runs today:** the whole loop above, with OpenClaw agents in docker, memory learnt in the background, forget, search over everything, and import of your Claude Code sessions. `npm run verify` checks 56 behaviours KenWise should have, with a scripted model: 54 hold. The two that don't are about reaching you when the page is closed, which isn't built.
+- **Runs today:** the whole loop above, with OpenClaw agents in docker, memory learnt in the background, forget, search over everything, and import of your Claude Code sessions. The page is the approved interface's shell: one ongoing conversation that updates live, with work cards, the Work sheet, look settings, notes and history, search, and a phone layout. `npm run verify` checks 59 behaviours KenWise should have, with a scripted model: 57 hold. The two that don't are about reaching you when the page is closed, which isn't built.
 - **Real models:** so far KenWise has only been run on two small models, Claude Haiku 5.5 and muse-spark. In the last fully graded run they passed 6 and 5 of 17 hand-graded scenarios. Most failures came from six gaps that have since been fixed, and the re-run after those fixes is not finished. Whether KenWise really "gets you" on a strong model has not been measured yet.
-- **Being built:** the interface in the pictures above (today's page is plainer), signing in with accounts you already have instead of one API key, a router that learns which model suits which work, and reaching you when you're away. See the [roadmap](docs/ROADMAP.md).
+- **Being built:** the parts of the interface in the pictures above that need new engines (the live feed and pop-out, threads of work, the portrait of you, models and accounts), signing in with accounts you already have instead of one API key, a router that learns which model suits which work, and reaching you when you're away. See the [roadmap](docs/ROADMAP.md).
 - **Name:** KenWise was called EV while it was being built. The code, the `EV_*` settings and some internal docs still use that name.
 
 ## Install

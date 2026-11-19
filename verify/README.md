@@ -86,6 +86,8 @@ A check has to name something. These names are the smallest contract; if the bui
 | Search for the page | `GET /api/assistant/search?q=` gives `{hits}` |
 | Stalled agent | `EV_WORKER_STALL_MS` sets how long without progress counts as stuck |
 | Page | Marks "EV is thinking" with `aria-busy="true"` |
+| Stream for the page | `GET /api/assistant/stream?conversationId=` is a server-sent event stream. It opens with a `snapshot` frame, then one frame per change; each frame's `id` is the last change it covers, and `data` is `{messages, tasks, thinking}` holding the latest version of whatever changed. A `Last-Event-ID` header resumes after that change instead of sending a snapshot |
+| Several pieces of work per message | A message lists its work as `work: [{taskId, how}]` |
 
 Settings EV already has that the harness relies on: `EV_MODEL_URL`, `EV_DATA_DIR`, `EV_API_TOKEN`, `EV_OPENCLAW_SANDBOX=host`, `EV_REVIEW_HOLD_MS`, `EV_AGENT_TOKEN_BUDGET`, and finding `openclaw` on the `PATH`.
 

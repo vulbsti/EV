@@ -40,6 +40,14 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 - `L9-07` / `L9-08` A follow-up after two finished pieces of work goes into the one it is about; a similar-sounding new ask does not.
 - `L8-04` / `L6-07` A vague request is met with a stated assumption when being wrong is cheap, and with a question before anything that cannot be undone.
 
+## Task 10: The page stays live
+
+EV is one conversation that never ends, and the page is a live view of it. These are the guarantees under that view: a page that lost its connection catches up on exactly what it missed, a message about several pieces of work loses none of them, and what was forgotten leaves an open page at once. How the page looks and behaves was walked through once after it was built (design/build/verification/plumbing.md), not checked on every push.
+
+- ✓ **P-02** A page that lost its connection, even across a restart of EV, catches up on exactly what it missed: nothing lost, nothing twice, and it ends up seeing what a freshly opened page sees.
+- ✓ **P-03** When one message asks for two pieces of work, both are tied to that message, and the page shows both under it.
+- ✓ **P-04** Forgetting something takes it off an open page at once, without a reload.
+
 ## Task 3: One store with real ids
 
 Everything EV holds lives in one place and is linked: a message to the work it started, the work to its result, a memory to where it came from. Because of that, forgetting reaches every copy, a restart loses nothing, and a result can never be too large to keep.
