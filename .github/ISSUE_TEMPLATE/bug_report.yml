@@ -1,0 +1,40 @@
+name: Bug report
+description: EV crashed, lost something, or the install or a command failed.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Security problems go through a private advisory instead (see SECURITY.md). Remove anything private from logs and transcripts before you paste them.
+  - type: input
+    id: commit
+    attributes:
+      label: EV commit
+      description: Output of `git -C ~/.ev rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS, Node.js and docker versions
+      placeholder: "macOS 16, Node 24.16.0, Docker 29.1"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: "`EV_MODEL`, and `EV_OPENCLAW_MODEL` if you set it."
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: The relevant part of `ev logs` (or `~/.ev/data/ev.log`).
+      render: text

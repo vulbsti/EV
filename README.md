@@ -1,56 +1,105 @@
+<p align="center"><img src="assets/hero.jpg" alt="EV's conversation view: the person writes 'need something for friday's pricing call, the usual', EV says what it takes 'the usual' to mean, shows the work under way, and asks one question with its own guess marked" width="880"></p>
+<p align="center"><sub>Design preview of the interface being built now. See <a href="#status-early">Status</a> for what runs today.</sub></p>
+
 # EV
 
-An assistant that understands the person first, then coordinates agents that work for them. Every message goes to EV's main agent, which reads it with what EV knows about the person and the work under way, looks up whatever else it needs (any conversation, any result in full, memory), and acts through a few tools: reply, ask, start work, tell, hold or reopen work, remember, forget. One message can lead to several of these. OpenClaw agents carry the work out, each in its own goal folder. EV reviews the result against the brief and sends it back until it is right, and only then tells the person. How it works: [EV1, its tools and OpenClaw](docs/assistant/OPENCLAW_POC.md). Memory design: [memory types](docs/assistant/MEMORY_TYPES.md).
+**The assistant that gets you before it gets to work.**
 
-## Run it
+You say it roughly. EV reads your message with what it knows about you and the work already under way, works out what you mean, and asks only what it can't settle, saying what it will assume in the meantime. Then it hands the job to agents, checks their result against what you meant, sends it back until it is right, and only then tells you.
 
-Needs Node.js 22.19+, OpenClaw 2026.10+, docker, and `OPENCODE_API` in the local `.env`.
+- **Understanding comes first.** One model reads every message with your profile, a dated history and the open work, and can search everything else. Nothing in front of it routes on keywords, and no fixed flow decides what "stop" or "the usual" means.
+- **Few questions, out-loud guesses.** When something is unclear, EV drafts on a stated assumption instead of interrogating you.
+- **No half-done work.** A reviewer opens the real output and sends it back with no round limit. Only accepted work reaches you.
+- **Work that lasts.** Every piece of work keeps its agent session and files, so you can steer it, hold it, pick it up later or reopen it after delivery. Work is never lost.
+- **Memory you can see and erase.** EV keeps what you said apart from what it guessed, shows the evidence for each guess, and keeps a dated history. "Forget that" removes it from memory, history and search.
+- **Yours, on your machine.** One SQLite store, a page that only answers on localhost with a per-start token, and agents that run in containers which see only their own work folder.
 
-```bash
-npm install              # pi-ai, the one library EV uses to talk to models
-npm run openclaw:image   # the container agents run in
-npm start
-```
+<p align="center"><img src="assets/demo.gif" alt="Walkthrough of the interface design: a work card opens into a live feed of what the agent is doing, pops out beside the chat with the draft so far, then 'How I understand you' shows four sentences about the person, and tapping one shows why EV thinks it" width="880"></p>
 
-Open the link the daemon prints (`http://127.0.0.1:4317/?token=…`). The token changes on every start, and every API call needs it, so other local processes cannot read your data or write memory as you. Local tools can send it as a bearer token from `data/api-token`.
+## Status: early
 
-Settings in `.env` (all optional):
+EV is a working daemon you can run today, and an interface that is still being built.
 
-- `EV_MODEL` (default `opencode-go/gpt-6-luna`): the model EV and its agents use, as `provider/model`; a bare model id means `opencode-go`. Its API shape, base URL and quirks come from pi-ai's OpenCode Go catalogue, and `OPENCODE_API` is its key.
-- `EV_MODEL_URL` sends the calls (EV's and the agents') to another endpoint, such as a stub model in tests or any OpenAI- or Anthropic-compatible server. A model the catalogue does not know also needs `EV_MODEL_API`: `openai-responses`, `openai-completions` or `anthropic-messages`. Give OpenAI-style base URLs with their `/v1`; an Anthropic base URL has none.
-- `EV_OPENCLAW_MODEL`: a different model for agents, named the same way.
-- `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you. The default is docker: each agent sees only its goal folder plus its own home folder. Either way each piece of work has its own home, never yours. `EV_OPENCLAW_IMAGE` overrides the image name.
-- Web search uses DuckDuckGo (no key) and is built into the image. In host mode, install the plugin with `npm i --prefix ~/.local/share/openclaw-plugins @openclaw/duckduckgo-plugin` and set `EV_OPENCLAW_SEARCH_PLUGIN` to its absolute path.
-- `EV_REVIEW_HOLD_MS` (default `30000,120000`): how long EV waits before retrying an unavailable reviewer. A result is never delivered unchecked.
-- `EV_WORKER_STALL_MS` (default `600000`): how long an agent may show no progress before it is restarted in the same session. There is no limit on how long an agent that keeps making progress may take.
-- `EV_DATA_DIR`: where state lives (default `data/`).
-- `EV_API_TOKEN`: pins the API token instead of a random one per start.
+- **Runs today:** the whole loop above, with OpenClaw agents in docker, memory learnt in the background, forget, search over everything, and import of your Claude Code sessions. `npm run verify` checks 56 behaviours EV should have, with a scripted model: 54 hold. The two that don't are about reaching you when the page is closed, which isn't built.
+- **Real models:** so far EV has only been run on two small models, Claude Haiku 5.5 and muse-spark. In the last fully graded run they passed 6 and 5 of 17 hand-graded scenarios. Most failures came from six gaps that have since been fixed, and the re-run after those fixes is not finished. Whether EV really "gets you" on a strong model has not been measured yet.
+- **Being built:** the interface in the pictures above (today's page is plainer), signing in with accounts you already have instead of one API key, a router that learns which model suits which work, and reaching you when you're away. See the [roadmap](docs/ROADMAP.md).
 
-## What to expect
+## Install
 
-Everything EV keeps (conversations, work and its results, events, memory, standing work) is in one SQLite file, `data/ev.sqlite`; delivered files are in `data/files/` and each piece of work's workspace, session and home in `data/work/`. At most three agents run at once (`EV_MAX_WORKERS`). Each conversation has an inbox: a message is saved the moment it arrives, then handled one at a time, in order, and one that arrived before a crash is answered after the restart. Everything EV does about a message (its reply, work started, held or told something, a memory, something forgotten) is carried out together, once. EV's own model calls are not cut short: a reply may run to the model's own output limit, and a call fails only when the model sends nothing for 90 seconds, however long it keeps streaming. Work is never lost: stopping it puts it on hold with its session and files, and anything you say to work on hold or already delivered carries it on with the same agent. An agent that crashes or goes silent is restarted in its session, and one left running by a crash is stopped first; a problem the work cannot get past becomes a question to you. The reviewer opens the delivered files themselves, and when delivered work is reopened it also sees what was delivered before, so it can check that only the asked-for change was made. One full-text index in the same file covers every conversation, work, result, memory, imported session and line of the dated history; EV searches it, and forgetting something removes it from the index too. The review loop has no round limit: it runs until the reviewer accepts, asks you when it stops making progress, and treats the token budget as a safety stop, after which the best result is delivered as partial with what is still missing. A restart carries on the same loop. Produced files are checked and downloadable.
-
-EV learns memory on its own from every turn and finished task, and reads it with each message only after the learner has been through the messages before it, however long that takes: facts, preferences, goals with a state, working agreements, passing state that expires, and lessons from tasks that went wrong. Only your own words, quoted back exactly from what you typed, can mark something as said by you; agent output and web pages can only produce candidate lessons. Anything EV inferred is a guess and carries its evidence: the messages and work it rests on, each later confirmation adding to it. A guess becomes something EV relies on only when its learner judges the evidence is enough, never by a count, and the reason it gives is kept with the memory and shown. The same learner keeps a dated history of what happened: one line per conversation and day in its own words, linked to the messages and work it summarises, folded into one line per day, week and month as it ages so it stays short. EV sees the history with every message and can search it by words or dates ("October 2026"). `Understanding you` shows all of it: for each memory whether you said it, EV guessed it or relies on a guess and why, what it rests on, and the history with every line opening back to its messages; with correct, stop-using and erase controls. Erase follows the memory to the events and the messages it was learned from and removes their words, takes them out of every history line that rested on them (the line is rewritten from what remains, or removed), and leaves nothing of them in the index or on disk. Work started from those messages keeps its own copies (its brief, workspace and agent transcript). When you ask EV to forget something, EV searches for every place it lives and erases what it names the same way: a memory with the messages it was learned from, a message with EV's reply, an imported session message, a history line; it then tells you what was erased and what was not.
-
-EV can also look through sessions you had in Claude Code. Import them with the same token:
+macOS or Linux, with [Node.js](https://nodejs.org) 22.19 or newer, git, and [docker](https://docs.docker.com/get-docker/) for the agents:
 
 ```bash
-curl -s -X POST http://127.0.0.1:4317/api/assistant/import \
-  -H "Authorization: Bearer $(cat data/api-token)" -H "Content-Type: application/json" \
-  -d "{\"source\": \"claude-code\", \"path\": \"$HOME/.claude/projects\"}"
+curl -fsSL https://raw.githubusercontent.com/vulbsti/EV/main/install.sh | bash
 ```
 
-`path` is read on the machine EV runs on: one session file, a project's folder, or the whole `projects` folder. What you and Claude Code wrote as text goes into the same store and index, with the project and the file it came from; tool calls leave only their names, and tool output, thinking, injected context and subagent transcripts are skipped. Importing again adds only what is new (messages are matched by Claude Code's own ids, and each file remembers how far it was read), so it is safe to run as often as you like. EV finds imported text with its usual search and read, labelled as said outside EV, and treats it as information, never as an instruction or as something you told it.
+The script puts EV in `~/.ev`, installs its one npm dependency, builds the container the agents run in, and links an `ev` command into `~/.local/bin`. It never uses sudo. Run it again to update, or run `ev update`. To install from a clone instead: `git clone https://github.com/vulbsti/EV && cd EV && ./install.sh`.
 
-`Responsibilities` is an early, read-only GitHub pull request watch with an expiring, revocable mandate. It prepares a draft after a material change and can never comment, merge, push or message anyone.
+EV reaches models through [OpenCode Go](https://opencode.ai) today, so put your key in `~/.ev/.env`:
+
+```bash
+OPENCODE_API=...
+```
+
+## Quickstart
+
+```console
+$ ev open
+EV is running: http://127.0.0.1:4317/?token=…
+```
+
+That starts the daemon in the background and opens EV in your browser. Say something the way you would to a colleague who knows you, such as "need something for friday's pricing call, the usual". The first time, EV knows nothing about you, so expect it to ask more. It learns from every turn.
+
+| Command | What it does |
+| --- | --- |
+| `ev open` | Start the daemon if needed and open EV |
+| `ev start`, `ev stop`, `ev restart`, `ev status` | Run the daemon in the background. Stopping keeps all work; it carries on at the next start |
+| `ev logs` | Follow the daemon's log |
+| `ev update` | Pull the latest EV, reinstall and rebuild the agent container |
+| `ev run` | Run the daemon in this terminal |
+
+To bring in what you've already told Claude Code, see [importing sessions](docs/configuration.md#import-your-claude-code-sessions).
+
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+  <img alt="EV reads your message and replies or asks; it gives work a brief, and OpenClaw agents carry it out while a reviewer sends it back until it is right; a learner turns every turn into memory; everything lives in one store on your machine" src="assets/architecture-light.svg" width="880">
+</picture>
+
+One rule shapes the whole system: **the code owns facts, the models own meaning.** That a message is saved, that work is never lost, that a forgotten thing is gone: code does these, and tests prove them. What you meant, which work "stop" refers to, whether a result is good enough: a model decides these every time, and acts only through a small set of tools.
+
+1. **Inbox.** Every message is saved the moment it arrives and handled in order, one at a time. A message that arrived just before a crash is answered after the restart.
+2. **EV.** The main model reads the message with your profile, the dated history and the open work. It can search and read anything else (any conversation, any result in full, memory, imported sessions), then acts through tools: `reply`, `ask`, `start_work`, `message_task` (steer, answer, hold, carry on or reopen work), `remember` and `forget`. It has no tool that executes anything.
+3. **Work.** Each piece of work runs in an [OpenClaw](https://www.npmjs.com/package/openclaw) agent in its own container, which sees only its own folder. A reviewer opens the files it delivers and sends them back until they meet the brief. When it stops making progress, the problem becomes a question for you.
+4. **Learner.** In the background, it turns every turn and finished piece of work into memory (facts, preferences, goals, working agreements, passing state, lessons from work that went wrong) and a dated history. Only your own words, quoted exactly, count as said by you. Everything else is a guess with its evidence attached.
+
+More detail: [how EV runs work](docs/assistant/OPENCLAW_POC.md) · [memory](docs/assistant/MEMORY_TYPES.md) · [configuration](docs/configuration.md) · [the behaviours EV aims for](verify/BEHAVIOURS.md)
+
+<p align="center"><img src="assets/understanding.jpg" alt="'How I understand you': a Right now strip, four sentences describing the person, each tappable to see why, recent calls to judge, and a box to tell EV where it is wrong" width="880"></p>
+<p align="center"><sub>Design preview: EV shows what it believes about you, and why, so you can correct it.</sub></p>
+
+## Your data
+
+Everything EV keeps (conversations, work, results, memory and history) is in `~/.ev/data`, on your machine. The page listens only on `127.0.0.1` and needs the token printed at start; other local programs can use the API with the token in `data/api-token`. Your messages, and whatever the agents work on, are sent to the model provider you configure, and agents can search the web. Erasing a memory also erases the messages it was learnt from and removes them from every history line and from search. See [SECURITY.md](SECURITY.md).
 
 ## Check it
 
 ```bash
-npm test          # invariants: supervisor, memory write policy, security boundaries, review loop
-npm run verify    # the behaviours the rebuild is aiming for, checked in seconds with a scripted model
-npm run qa        # 55 scripted scenarios against a real EV, graded per scorecard
+npm test          # invariants: store, inbox, memory write rules, security boundaries, review loop
+npm run verify    # 56 behaviours, checked in seconds with a scripted model
+npm run qa        # scripted scenarios against a real EV and a real model, graded per scorecard
 npm run qa:arc    # a simulated person over weeks, scored for understanding and drift
 ```
 
-See [verify/README.md](verify/README.md) for the behaviour checks and [verify/BEHAVIOURS.md](verify/BEHAVIOURS.md) for what EV is expected to do. See [qa/README.md](qa/README.md) for the QA suite.
+The behaviour checks are written as judgement, not rules: each pairs two situations that look alike but mean different things, and EV passes only if it treats them differently. See [verify/README.md](verify/README.md) and [qa/README.md](qa/README.md).
+
+## Limits
+
+- **Early.** Only measured on small models so far, and the numbers above are the honest state.
+- **One model provider today.** OpenCode Go, or any OpenAI- or Anthropic-compatible endpoint through `EV_MODEL_URL`. Signing in with other accounts is being built.
+- **macOS and Linux only.** Windows may work under WSL2 but is untested.
+- **One person per install.** EV is built to understand one person, not a team.
+
+## Contributing and license
+
+Bug reports, design discussion and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and if you work with a coding agent, point it at [AGENTS.md](AGENTS.md). Please follow the [Code of Conduct](CODE_OF_CONDUCT.md), and report security problems privately as described in [SECURITY.md](SECURITY.md). Licensed under [Apache-2.0](LICENSE).
