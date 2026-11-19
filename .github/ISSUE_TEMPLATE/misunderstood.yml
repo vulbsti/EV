@@ -1,0 +1,33 @@
+name: EV misunderstood me
+description: EV read what you meant wrong, asked too much, or delivered the wrong thing.
+labels: [understanding]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These reports are the most useful ones. Change names and details freely, but keep the shape of what happened.
+  - type: textarea
+    id: said
+    attributes:
+      label: What you said
+      description: Your message, and anything earlier that mattered.
+    validations:
+      required: true
+  - type: textarea
+    id: meant
+    attributes:
+      label: What you meant
+    validations:
+      required: true
+  - type: textarea
+    id: did
+    attributes:
+      label: What EV did
+      description: Its reply, question or the work it started.
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: "`EV_MODEL`"
