@@ -369,8 +369,11 @@ export class AssistantWorkerService {
       if (mode === "interrupt") this._steerStop(active);
       return true;
     }
-    active.steering = { mode };
-    if (mode === "interrupt" || !active.maker?.running()) this._steerStop(active);
+    // "next" waits for the step under way when the message came, not for a
+    // quiet moment: a busy agent may start its next step in the same read.
+    const waitFor = active.maker?.running()?.id ?? null;
+    active.steering = { mode, waitFor };
+    if (mode === "interrupt" || !waitFor) this._steerStop(active);
     else {
       active.steering.timer = setTimeout(() => this._steerStop(active), STEER_WAIT_MS);
       active.steering.timer.unref?.();
@@ -697,10 +700,11 @@ export class AssistantWorkerService {
     active.maker = maker;
     const onEvents = (events) => {
       const { done, running } = maker.add(events);
-      // Steering waits for the step under way; once none is, the message can go in.
-      if (active.steering && !running) this._steerStop(active);
       const latest = running ?? done.at(-1);
       this._steps(active, done, latest && { text: latest.label, step: { id: latest.id, kind: latest.kind, startedAt: latest.startedAt, running: Boolean(running) }, model: maker.model });
+      // Once the step steering waits for has finished, the message goes in; a
+      // step the agent already began after it is the one cut short.
+      if (active.steering && !maker.isOpen(active.steering.waitFor)) this._steerStop(active);
     };
     try {
       if (active.shutdownRequested || active.stopRequested) return { status: "stopped" };

@@ -189,6 +189,9 @@ export class StepMaker {
     return { done, running: this.running() };
   }
 
+  /** Whether the step with this id has started and not finished. */
+  isOpen(id) { return id != null && [...this.open.values()].some((step) => step.id === id); }
+
   /** The step that started last and has not finished, labelled in the present tense. */
   running() {
     const step = [...this.open.values()].at(-1);
