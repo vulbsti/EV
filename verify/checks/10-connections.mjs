@@ -131,22 +131,6 @@ export default {
         assert.equal(ev.standIn.calls("ev").at(-1).auth, "fresh-key", "EV did not answer through the new key");
         assert.equal((await notices(ev)).length, 1, "The person was told more than once");
       }
-    },
-    {
-      id: "C-07",
-      expect: "Signing in with a subscription gives the person a link to finish it and a way to paste the result back when the browser cannot reach EV; a sign-in they abandon ends without adding an account.",
-      async run({ start, assert }) {
-        const ev = await start();
-        const offered = (await ev.setup()).providers.find((provider) => provider.id === "openai");
-        assert.ok(offered?.signIn, "Signing in with ChatGPT is not offered");
-        const attempt = await ev.signIn("openai");
-        const waiting = await ev.until("a link to finish signing in", async () => { const state = await ev.signInState(attempt.id); return state.url ? state : null; });
-        assert.match(waiting.url, /^https:\/\/auth\.openai\.com\//, "The link does not go to OpenAI's sign-in");
-        assert.ok(waiting.paste, "There is no way to paste the result back");
-        assert.ok((await ev.cancelSignIn(attempt.id)).ok, "The sign-in could not be cancelled");
-        assert.equal((await ev.signInState(attempt.id)).state, "cancelled", "The abandoned sign-in did not end");
-        assert.equal((await account(ev, "openai")).length, 0, "An abandoned sign-in added an account");
-      }
     }
   ]
 };

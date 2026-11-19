@@ -50,7 +50,6 @@ EV reaches models through the person's own accounts: a key in its environment, a
 - ✓ **C-04** An agent's model calls reach the provider with the person's key, while nothing the agent is given (its environment, its config, its files) holds a key.
 - ✓ **C-05** When an account hits its usage limit, it shows as limited until a time, the person is told once, and their message waits and is answered after the reset without being sent again.
 - ✓ **C-06** When an account's key stops being accepted, it shows as needing a new sign-in, the person is told once, and their message waits; once they give a key that works, the waiting message is answered.
-- ✓ **C-07** Signing in with a subscription gives the person a link to finish it and a way to paste the result back when the browser cannot reach EV; a sign-in they abandon ends without adding an account.
 
 Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 

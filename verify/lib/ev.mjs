@@ -190,10 +190,6 @@ export async function startEV({ script = {}, env = {}, keep = false } = {}) {
     },
     /** Removes an account from the settings screen. Returns { ok, status, value }. */
     removeConnection(id) { return api(`/api/assistant/setup/connections/${encodeURIComponent(id)}`, undefined, "DELETE"); },
-    /** Starts, reads and cancels a subscription sign-in. */
-    signIn(provider) { return planned("subscription sign-in", "/api/assistant/setup/signin", { provider }); },
-    signInState(id) { return planned("subscription sign-in", `/api/assistant/setup/signin/${encodeURIComponent(id)}`); },
-    cancelSignIn(id) { return api(`/api/assistant/setup/signin/${encodeURIComponent(id)}`, undefined, "DELETE"); },
     /** The same search EV1 and the agents use, as the person's own page would call it. */
     async search(query) { return (await planned("search over everything EV holds", `/api/assistant/search?q=${encodeURIComponent(query)}`)).hits; },
 

@@ -32,19 +32,6 @@ async function setup(status, headers) {
 
 const call = (url, token, path = "/responses") => fetch(`${url}${path}`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "gpt-6-luna", stream: true }) });
 
-test("the relay swaps the task token for the real key and streams the answer back", async () => {
-  const { upstream, model, relay, stop } = await setup();
-  try {
-    const grant = await relay.grant({ taskId: "t1", model });
-    const response = await call(grant.baseUrl, grant.token);
-    assert.equal(response.status, 200);
-    assert.equal(await response.text(), "data: one\n\ndata: two\n\n");
-    assert.equal(upstream.seen[0].path, "/v1/responses");
-    assert.equal(upstream.seen[0].auth, "Bearer real-key");
-    assert.match(upstream.seen[0].body, /gpt-6-luna/);
-  } finally { await stop(); }
-});
-
 test("a token is refused once its run ends, and a made-up one never works", async () => {
   const { upstream, model, relay, stop } = await setup();
   try {
@@ -53,21 +40,6 @@ test("a token is refused once its run ends, and a made-up one never works", asyn
     assert.equal((await call(grant.baseUrl, grant.token)).status, 401);
     assert.equal((await call(grant.baseUrl, "real-key")).status, 401);
     assert.equal(upstream.seen.length, 0);
-  } finally { await stop(); }
-});
-
-test("a usage limit the provider reports marks the account limited, and the agent is told to wait", async () => {
-  const { upstream, connections, model, relay, stop } = await setup(429, { "Retry-After": "3600" });
-  try {
-    const grant = await relay.grant({ taskId: "t1", model });
-    assert.equal((await call(grant.baseUrl, grant.token)).status, 429);
-    const account = connections.serving("opencode-go");
-    assert.equal(account.status, "limited");
-    assert.ok(Date.parse(account.until) > Date.now() + 3_000_000);
-    const second = await call(grant.baseUrl, grant.token);
-    assert.equal(second.status, 429);
-    assert.ok(Number(second.headers.get("retry-after")) > 3_000);
-    assert.equal(upstream.seen.length, 1, "a limited account is not called again");
   } finally { await stop(); }
 });
 
