@@ -304,7 +304,10 @@ export class AssistantMemoryStore {
    * messages those events recorded (so they cannot be read or re-learned).
    */
   _redact(sourceIds, claimId = null, keepRevisionId = null) {
-    if (claimId) this.database.prepare("UPDATE memory_revisions SET value_json = 'null' WHERE claim_id = ? AND revision_id IS NOT ?").run(claimId, keepRevisionId);
+    if (claimId) {
+      this.database.prepare("UPDATE memory_revisions SET value_json = 'null' WHERE claim_id = ? AND revision_id IS NOT ?").run(claimId, keepRevisionId);
+      if (!keepRevisionId) this.database.prepare("DELETE FROM memory_situations WHERE claim_id = ?").run(claimId);
+    }
     for (const sourceId of sourceIds) this.forgetEvent(sourceId);
     this.store.erased();
   }
@@ -387,6 +390,18 @@ export class AssistantMemoryStore {
     });
   }
 
+  /**
+   * Records what was going on when a piece of evidence was seen ("replied in
+   * one word to a status update while travelling"). One line per claim and
+   * event; a later one for the same pair replaces it.
+   */
+  noteSituation({ claimId, sourceId, situation }) {
+    const words = typeof situation === "string" ? situation.replace(/\s+/g, " ").trim().slice(0, 300) : "";
+    if (!words) return;
+    this._requireClaim(claimId); this._requireSource(sourceId);
+    this.database.prepare("INSERT INTO memory_situations (claim_id, source_id, situation) VALUES (?, ?, ?) ON CONFLICT(claim_id, source_id) DO UPDATE SET situation = excluded.situation").run(claimId, sourceId, words);
+  }
+
   /** Distinct sources behind any revision of a claim. */
   _evidenceSourceIds(claimId) {
     return this.database.prepare("SELECT DISTINCT rs.source_id FROM memory_revision_sources rs JOIN memory_revisions r ON r.revision_id = rs.revision_id WHERE r.claim_id = ?")
@@ -461,18 +476,20 @@ export class AssistantMemoryStore {
    */
   evidence(claimId) {
     return this.database.prepare(`
-      SELECT DISTINCT s.source_id, s.source_type, s.created_at, e.type, e.at, e.message_id, e.work_id, e.data_json, u.content AS said
+      SELECT DISTINCT s.source_id, s.source_type, s.created_at, e.type, e.at, e.message_id, e.work_id, e.data_json, u.content AS said, ms.situation
       FROM memory_revision_sources rs JOIN memory_revisions r ON r.revision_id = rs.revision_id
       JOIN memory_sources s ON s.source_id = rs.source_id
+      LEFT JOIN memory_situations ms ON ms.claim_id = r.claim_id AND ms.source_id = s.source_id
       LEFT JOIN events e ON e.event_id = s.source_id
       LEFT JOIN messages u ON e.type = 'turn' AND u.message_id = e.message_id
       WHERE r.claim_id = ? ORDER BY COALESCE(e.at, s.created_at)
     `).all(claimId).map((row) => {
       const data = parse(row.data_json, {});
       if (data?.erased) return { at: row.at, forgotten: true };
-      if (row.type === "turn") return { at: row.at, ref: `message:${row.message_id}`, said: row.said };
-      if (row.type === "episode") return { at: row.at, ref: `work:${row.work_id}`, work: data.title ?? null };
-      return { at: row.at ?? row.created_at, entered: row.source_type };
+      const situation = row.situation ? { situation: row.situation } : {};
+      if (row.type === "turn") return { at: row.at, ref: `message:${row.message_id}`, said: row.said, ...situation };
+      if (row.type === "episode") return { at: row.at, ref: `work:${row.work_id}`, work: data.title ?? null, ...situation };
+      return { at: row.at ?? row.created_at, entered: row.source_type, ...situation };
     });
   }
 
