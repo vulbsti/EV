@@ -9,8 +9,8 @@ import { ensurePrivateDirectorySync, secureDatabaseFilesSync } from "./file-perm
  * it. Rules:
  *
  * - Ids are random. Nothing is identified by a title, a position or a time.
- * - Records link to where they came from: a message to the work it started,
- *   was sent into or reports on; a result to its work; an event to its
+ * - Records link to where they came from: a message to every piece of work it
+ *   started, was sent into, stopped or reports on; a result to its work; an event to its
  *   conversation, work and message; a memory to the events it rests on.
  * - State and the event that explains it are written in one transaction.
  * - Erase follows those links, and then clears what SQLite keeps of the old
@@ -52,12 +52,22 @@ CREATE TABLE IF NOT EXISTS messages (
   content TEXT NOT NULL,
   client_message_id TEXT UNIQUE,
   reply_to TEXT REFERENCES messages(message_id),
-  work_id TEXT,
   intent_json TEXT,
   at TEXT NOT NULL,
   UNIQUE (conversation_id, seq)
 );
 CREATE INDEX IF NOT EXISTS messages_reply ON messages (reply_to);
+
+-- The pieces of work a message is about: one message can start two, tell a
+-- third something and stop a fourth. how: started, told, stopped, reports.
+CREATE TABLE IF NOT EXISTS message_work (
+  message_id TEXT NOT NULL REFERENCES messages(message_id),
+  work_id TEXT NOT NULL,
+  how TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (message_id, work_id)
+);
+CREATE INDEX IF NOT EXISTS message_work_work ON message_work (work_id);
 
 -- One inbox per conversation: whatever needs EV's attention, saved on arrival
 -- and handled in order. handled_at is set in the transaction that records
@@ -384,7 +394,7 @@ function mapEvent(row) {
   return { eventId: row.event_id, seq: row.seq, type: row.type, at: row.at, conversationId: row.conversation_id, workId: row.work_id, messageId: row.message_id, responsibilityId: row.responsibility_id, data: parse(row.data_json, {}) };
 }
 
-function mapMessage(row) {
+function mapMessage(row, work = []) {
   if (!row) return null;
   return {
     messageId: row.message_id,
@@ -393,7 +403,9 @@ function mapMessage(row) {
     content: row.content,
     clientMessageId: row.client_message_id,
     replyTo: row.reply_to,
-    taskId: row.work_id,
+    // The first piece of work it is about, for callers that show one.
+    taskId: work[0]?.taskId ?? null,
+    work,
     intent: parse(row.intent_json),
     sequence: row.seq,
     createdAt: row.at
@@ -409,6 +421,13 @@ export function openStore({ path = ":memory:" } = {}) {
   if (onDisk) secureDatabaseFilesSync(path);
   let depth = 0;
   let scrubAfterCommit = false;
+  let wrote = false;
+  const listeners = new Set();
+  /** Tells whoever listens that new events are committed (once per transaction). */
+  function changed() {
+    wrote = false;
+    for (const listener of listeners) { try { listener(); } catch { /* a listener never breaks a write */ } }
+  }
 
   /** Runs `fn` in one transaction; nested calls join it as a savepoint. */
   function tx(fn) {
@@ -425,6 +444,7 @@ export function openStore({ path = ":memory:" } = {}) {
     try { result = fn(); db.exec("COMMIT"); }
     catch (error) {
       scrubAfterCommit = false;
+      wrote = false;
       try { db.exec("ROLLBACK"); } catch { /* keep the original error */ }
       throw error;
     } finally { depth = 0; }
@@ -433,6 +453,7 @@ export function openStore({ path = ":memory:" } = {}) {
       // Erased bytes can still sit in the WAL; move every page home and empty it.
       db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     }
+    if (wrote) changed();
     return result;
   }
 
@@ -453,7 +474,24 @@ export function openStore({ path = ":memory:" } = {}) {
     const at = now();
     const { lastInsertRowid } = db.prepare("INSERT INTO events (event_id, type, at, conversation_id, work_id, message_id, responsibility_id, data_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(eventId, type, at, conversationId, workId, messageId, responsibilityId, JSON.stringify(data ?? {}));
+    if (depth) wrote = true; else changed();
     return { eventId, seq: Number(lastInsertRowid), at };
+  }
+
+  /** Calls `listener` after each committed change; returns a function that stops it. */
+  function onChange(listener) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
+  /** The newest event's position: what a page has seen once it is up to date. */
+  function lastSeq() {
+    return db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events").get().seq;
+  }
+
+  /** Events after position `after`, oldest first. */
+  function eventsAfter(after, limit = 500) {
+    return db.prepare("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?").all(after, limit).map(mapEvent);
   }
 
   function events({ workId, responsibilityId }) {
@@ -468,14 +506,26 @@ export function openStore({ path = ":memory:" } = {}) {
 
   // ---------------------------------------------------------- conversations
 
+  function workOf(messageId) {
+    return db.prepare("SELECT work_id, how FROM message_work WHERE message_id = ? ORDER BY at, rowid").all(messageId).map((row) => ({ taskId: row.work_id, how: row.how }));
+  }
+  const message = (row) => row ? mapMessage(row, workOf(row.message_id)) : null;
+  const messageById = (messageId) => message(db.prepare("SELECT * FROM messages WHERE message_id = ?").get(messageId));
+
+  /** Ties a message to pieces of work ({ workId, how }); a link already there keeps its first meaning. */
+  function link(messageId, work) {
+    for (const { workId, how } of work) if (workId) db.prepare("INSERT OR IGNORE INTO message_work (message_id, work_id, how, at) VALUES (?, ?, ?, ?)").run(messageId, workId, how, Date.now());
+  }
+
   function nextSeq(conversationId) {
     return db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages WHERE conversation_id = ?").get(conversationId).seq;
   }
 
-  function insertMessage({ conversationId, role, content, clientMessageId = null, replyTo = null, workId = null, intent = null }) {
+  function insertMessage({ conversationId, role, content, clientMessageId = null, replyTo = null, work = [], intent = null }) {
     const messageId = randomUUID();
-    db.prepare("INSERT INTO messages (message_id, conversation_id, seq, role, content, client_message_id, reply_to, work_id, intent_json, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(messageId, conversationId, nextSeq(conversationId), role, content, clientMessageId, replyTo, workId, intent === null ? null : JSON.stringify(intent), now());
+    db.prepare("INSERT INTO messages (message_id, conversation_id, seq, role, content, client_message_id, reply_to, intent_json, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(messageId, conversationId, nextSeq(conversationId), role, content, clientMessageId, replyTo, intent === null ? null : JSON.stringify(intent), now());
+    link(messageId, work);
     return messageId;
   }
 
@@ -483,15 +533,15 @@ export function openStore({ path = ":memory:" } = {}) {
     const user = db.prepare("SELECT * FROM messages WHERE message_id = ?").get(messageId);
     if (!user) return null;
     const reply = db.prepare("SELECT * FROM messages WHERE reply_to = ?").get(messageId);
-    const userMessage = mapMessage(user);
-    return { userMessage, assistantMessage: mapMessage(reply), intent: userMessage.intent, workId: user.work_id };
+    const userMessage = message(user);
+    return { userMessage, assistantMessage: message(reply), intent: userMessage.intent, work: userMessage.work };
   }
 
   // ------------------------------------------------------------------ inbox
 
   function mapItem(row) {
     if (!row) return null;
-    return { itemId: row.item_id, conversationId: row.conversation_id, kind: row.kind, at: row.at, message: mapMessage(db.prepare("SELECT * FROM messages WHERE message_id = ?").get(row.message_id)) };
+    return { itemId: row.item_id, conversationId: row.conversation_id, kind: row.kind, at: row.at, message: messageById(row.message_id) };
   }
 
   /**
@@ -501,11 +551,11 @@ export function openStore({ path = ":memory:" } = {}) {
   function receive({ conversationId, clientMessageId, text }) {
     return tx(() => {
       const existing = db.prepare("SELECT * FROM messages WHERE client_message_id = ? AND role = 'user'").get(clientMessageId);
-      if (existing) return { message: mapMessage(existing), replayed: true };
+      if (existing) return { message: message(existing), replayed: true };
       const messageId = insertMessage({ conversationId, role: "user", content: text, clientMessageId });
       db.prepare("INSERT INTO inbox (item_id, conversation_id, kind, message_id, at) VALUES (?, ?, 'message', ?, ?)").run(randomUUID(), conversationId, messageId, now());
       event({ type: "received", conversationId, messageId });
-      return { message: mapMessage(db.prepare("SELECT * FROM messages WHERE message_id = ?").get(messageId)), replayed: false };
+      return { message: messageById(messageId), replayed: false };
     });
   }
 
@@ -521,19 +571,23 @@ export function openStore({ path = ":memory:" } = {}) {
 
   /**
    * Records what EV did about an item and marks it handled, in one
-   * transaction: its reply, the work the message started or was sent into,
+   * transaction: its reply, every piece of work the message started, was sent
+   * into or stopped (`work`: [{ workId, how }], tied to the message and the reply),
    * and the "turn" event the learner reads. Call it inside the transaction
    * that starts or instructs that work, so neither can happen without the other.
    */
-  function handled(itemId, { reply = null, workId = null, intent = null, data = {} } = {}) {
+  function handled(itemId, { reply = null, work = [], intent = null, data = {} } = {}) {
     return tx(() => {
       const row = db.prepare("SELECT * FROM inbox WHERE item_id = ?").get(itemId);
       if (!row) throw codedError("ITEM_NOT_FOUND", `Unknown inbox item: ${itemId}`);
       if (row.handled_at) throw codedError("ITEM_HANDLED", `Inbox item ${itemId} was already handled`);
       db.prepare("UPDATE inbox SET handled_at = ? WHERE item_id = ?").run(now(), itemId);
-      if (row.message_id) db.prepare("UPDATE messages SET work_id = ?, intent_json = ? WHERE message_id = ?").run(workId, intent === null ? null : JSON.stringify(intent), row.message_id);
-      if (reply) insertMessage({ conversationId: row.conversation_id, role: "assistant", content: reply, replyTo: row.message_id, workId });
-      const { eventId } = event({ type: "turn", conversationId: row.conversation_id, workId, messageId: row.message_id, data });
+      if (row.message_id) {
+        db.prepare("UPDATE messages SET intent_json = ? WHERE message_id = ?").run(intent === null ? null : JSON.stringify(intent), row.message_id);
+        link(row.message_id, work);
+      }
+      if (reply) insertMessage({ conversationId: row.conversation_id, role: "assistant", content: reply, replyTo: row.message_id, work });
+      const { eventId } = event({ type: "turn", conversationId: row.conversation_id, workId: work[0]?.workId ?? null, messageId: row.message_id, data });
       return { eventId };
     });
   }
@@ -543,15 +597,25 @@ export function openStore({ path = ":memory:" } = {}) {
     const clientMessageId = `update:${key}`;
     return tx(() => {
       const existing = db.prepare("SELECT * FROM messages WHERE client_message_id = ?").get(clientMessageId);
-      if (existing) return { ...mapMessage(existing), replayed: true };
-      const messageId = insertMessage({ conversationId, role: "assistant", content, clientMessageId, workId });
+      if (existing) return { ...message(existing), replayed: true };
+      const messageId = insertMessage({ conversationId, role: "assistant", content, clientMessageId, work: [{ workId, how: "reports" }] });
       event({ type: "update", conversationId, workId, messageId });
-      return { ...mapMessage(db.prepare("SELECT * FROM messages WHERE message_id = ?").get(messageId)), replayed: false };
+      return { ...messageById(messageId), replayed: false };
     });
   }
 
   function listMessages(conversationId) {
-    return db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq").all(conversationId).map(mapMessage);
+    return db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq").all(conversationId).map(message);
+  }
+
+  /** Up to `limit` messages of a conversation before position `before`, oldest first. */
+  function messagesBefore(conversationId, before = Number.MAX_SAFE_INTEGER, limit = 100) {
+    return db.prepare("SELECT * FROM messages WHERE conversation_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?").all(conversationId, before, limit).reverse().map(message);
+  }
+
+  /** A message and the replies to it. */
+  function messageWithReplies(messageId) {
+    return db.prepare("SELECT * FROM messages WHERE message_id = ? OR reply_to = ? ORDER BY seq").all(messageId, messageId).map(message);
   }
 
   /** The person's messages and EV's replies to them, oldest first; `before` limits them to earlier messages. */
@@ -583,6 +647,11 @@ export function openStore({ path = ":memory:" } = {}) {
         db.prepare("UPDATE messages SET content = ?, intent_json = NULL WHERE message_id = ?").run(ERASED_TEXT, id);
         db.prepare("UPDATE events SET data_json = ? WHERE message_id = ?").run(ERASED_DATA, id);
         for (const row of db.prepare("SELECT event_id FROM events WHERE message_id = ?").all(id)) dropFromHistory(row.event_id);
+      }
+      // So an open page hears that these words are gone.
+      for (const id of ids) {
+        const row = db.prepare("SELECT conversation_id FROM messages WHERE message_id = ?").get(id);
+        if (row) event({ type: "erased", conversationId: row.conversation_id, messageId: id });
       }
       scrubAfterCommit = true;
     });
@@ -631,8 +700,8 @@ export function openStore({ path = ":memory:" } = {}) {
   }
 
   return {
-    db, path, tx, now, counter, bump, event, events, getEvent,
-    receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, listTurns,
+    db, path, tx, now, counter, bump, event, events, getEvent, onChange, lastSeq, eventsAfter,
+    receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messageWithReplies, listTurns,
     eraseMessage, eraseEvent, eraseOutsideMessage, erased, search,
     close: () => db.close()
   };

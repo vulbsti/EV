@@ -14,7 +14,7 @@ async function send(ev, text, id) {
 const answerTo = async (ev, messageId) => (await ev.conversation()).find((message) => message.replyTo === messageId);
 
 export default {
-  task: 10,
+  task: 11,
   name: "Accounts EV reaches models through",
   goal: "EV reaches models through the person's own accounts: a key in its environment, a key they paste, or a subscription they sign in to. A key is kept in one protected place and nowhere else, not even with the agents doing the work. An account that hits its usage limit or stops being accepted is a known state, not an error: what needs a model waits, the person is told once, and it goes on by itself when an account is usable again.",
   live: [

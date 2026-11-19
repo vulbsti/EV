@@ -193,6 +193,67 @@ export async function startEV({ script = {}, env = {}, keep = false } = {}) {
     /** The same search EV1 and the agents use, as the person's own page would call it. */
     async search(query) { return (await planned("search over everything EV holds", `/api/assistant/search?q=${encodeURIComponent(query)}`)).hits; },
 
+    /**
+     * Opens the page's stream of changes, as the page would. `after` is the
+     * id of the last change already seen (a reconnect); without it the
+     * stream begins with a snapshot. Frames are { id, type, data }.
+     */
+    async stream({ conversation = "main", after = null } = {}) {
+      const controller = new AbortController();
+      const headers = { ...AUTH, Accept: "text/event-stream", ...(after === null ? {} : { "Last-Event-ID": String(after) }) };
+      const response = await fetch(`${baseUrl}/api/assistant/stream?conversationId=${encodeURIComponent(conversation)}`, { headers, signal: controller.signal });
+      if (response.status === 404 || response.status === 405) throw new NotBuilt("a stream of changes for the page (no GET /api/assistant/stream)");
+      if (!response.ok) throw new Error(`GET /api/assistant/stream returned ${response.status}`);
+      const frames = [];
+      const waiting = new Set();
+      let closed = false;
+      (async () => {
+        const decoder = new TextDecoder();
+        let buffer = "";
+        try {
+          for await (const chunk of response.body) {
+            buffer += decoder.decode(chunk, { stream: true });
+            let end;
+            while ((end = buffer.indexOf("\n\n")) >= 0) {
+              const block = buffer.slice(0, end);
+              buffer = buffer.slice(end + 2);
+              const frame = { id: null, type: "message", data: "" };
+              for (const line of block.split("\n")) {
+                if (line.startsWith(":")) continue;
+                const [field, ...rest] = line.split(":");
+                const value = rest.join(":").replace(/^ /, "");
+                if (field === "id") frame.id = value;
+                else if (field === "event") frame.type = value;
+                else if (field === "data") frame.data += (frame.data ? "\n" : "") + value;
+              }
+              if (!frame.data) continue;
+              try { frame.data = JSON.parse(frame.data); } catch {}
+              frames.push(frame);
+              for (const wake of waiting) wake();
+            }
+          }
+        } catch {} finally { closed = true; for (const wake of waiting) wake(); }
+      })();
+      return {
+        frames,
+        get closed() { return closed; },
+        /** Waits for a frame (from the first unseen one) that passes `test`. */
+        async until(what, test, { timeout = 15_000 } = {}) {
+          const deadline = Date.now() + timeout;
+          for (;;) {
+            const found = frames.find(test);
+            if (found) return found;
+            if (closed) throw new Error(`The stream closed before: ${what}`);
+            if (Date.now() > deadline) throw new Error(`Timed out waiting on the stream for: ${what}`);
+            await new Promise((done) => { const wake = () => { waiting.delete(wake); done(); }; waiting.add(wake); setTimeout(wake, 100); });
+          }
+        },
+        close: () => { controller.abort(); }
+      };
+    },
+    /** The pieces of work a message is tied to, as ids. */
+    linkedWork: (message) => [...new Set([...(message.work ?? []).map((link) => link.taskId ?? link), ...(message.taskId ? [message.taskId] : [])])],
+
     async stop() {
       await halt("SIGTERM");
       await standIn.stop();

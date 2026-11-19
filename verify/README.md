@@ -88,6 +88,8 @@ A check has to name something. These names are the smallest contract; if the bui
 | Page | Marks "EV is thinking" with `aria-busy="true"` |
 | Accounts | `GET /api/assistant/setup` gives `{providers: [{id, signIn}], connections: [{id, provider, method, source, status, until, label}]}`; `POST /api/assistant/setup/connections {provider, key, label}` adds a key (an error answer when refused); `DELETE /api/assistant/setup/connections/:id` |
 | Agent model calls | The stub agent calls its model with the base URL, key and API shape its OpenClaw config names, when a script's plan has `think` |
+| Stream for the page | `GET /api/assistant/stream?conversationId=` is a server-sent event stream. It opens with a `snapshot` frame, then one frame per change; each frame's `id` is the last change it covers, and `data` is `{messages, tasks, thinking}` holding the latest version of whatever changed. A `Last-Event-ID` header resumes after that change instead of sending a snapshot |
+| Several pieces of work per message | A message lists its work as `work: [{taskId, how}]` |
 
 Settings EV already has that the harness relies on: `EV_MODEL_URL`, `EV_DATA_DIR`, `EV_API_TOKEN`, `EV_OPENCLAW_SANDBOX=host`, `EV_REVIEW_HOLD_MS`, `EV_AGENT_TOKEN_BUDGET`, and finding `openclaw` on the `PATH`.
 

@@ -40,7 +40,15 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 - `L9-07` / `L9-08` A follow-up after two finished pieces of work goes into the one it is about; a similar-sounding new ask does not.
 - `L8-04` / `L6-07` A vague request is met with a stated assumption when being wrong is cheap, and with a question before anything that cannot be undone.
 
-## Task 10: Accounts EV reaches models through
+## Task 10: The page stays live
+
+EV is one conversation that never ends, and the page is a live view of it. These are the guarantees under that view: a page that lost its connection catches up on exactly what it missed, a message about several pieces of work loses none of them, and what was forgotten leaves an open page at once. How the page looks and behaves was walked through once after it was built (design/build/verification/plumbing.md), not checked on every push.
+
+- ✓ **P-02** A page that lost its connection, even across a restart of EV, catches up on exactly what it missed: nothing lost, nothing twice, and it ends up seeing what a freshly opened page sees.
+- ✓ **P-03** When one message asks for two pieces of work, both are tied to that message, and the page shows both under it.
+- ✓ **P-04** Forgetting something takes it off an open page at once, without a reload.
+
+## Task 11: Accounts EV reaches models through
 
 EV reaches models through the person's own accounts: a key in its environment, a key they paste, or a subscription they sign in to. A key is kept in one protected place and nowhere else, not even with the agents doing the work. An account that hits its usage limit or stops being accepted is a known state, not an error: what needs a model waits, the person is told once, and it goes on by itself when an account is usable again.
 
