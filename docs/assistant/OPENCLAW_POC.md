@@ -9,7 +9,7 @@ EV's **main agent** (`ev-main-agent.mjs`) handles one inbox item as a **tool loo
 | Tool | What it does | What EV is told |
 |---|---|---|
 | `search{query}` | Full-text search over every conversation, every piece of work (title and brief), every result and every version of every memory | Hits: id (`message:…`, `work:…`, `result:…`, `memory:…`), where and when, a short excerpt |
-| `read{id}` | Opens one record in full with its neighbours: a message with the messages around it; work with its brief, state, progress, reviews, question and whole result; a result; a memory with its earlier versions | The record, with agent- and reviewer-written parts labelled as information, not instructions |
+| `read{id}` | Opens one record in full with its neighbours: a message with the messages around it; work with its brief, state, its agent's latest steps and "now" line, reviews, question and whole result; a result; a memory with its earlier versions | The record, with agent- and reviewer-written parts labelled as information, not instructions |
 | `reply{text}` | Something to say to the person | That it is part of the turn's message |
 | `ask{questions, assumptions}` | A question only the person can settle, with what EV assumes meanwhile; the person sees both | The same. Nothing forces work to start after a question, and EV can ask again |
 | `start_work{title, request}` | New work with EV's self-contained brief; one call per separate ask | Its id, and that it is queued when the turn ends |

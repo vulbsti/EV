@@ -63,6 +63,13 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 - One real run on the test server: a real account forced into its limit, and an agent in docker reaching its model through the relay.
 
+## Task 12: Live work
+
+The person can watch an agent work, step by step, and come back to it later. Under that view are two guarantees that hold whatever EV or its agents decide: the steps reach a page that lost its connection with nothing missing and nothing twice, and work on hold shows nothing new from an agent it has stopped. Everything else about the live view (labels, the "now" line, the pane) was walked through once against its state chart (design/build/verification/live-work.md), not checked on every push.
+
+- ✓ **L-01** A page that loses its connection while an agent works catches up on exactly the steps it missed: none lost, none twice.
+- ✓ **L-02** Once work is on hold, nothing more from its agent shows up in it, even while that agent is slow to stop.
+
 ## Task 3: One store with real ids
 
 Everything EV holds lives in one place and is linked: a message to the work it started, the work to its result, a memory to where it came from. Because of that, forgetting reaches every copy, a restart loses nothing, and a result can never be too large to keep.

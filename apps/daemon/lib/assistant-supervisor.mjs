@@ -10,6 +10,12 @@ import { codedError, parse } from "./store.mjs";
 // files, and anything said to them carries them on (see instruct).
 const ACTIVE_RUN_STATES = Object.freeze(["running", "verifying"]);
 const RESTING = Object.freeze(["held", "completed"]);
+// What an agent does as it works (see live-steps.mjs): its finished steps and
+// the "now" line. They have their own log and never resend the whole work.
+const LIVE = Object.freeze(["step", "now"]);
+// Events that move work from one state to another; a "now" line written
+// before the latest of them no longer describes the work.
+const STATE_CHANGES = Object.freeze(["created", "leased", "started", "verifying", "revision_requested", "input_needed", "held", "completed", "recovered", "interrupted", "instruction"]);
 
 async function verifyReceipt(artifactRoot, receipt) {
   let handle;
@@ -93,7 +99,7 @@ export class AssistantSupervisor {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       revision: row.revision,
-      history: this.store.events({ workId: row.work_id }).map(({ eventId, seq, type, at, data }) => ({ eventId, sequence: seq, type, at, ...data }))
+      history: this.store.events({ workId: row.work_id, except: LIVE }).map(({ eventId, seq, type, at, data }) => ({ eventId, sequence: seq, type, at, ...data }))
     };
   }
 
@@ -180,12 +186,52 @@ export class AssistantSupervisor {
   }
 
   async recordProgress({ taskId, runId, fencingToken, type = "progress", data = {} }) {
-    if (!["progress", "worker_retry", "review", "usage", "instructions_applied"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
+    if (!["review", "usage", "instructions_applied"].includes(type)) throw codedError("INVALID_EVENT_TYPE", "Unsupported progress event");
     this.store.tx(() => {
       this._assertRun(this._requireRow(taskId), fencingToken, runId, "record progress");
       this._change(taskId, type, data);
     });
     return this._task(taskId);
+  }
+
+  /**
+   * What the current run did since it last reported: finished steps, oldest
+   * first, and the "now" line ({ text, step, model }). Only the current run
+   * can write, so work on hold or taken over by a newer run gets nothing
+   * more from an agent it no longer owns. Neither moves the work's revision,
+   * so a busy agent never makes the whole piece of work go out again.
+   */
+  recordLive({ taskId, runId, fencingToken, steps = [], now = null }) {
+    if (!steps.length && !now) return;
+    this.store.tx(() => {
+      this._assertRun(this._requireRow(taskId), fencingToken, runId, "record its steps");
+      for (const step of steps) this.store.event({ type: "step", workId: taskId, data: step });
+      if (now) this.store.event({ type: "now", workId: taskId, data: now });
+    });
+  }
+
+  /** Finished steps of a piece of work before position `before`, oldest first, and whether there are earlier ones. */
+  steps(taskId, { before = Number.MAX_SAFE_INTEGER, limit = 60 } = {}) {
+    this._requireRow(taskId);
+    const rows = this.db.prepare("SELECT seq, at, data_json FROM events WHERE work_id = ? AND type = 'step' AND seq < ? ORDER BY seq DESC LIMIT ?").all(taskId, before, limit + 1);
+    const earlier = rows.length > limit;
+    return { steps: rows.slice(0, limit).reverse().map((row) => ({ taskId, seq: row.seq, ...parse(row.data_json, {}) })), earlier };
+  }
+
+  /**
+   * The whole status record of a piece of work, always sent complete: its
+   * state and since when, the review round, the "now" line and the step it
+   * names, and the model it runs on. A "now" line from before the latest
+   * change of state is left out: it describes a run that has ended.
+   */
+  live(taskId) {
+    const row = this._requireRow(taskId);
+    const changed = this.db.prepare(`SELECT seq, at FROM events WHERE work_id = ? AND type IN (${STATE_CHANGES.map(() => "?").join(", ")}) ORDER BY seq DESC LIMIT 1`).get(taskId, ...STATE_CHANGES);
+    const now = this.db.prepare("SELECT seq, at, data_json FROM events WHERE work_id = ? AND type = 'now' ORDER BY seq DESC LIMIT 1").get(taskId);
+    const fresh = now && (!changed || now.seq > changed.seq) ? parse(now.data_json, {}) : null;
+    const round = this.db.prepare("SELECT MAX(CAST(json_extract(data_json, '$.round') AS INTEGER)) AS round FROM events WHERE work_id = ? AND type IN ('verifying', 'revision_requested')").get(taskId).round ?? 1;
+    const model = this.db.prepare("SELECT json_extract(data_json, '$.model') AS model FROM events WHERE work_id = ? AND type = 'now' AND json_extract(data_json, '$.model') IS NOT NULL ORDER BY seq DESC LIMIT 1").get(taskId)?.model ?? null;
+    return { taskId, state: row.status, since: changed?.at ?? row.created_at, round, now: fresh?.text ?? null, nowAt: fresh ? now.at : null, step: fresh?.step ?? null, model };
   }
 
   /**

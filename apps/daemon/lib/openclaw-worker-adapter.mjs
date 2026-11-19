@@ -235,7 +235,11 @@ export class OpenClawWorkerAdapter {
     this.executable = executable;
   }
 
-  async start({ runId, prompt, reuseCompleted = true, budget = null, onUsage = null, onProgress = null }) {
+  /**
+   * onEvents receives this turn's new transcript events as they are read
+   * (about once a second), for the live steps. It must not throw or block.
+   */
+  async start({ runId, prompt, reuseCompleted = true, budget = null, onUsage = null, onProgress = null, onEvents = null }) {
     const transcript = (afterSeq) => readTranscript({ homeDir: this.homeDir, sessionId: this.taskId, afterSeq });
     const earlier = transcript(0);
     if (reuseCompleted && earlier.events.length) {
@@ -283,7 +287,11 @@ export class OpenClawWorkerAdapter {
       live.seq = lastSeq;
       live.events.push(...events);
       accumulateUsage(events, live);
-      if (events.length) { live.progressAt = Date.now(); onProgress?.(); }
+      if (events.length) {
+        live.progressAt = Date.now();
+        onProgress?.();
+        try { onEvents?.(events); } catch { /* the live view never stops the agent */ }
+      }
     };
     run.completion = new Promise((resolve) => {
       let settled = false;

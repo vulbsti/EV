@@ -509,9 +509,11 @@ export function openStore({ path = ":memory:" } = {}) {
     return db.prepare("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?").all(after, limit).map(mapEvent);
   }
 
-  function events({ workId, responsibilityId }) {
+  /** One piece of work's (or responsibility's) events, oldest first, leaving out the types in `except`. */
+  function events({ workId, responsibilityId, except = [] }) {
     const [column, value] = workId ? ["work_id", workId] : ["responsibility_id", responsibilityId];
-    return db.prepare(`SELECT * FROM events WHERE ${column} = ? ORDER BY seq`).all(value).map(mapEvent);
+    const skip = except.length ? ` AND type NOT IN (${except.map(() => "?").join(", ")})` : "";
+    return db.prepare(`SELECT * FROM events WHERE ${column} = ?${skip} ORDER BY seq`).all(value, ...except).map(mapEvent);
   }
 
   function getEvent(eventId) {

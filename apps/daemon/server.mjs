@@ -107,7 +107,7 @@ function publicTask(task) {
     brief: task.input?.metadata?.brief ?? null,
     request: task.input?.metadata?.sourceRequest ?? null,
     parentTaskId: task.input?.metadata?.parentTaskId ?? null,
-    progress: task.history.findLast((event) => event.type === "progress") ?? null,
+    live: assistantSupervisor.live(task.taskId),
     reviews: task.history.filter((event) => event.type === "review").map(({ round, verdict, summary, missing }) => ({ round, verdict, summary, missing })),
     history: task.history
   };
@@ -213,16 +213,37 @@ async function streamSnapshot(conversationId) {
   return { seq, data: { messages: messages.map(publicMessage), tasks, thinking: thinkingIn(conversationId), earlier, look: store.setting("look") } };
 }
 
-/** One frame for the events after `after`: the latest version of each message and piece of work they touched. */
+/** The conversation each piece of work belongs to (it never changes). */
+const workConversation = new Map();
+function conversationOfWork(workId) {
+  if (!workConversation.has(workId)) {
+    const row = store.db.prepare("SELECT conversation_id FROM work WHERE work_id = ?").get(workId);
+    if (!row) return null;
+    workConversation.set(workId, row.conversation_id ?? "default");
+  }
+  return workConversation.get(workId);
+}
+
+/**
+ * One frame for the events after `after`: the latest version of each message
+ * and piece of work they touched. An agent's steps and "now" line travel on
+ * their own (`steps`, `live`), so a busy agent never resends its whole work.
+ */
 async function streamChange(conversationId, after) {
   const events = store.eventsAfter(after);
   if (!events.length) return null;
   const messageIds = new Set();
   const workIds = new Set();
+  const liveIds = new Set();
+  const steps = [];
   const look = events.some((event) => event.type === "setting" && event.data?.key === "look");
   for (const event of events) {
     if (event.messageId) messageIds.add(event.messageId);
-    if (event.workId) workIds.add(event.workId);
+    if (event.type === "step" || event.type === "now") {
+      if (conversationOfWork(event.workId) !== conversationId) continue;
+      liveIds.add(event.workId);
+      if (event.type === "step") steps.push({ taskId: event.workId, seq: event.seq, ...event.data });
+    } else if (event.workId) workIds.add(event.workId);
   }
   const messages = new Map();
   for (const messageId of messageIds) {
@@ -237,9 +258,10 @@ async function streamChange(conversationId, after) {
     const task = await assistantSupervisor.getTask(workId).catch(() => null);
     if (isConversationWork(task, conversationId)) tasks.push(streamedTask(task));
   }
+  const live = [...liveIds].filter((id) => !workIds.has(id)).map((id) => assistantSupervisor.live(id));
   const seq = events.at(-1).seq;
-  if (!messages.size && !tasks.length && !look) return { seq, data: null };
-  return { seq, data: { messages: [...messages.values()], tasks, thinking: thinkingIn(conversationId), ...(look ? { look: store.setting("look") } : {}) } };
+  if (!messages.size && !tasks.length && !live.length && !steps.length && !look) return { seq, data: null };
+  return { seq, data: { messages: [...messages.values()], tasks, ...(steps.length ? { steps } : {}), ...(live.length ? { live } : {}), thinking: thinkingIn(conversationId), ...(look ? { look: store.setting("look") } : {}) } };
 }
 
 /**
@@ -255,6 +277,10 @@ async function openStream(request, response, conversationId) {
   let after = asked !== undefined && /^\d+$/.test(asked) ? Number(asked) : null;
   response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
   const send = (type, id, data) => response.write(`id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  // A page that reads slowly never slows EV or its agents: while its socket
+  // is full, nothing more is written, and the next frame covers everything
+  // that changed meanwhile, from the same position. Nothing is lost.
+  const drained = () => new Promise((resolve) => { const done = () => { response.off("drain", done); response.off("close", done); resolve(); }; response.on("drain", done); response.on("close", done); });
   // A position from before this store existed (a fresh data folder) cannot be resumed.
   if (after === null || after > store.lastSeq()) {
     const snapshot = await streamSnapshot(conversationId);
@@ -269,8 +295,8 @@ async function openStream(request, response, conversationId) {
       do {
         again = false;
         for (let change = await streamChange(conversationId, after); change && !closed; change = await streamChange(conversationId, after)) {
-          if (change.data) send("change", change.seq, change.data);
           after = change.seq;
+          if (change.data && !send("change", change.seq, change.data)) await drained();
         }
       } while (again && !closed);
     } catch (error) {
@@ -643,6 +669,13 @@ async function handleApi(request, response, url) {
       revision: snapshot.revision,
       tasks: snapshot.tasks.filter((task) => task.revision > after && (task.input?.metadata?.conversationId ?? "default") === conversationId).map(publicTask)
     });
+  }
+  if (request.method === "GET" && /^\/api\/assistant\/tasks\/[^/]+\/steps$/.test(url.pathname)) {
+    // A page of one piece of work's finished steps, oldest first; ?before= goes further back.
+    const taskId = decodeURIComponent(url.pathname.slice("/api/assistant/tasks/".length, -"/steps".length));
+    const before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
+    if (before !== undefined && (!Number.isInteger(before) || before < 1)) throw Object.assign(new Error("before must be a positive integer"), { statusCode: 400 });
+    return json(response, 200, { ...assistantSupervisor.steps(taskId, { before }), live: assistantSupervisor.live(taskId) });
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/search") {
     const query = String(url.searchParams.get("q") ?? "").slice(0, 500);
