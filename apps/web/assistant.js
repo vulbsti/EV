@@ -384,7 +384,7 @@ function messageNode(message) {
     // Typed in the pane: it went to that work's agent, not to KenWise.
     const told = node.querySelector(".to-agent");
     const work = message.toAgent ? tasks.get(message.taskId) : null;
-    setText(told, message.toAgent ? `To the agent of “${work?.title ?? "this work"}”${work?.live?.queued?.includes(message.messageId) ? " · waiting for its current step to finish, at most 2 minutes" : ""}` : "");
+    setText(told, message.toAgent ? `To the agent of “${work?.title ?? "this work"}”${work?.live?.queued?.includes(message.messageId) ? ` · ${queuedWait(work)}` : ""}` : "");
     told.hidden = !message.toAgent;
   } else {
     setHtml(node.querySelector(".answer"), renderAnswer(message.content));
@@ -568,6 +568,12 @@ const pane = { draftFiles: [], draftPath: null, draft: null, timer: null, fetche
 const EXPLORING = new Set(["read", "searched"]);
 const OPENS = new Set(["ran", "read", "searched", "web", "used"]);
 
+/** What a message to an agent is waiting for, in the person's terms. */
+function queuedWait(task) {
+  if (task?.status === "held") return "waiting until you carry on";
+  if (task?.live?.step?.running) return "waiting for its current step to finish, at most 2 minutes";
+  return "waiting for its next step";
+}
 const isAgentWork = (task) => task.capability === "openclaw-general-v1" && task.status !== "queued" || Boolean(steps.get(task.taskId)?.bySeq.size);
 
 function stepsOf(taskId) {
@@ -752,7 +758,7 @@ function drawPane() {
   const waiting = (task.live?.queued ?? []).map((id) => messages.get(id)).filter((message) => message?.toAgent);
   const queued = $("pane-queued");
   queued.hidden = !waiting.length;
-  setHtml(queued, waiting.map((message) => `<li>Waiting for its current step to finish, at most 2 minutes: ${escapeHtml(message.content)}</li>`).join(""));
+  setHtml(queued, waiting.map((message) => `<li>${escapeHtml(queuedWait(task).replace(/^w/, "W"))}: ${escapeHtml(message.content)}</li>`).join(""));
   const open = task.status !== "completed";
   $("pane-input").placeholder = task.status === "held" ? "Tell it something and it carries on" : task.status === "completed" ? "Tell it something to reopen this work" : "Tell this agent something";
   $("pane-now").hidden = !["leased", "running"].includes(task.status) || !open;
