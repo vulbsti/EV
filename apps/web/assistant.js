@@ -1738,10 +1738,10 @@ async function setupCall(path, { method = "GET", body } = {}) {
   return response.json();
 }
 
-function claimLine(claim, personal) {
+function claimLine(claim, personal, { sources = false } = {}) {
   const [label, tone] = (personal ? PERSONAL_BADGE : ATLAS_BADGE)[claim.state] ?? [];
   if (!label) return "";
-  const source = !personal && claim.source ? `<span class="src">${escapeHtml(claim.source)}</span>` : "";
+  const source = sources && !personal && claim.source ? `<span class="src">${escapeHtml(claim.source)}</span>` : "";
   const why = personal && claim.why ? `<span class="why">${escapeHtml(claim.why)}</span>` : "";
   const forget = personal && claim.id ? `<button class="lnk" type="button" data-forget-claim="${escapeHtml(claim.id)}">Forget</button>` : "";
   return `<p>${escapeHtml(claim.text)} <span class="badge ${tone}">${label}</span></p>${why || source || forget ? `<div class="links">${why}${source}${forget}</div>` : ""}`;
@@ -1750,10 +1750,17 @@ function claimLine(claim, personal) {
 function renderModels(view) {
   modelsView = view;
   const cards = view.models.map((model) => {
-    const lines = [...model.personal.map((claim) => claimLine(claim, true)), ...model.atlas.map((claim) => claimLine(claim, false))].filter(Boolean).join("");
+    // The person's own evidence first, then at most two lines from the atlas; the rest and every source on demand.
+    const own = model.personal.map((claim) => claimLine(claim, true)).filter(Boolean);
+    const atlas = model.atlas.filter((claim) => ATLAS_BADGE[claim.state]);
+    const shown = atlas.length ? `<div class="preview">${atlas.slice(0, 2).map((claim) => claimLine(claim, false)).join("")}</div>` : "";
+    // Opened, it shows every atlas line with where it comes from, in place of the two above.
+    const all = atlas.length ? `<div class="all">${atlas.map((claim) => claimLine(claim, false, { sources: true })).join("")}</div>` : "";
+    const more = atlas.length ? `<button class="lnk" type="button" data-more aria-expanded="false">${atlas.length > 2 ? `${atlas.length - 2} more, and sources` : "Sources"}</button>` : "";
+    const lines = [...own, shown].join("");
     return `<div class="tile mem"><div class="card-h"><span class="card-t">${escapeHtml(model.name)}</span><span class="row-x">${escapeHtml(model.via.join(", "))}</span></div>`
       + `${lines || `<p class="why">Nothing known yet. I learn it from the work it does for you.</p>`}`
-      + `<div class="links"><button class="lnk" type="button" data-model-off="${escapeHtml(model.key)}">Don't use this model</button></div></div>`;
+      + `${all}<div class="links">${more}<button class="lnk" type="button" data-model-off="${escapeHtml(model.key)}">Don't use this model</button></div></div>`;
   });
   const off = view.off.map((key) => `<div class="tile mem off"><div class="card-h"><span class="card-t">${escapeHtml(key)}</span><span class="row-x">Not used</span></div><div class="links"><button class="lnk" type="button" data-model-on="${escapeHtml(key)}">Use it again</button></div></div>`);
   $("models-list").innerHTML = [...cards, ...off].join("") || `<p class="note">No models are reachable yet. Connect an account to start.</p>`;
@@ -1802,6 +1809,14 @@ $("settings-tabs").addEventListener("click", (event) => {
   if (button.dataset.stab === "models") void loadModels();
 });
 $("sheet-look").addEventListener("click", (event) => {
+  const more = event.target.closest("[data-more]");
+  if (more) {
+    const open = more.closest(".mem").classList.toggle("open");
+    more.dataset.label ??= more.textContent;
+    more.textContent = open ? "Show less" : more.dataset.label;
+    more.setAttribute("aria-expanded", String(open));
+    return;
+  }
   const target = event.target.closest("[data-undo-change], [data-forget-claim], [data-model-off], [data-model-on], [data-limit]");
   if (!target) return;
   target.disabled = true;
