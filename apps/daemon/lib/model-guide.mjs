@@ -30,7 +30,7 @@ import { workerModel } from "./openclaw-worker-adapter.mjs";
 export const ATLAS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../../knowledge/models");
 const CLAIM = /^-\s+(.+?)\s*\[(reported|tested|dropped|past)(?::\s*([^\]]*))?\]\s*$/;
 const STATES = { reported: "reported, not checked", tested: "tested centrally" };
-const PERSONAL = { said: "the person said so", seen: "seen in their own work, few cases", relied_on: "relied on: holds across weeks of their work" };
+const PERSONAL = { said: "the person said so", seen: "seen in their own work, few cases", relied_on: "relied on in their own work" };
 
 /** The atlas: one entry per file, { name, keys, updated, claims: [{ text, state, source }] }. */
 export function loadAtlas(dir = ATLAS_DIR) {
@@ -153,14 +153,15 @@ export class ModelGuide {
   text() {
     const entries = this.entries();
     if (!entries.length) return "";
-    const general = (this.personal?.claims(null) ?? []).map((claim) => `- ${claim.text} (${PERSONAL[claim.state]})`);
+    const line = (claim, indent) => `${indent}- ${claim.text} (${PERSONAL[claim.state]}${claim.why ? `: ${claim.why}` : ""}${claim.state === "said" ? `; model:${claim.id}` : ""})`;
+    const general = (this.personal?.claims(null) ?? []).map((claim) => line(claim, ""));
     const models = entries.map((entry) => {
       const cost = entry.subscription
         ? `within the person's ${this.connections.providerName(entry.record.provider)} subscription (quota already paid for)`
         : entry.record.cost ? `${money(entry.record.cost.input)} in / ${money(entry.record.cost.output)} out per million tokens` : "price unknown";
       const context = entry.record.contextWindow ? `, reads up to ${Math.round(entry.record.contextWindow / 1000)}k tokens` : "";
       const lines = [`${entry.name} (name it as ${entry.spec}): ${cost}${context}.`];
-      for (const claim of entry.personal) lines.push(`  - ${claim.text} (${PERSONAL[claim.state]})`);
+      for (const claim of entry.personal) lines.push(line(claim, "  "));
       for (const claim of entry.claims) lines.push(`  - ${claim.text} (atlas, ${STATES[claim.state] ?? claim.state})`);
       if (!entry.claims.length && !entry.personal.length) lines.push("  - Nothing known about it yet.");
       else if (!entry.personal.length) lines.push("  - Nothing from this person's own work yet.");

@@ -16,7 +16,7 @@ test("every line of the shipped model atlas is read: each claim says how it is k
   }
 });
 
-test("what the weekly analysis learns rests on real work: \"relied on\" needs work over more than one week, and every change can be undone", async () => {
+test("what the weekly analysis learns rests on real work, every change can be undone, and a note the person forgets leaves nothing behind", async () => {
   const { mkdtemp, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { openStore } = await import("../lib/store.mjs");
@@ -36,11 +36,11 @@ test("what the weekly analysis learns rests on real work: \"relied on\" needs wo
       store.db.prepare("INSERT INTO work (work_id, input_json, status, created_at, updated_at) VALUES (?, ?, 'completed', ?, ?)").run(id, JSON.stringify({ metadata: { title: "Design" } }), at, at);
       routes.record({ role: "agent", workId: id, model: connections.models.getModel("opencode-go", "claude-haiku-5-5"), outcome: "ok" });
     }
-    let answer = { claims: [{ id: null, model: "claude-haiku-5-5", text: "Good at your design work.", state: "relied_on", evidence: ["work:w1", "work:w2", "work:w3", "work:made-up"], change: "Design now goes to Haiku." }], retire: [] };
+    let answer = { claims: [{ id: null, model: "claude-haiku-5-5", text: "Good at your design work.", state: "seen", why: "Three design briefs in two days.", evidence: ["work:w1", "work:w2", "work:w3", "work:made-up"], change: "Design now goes to Haiku." }], retire: [] };
     const learning = new ModelLearning({ store, guide, now: () => now, log: () => {}, call: async () => answer });
     const [change] = await learning.run();
     const [claim] = learning.claims("claude-haiku-5-5");
-    assert.equal(claim.state, "seen", "three pieces in one week were taken as relied on");
+    assert.equal(claim.why, "Three design briefs in two days.");
     assert.deepEqual(claim.evidence, ["work:w1", "work:w2", "work:w3"], "a claim rests on work that does not exist");
     answer = { claims: [], retire: [{ id: claim.id, change: "Not any more." }] };
     const [retired] = await learning.run();
@@ -49,6 +49,11 @@ test("what the weekly analysis learns rests on real work: \"relied on\" needs wo
     assert.equal(learning.claims("claude-haiku-5-5")[0].text, "Good at your design work.");
     learning.undo(change);
     assert.equal(learning.claims("claude-haiku-5-5").length, 0);
+    // The person's own words about a model are theirs to take back, from the claims and the list of changes alike.
+    const { note } = learning.note({ text: "Haiku's tone is too curt for my clients", model: "claude-haiku-5-5" });
+    learning.erase(note.id);
+    const everything = JSON.stringify([store.db.prepare("SELECT * FROM model_claims").all(), store.db.prepare("SELECT * FROM model_guide_changes").all()]);
+    assert.ok(!everything.includes("too curt"), "the forgotten note is still in the guide's records");
     store.close();
   } finally { await rm(root, { recursive: true, force: true }); }
 });

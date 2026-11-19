@@ -617,6 +617,8 @@ async function handleSetup(request, response, url) {
   // The model guide: what KenWise has learnt about each model it can choose, for the Models tab.
   if (method === "GET" && path === "/guide") return json(response, 200, guideView());
   if (method === "POST" && path === "/guide/note") { const body = await readJson(request); return json(response, 201, modelLearning.note({ text: body.text, model: body.model ?? null })); }
+  const note = /^\/guide\/note\/([^/]+)$/.exec(path);
+  if (note && method === "DELETE") return json(response, 200, modelLearning.erase(decodeURIComponent(note[1])));
   if (method === "POST" && path === "/guide/undo") return json(response, 200, modelLearning.undo(String((await readJson(request)).change ?? "")));
   if (method === "POST" && path === "/guide/run") return json(response, 200, { changes: await modelLearning.run({ why: "asked" }) });
   if (method === "POST" && path === "/guide/off") { const body = await readJson(request); return json(response, 200, modelGuide.setOff(String(body.model ?? ""), body.off !== false)); }

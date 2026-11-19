@@ -46,10 +46,10 @@ export function workState(task) {
   }
 }
 
-/** The ids EV uses: "work:<id>", "message:<id>", "result:<id>", "memory:<revision id>", "history:<line id>", "session:<imported message id>", "thread:<id>". */
+/** The ids EV uses: "work:<id>", "message:<id>", "result:<id>", "memory:<revision id>", "history:<line id>", "session:<imported message id>", "thread:<id>", "model:<note about models>". */
 function parseRef(store, id) {
   const value = required(id, "id");
-  const match = /^(work|message|result|memory|history|session|thread):(.+)$/.exec(value);
+  const match = /^(work|message|result|memory|history|session|thread|model):(.+)$/.exec(value);
   if (match) return { kind: match[1], key: match[2] };
   const has = (sql) => store.db.prepare(sql).get(value);
   if (has("SELECT 1 FROM work WHERE work_id = ?")) return { kind: "work", key: value };
@@ -382,6 +382,10 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
           if (!line) { notErased.push({ id, why: "no such history line" }); continue; }
           const rests = line.events.map((event) => event.ref);
           what = rests.length ? `its words; it is written again from what it rests on (${rests.join(", ")}), so anything those still say comes back unless they are forgotten too` : "the whole line";
+        } else if (ref.kind === "model") {
+          const note = models?.personal?.claims().find((claim) => claim.id === key);
+          if (!note) { notErased.push({ id, why: "no such note about models" }); continue; }
+          what = `what EV kept about models: "${clip(note.text, 200)}", and every mention of it in the guide's list of changes`;
         } else {
           notErased.push({ id, why: "work and its results cannot be forgotten" });
           continue;
@@ -429,6 +433,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
           else if (kind === "situations") memory.eraseSituations({ ownerId, claimId: key });
           else if (kind === "message") store.eraseMessage(key);
           else if (kind === "session") store.eraseOutsideMessage(key);
+          else if (kind === "model") models.personal.erase(key);
           else memory.forgetHistoryLine(key);
         }
         if (forgotten.length) store.eraseMessage(message.messageId);
