@@ -54,12 +54,36 @@ An account that hits its usage limit is marked limited until its reset time, and
 
 - `EV_REGROUP_EVERY` (default `7d`): how often the grouper organises the threads of work, as `30m`, `12h`, `7d` or `2w`. The first run comes this long after the first message, so it has days of context to work from. `0` turns the timer off; organising still happens when you ask for it in the conversation or from the list of threads.
 - `EV_PORTRAIT_EVERY` (default `1d`): the most often the portrait ("How I understand you") is written again, and only after the notes changed. A sentence whose notes did not change keeps its words. Forgetting or stopping a note it rests on removes the sentence at once and rewrites the portrait within the hour, and so does telling KenWise a sentence is not quite right (once the learner has read it). `0` stops timed rewrites.
-- `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you. The default is docker: each agent sees only its goal folder plus its own home folder. Either way each piece of work has its own home, never yours. `EV_OPENCLAW_IMAGE` overrides the image name.
 - Web search uses DuckDuckGo (no key) and is built into the image. In host mode, install the plugin with `npm i --prefix ~/.local/share/openclaw-plugins @openclaw/duckduckgo-plugin` and set `EV_OPENCLAW_SEARCH_PLUGIN` to its absolute path.
 - `EV_REVIEW_HOLD_MS` (default `30000,120000`): how long KenWise waits before retrying an unavailable reviewer. A result is never delivered unchecked.
 - `EV_STEER_WAIT_MS` (default `120000`): when you tell a running agent something, how long KenWise waits for the step it is in to finish before it cuts that step short to pass your message on.
 - `EV_WORKER_STALL_MS` (default `600000`): how long an agent may show no progress before it is restarted in the same session. There is no limit on how long an agent that keeps making progress may take.
 - `EV_MAX_WORKERS` (default `3`): how many agents may run at once.
+
+## Where KenWise runs, and what agents may change
+
+- `EV_PLACE` (default `local`): `local` is your own computer, `cloud` a machine you rent for KenWise. The installer writes it (`install.sh --place cloud`). The code is the same in both; the place only sets what agents see:
+  - **local**: each piece of work runs in its own container (its own system, tools and browser, where it may do anything). Your home is shown inside read-only at its real path; secret places are hidden (SSH and cloud keys, browser profiles, password managers, other AI tools' sign-ins, shell history, KenWise's own settings file and data, and `.env` files in folders agents can change). Agents change only their own workspace and the folders you let them change.
+  - **cloud**: nothing of the machine's home is shown, and every piece of work may change one work folder, `EV_WORK_FOLDER` (default `~/work`).
+- Letting agents change a folder: Settings, Files, or tell KenWise in the conversation ("yes, you can edit ~/proj/site"); a grant made from your words shows under KenWise's reply with Take back. A grant lasts for all work, one goal, or one piece of work (until it is delivered), and can be taken back on the Files screen. Running work picks up a change at its next step. Nothing an agent or a web page says can make a folder writable. Without a grant, an agent works on a copy in its workspace and KenWise asks you before applying it.
+- Never writable: the secret places above and KenWise itself (its program and data). Your whole home, or a place you added to read, can be made writable only with your own click on the Files screen; even then KenWise's program and what your shell runs at start (`.bashrc`, `.zshrc`, `.profile`, `~/.local/bin` and the like) stay read-only.
+- Not hidden: a secret inside a folder agents can only read, such as a `.env` file in another project, can be read by them.
+- In the cloud, grants are not used: every piece of work may change the work folder.
+- If no docker or podman answers, work does not start and says so, and the Files screen says why.
+- More places to read, and more to hide, are on the same screen.
+- `EV_CONTAINER_CLI` (default: `docker`, else `podman` if that is what is installed): the container command. Docker Desktop, OrbStack and Colima on macOS all provide `docker`. `EV_OPENCLAW_IMAGE` overrides the image name.
+- `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you, with none of the above; agents, KenWise and the Files screen all say so. Only for testing.
+
+### Reaching a cloud KenWise
+
+KenWise only ever listens on the machine's loopback address, in the cloud too. Reach it privately:
+
+- **Tailscale** (recommended): put the machine on your tailnet, then `tailscale serve --bg 4317` on it. Open the address it prints from any of your devices, with `?token=` and the token from `kenwise status`.
+- **SSH tunnel**: `ssh -N -L 4317:127.0.0.1:4317 yourmachine`, then open the link `kenwise status` prints on the machine, on your own computer.
+
+### Moving between machines
+
+`kenwise export kenwise.tar.gz` packs everything KenWise holds (its data folder, with your accounts and settings), and `kenwise import kenwise.tar.gz` unpacks it on the other machine (stop KenWise there first). The place is the new machine's own.
 
 ## The daemon
 

@@ -38,6 +38,8 @@ export const TOOLS = {
   remember: { name: "remember", args: ({ text, quote = null }) => ({ text, ...(quote ? { quote } : {}) }) },
   // ids are what search and read gave: memory:…, message:…, session:…, history:….
   forget: { name: "forget", args: ({ ids }) => ({ ids: [].concat(ids) }) },
+  // A folder the person let agents change; quote is their words that allow it.
+  grant: { name: "grant", args: ({ folder, scope = "always", work = null, quote = null }) => ({ folder, scope, ...(work ? { work } : {}), ...(quote ? { quote } : {}) }) },
   // The reviewer's own tools.
   readFile: { name: "read_file", args: ({ path }) => ({ path }) }
 };

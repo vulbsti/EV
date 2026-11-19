@@ -187,6 +187,7 @@
       <div id="settings-tabs" class="seg" aria-label="Settings section">
         <button type="button" data-stab="models" aria-pressed="true">Models</button>
         <button type="button" data-stab="accounts" aria-pressed="false">Accounts</button>
+        <button type="button" data-stab="files" aria-pressed="false">Files</button>
         <button type="button" data-stab="look" aria-pressed="false">Look</button>
       </div>
       <button class="ibtn" type="button" data-close aria-label="Close">
@@ -269,6 +270,32 @@
         </div>
       </section>
       <p class="note">Sign-ins and keys stay on this machine.</p>
+     </div>
+     <div class="stab st-files">
+      <p id="files-lede" class="lede"></p>
+      <p id="files-status" class="note" role="status"></p>
+      <section>
+        <h3>Agents can change</h3>
+        <div id="files-grants" class="tile rows"></div>
+        <form id="grant-form" class="field">
+          <input id="grant-folder" class="in mono" type="text" maxlength="1000" autocomplete="off" aria-label="A folder agents may change" placeholder="A folder, such as ~/proj/site">
+        </form>
+      </section>
+      <section class="files-local">
+        <h3>Agents can read</h3>
+        <div id="files-read" class="tile rows"></div>
+        <form id="read-form" class="field">
+          <input id="read-folder" class="in mono" type="text" maxlength="1000" autocomplete="off" aria-label="Another folder agents may read" placeholder="Another place to read, such as /mnt/data">
+        </form>
+      </section>
+      <section class="files-local">
+        <h3>Hidden from agents</h3>
+        <p id="files-hidden-default" class="why"></p>
+        <div id="files-hidden" class="tile rows"></div>
+        <form id="hide-form" class="field">
+          <input id="hide-path" class="in mono" type="text" maxlength="1000" autocomplete="off" aria-label="Something to hide from agents" placeholder="Something else to hide, such as ~/finance">
+        </form>
+      </section>
      </div>
      <div class="stab st-look">
       <section>

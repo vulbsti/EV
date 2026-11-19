@@ -9,6 +9,11 @@ import { ensurePrivateDirectorySync } from "./file-permissions.mjs";
 import { publicUsage } from "./pi-worker-adapter.mjs";
 import { readTranscript } from "./openclaw-transcript.mjs";
 import { TailBuffer, addCallUsage, emptyUsage, exceededBudget, writeDiagnosticsLog } from "./worker-usage.mjs";
+import { containerCli, containerProblem, isPodman, mountArgs } from "./place.mjs";
+
+// docker, or podman (EV_CONTAINER_CLI, else whichever is installed).
+let cli = null;
+const containers = () => (cli ??= containerCli());
 
 const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 // OpenClaw has a clock of its own per turn (600 s unless told otherwise). EV
@@ -134,14 +139,16 @@ function accumulateUsage(events, state) {
 
 /**
  * The command that runs one OpenClaw turn. With a sandbox it runs inside a
- * container that sees only the goal's directory, this task's config and its
- * own home, under CPU, memory and process caps, as the person's
+ * container of its own, under CPU, memory and process caps, as the person's
  * own user (so files it writes stay theirs) and never as root on the host.
+ * It can always write its goal's folder, its own home, and nothing else of
+ * the machine except what `files` makes writable; `files` (place.mjs
+ * containerFiles) also shows the person's files read-only and hides secrets.
  * Paths are mounted at the same absolute location, so prompts stay valid.
  */
-export function openClawCommand({ executable, args, sandbox, workspacePath, sessionDir, homeDir, runId, taskId, relaySocket = null, containerName = `ev-openclaw-${runId.slice(0, 12)}` }) {
+export function openClawCommand({ executable, args, sandbox, workspacePath, sessionDir, homeDir, runId, taskId, relaySocket = null, files = null, cli = containers(), containerName = `ev-openclaw-${runId.slice(0, 12)}` }) {
   if (!sandbox) return { command: executable, args };
-  const mounts = [...new Set([sandbox.mountRoot, homeDir])].flatMap((path) => ["-v", `${path}:${path}`]);
+  const own = [...new Set([sandbox.mountRoot, homeDir])].flatMap((path) => ["-v", `${path}:${path}`]);
   // The relay's socket, and a forwarder that makes it a loopback port inside (see model-relay.mjs).
   const forwarder = join(sessionDir, "relay-forward.mjs");
   const relay = relaySocket ? ["-v", `${relaySocket}:${relaySocket}`] : [];
@@ -149,13 +156,13 @@ export function openClawCommand({ executable, args, sandbox, workspacePath, sess
     ? ["sh", "-c", 'node "$1" "$2" "$3" & shift 3; exec "$@"', "ev-agent", forwarder, relaySocket, String(RELAY_PORT_IN_CONTAINER), executable, ...args]
     : [executable, ...args];
   return {
-    command: "docker",
+    command: cli,
     args: [
       "run", "--rm", "--init", "--name", containerName, "--label", `ev.task=${taskId}`,
-      "--user", `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+      "--user", `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`, ...(isPodman(cli) ? ["--userns=keep-id"] : []),
       "--cpus", String(sandbox.cpus ?? 2), "--memory", sandbox.memory ?? "4g", "--pids-limit", "1024", "--shm-size", "1g",
       "--security-opt", "no-new-privileges", "--cap-drop", "ALL",
-      ...mounts, ...relay, "-v", `${sessionDir}:${sessionDir}:ro`, "-w", workspacePath,
+      ...mountArgs(files ?? {}, cli), ...own, ...relay, "-v", `${sessionDir}:${sessionDir}:ro`, "-w", workspacePath,
       "-e", `HOME=${homeDir}`, "-e", "OPENCLAW_CONFIG_PATH",
       sandbox.image, ...command
     ]
@@ -165,14 +172,14 @@ export function openClawCommand({ executable, args, sandbox, workspacePath, sess
 /** Removes containers left by an earlier run of this task (a crash or restart). */
 export function removeTaskContainers(taskId) {
   return new Promise((resolve) => {
-    const list = spawn("docker", ["ps", "-aq", "--filter", `label=ev.task=${taskId}`], { stdio: ["ignore", "pipe", "ignore"] });
+    const list = spawn(containers(), ["ps", "-aq", "--filter", `label=ev.task=${taskId}`], { stdio: ["ignore", "pipe", "ignore"] });
     let ids = "";
     list.stdout.on("data", (chunk) => { ids += chunk; });
     list.on("error", () => resolve());
     list.on("close", () => {
       const found = ids.split(/\s+/).filter(Boolean);
       if (!found.length) return resolve();
-      spawn("docker", ["rm", "-f", ...found], { stdio: "ignore" }).on("close", () => resolve()).on("error", () => resolve());
+      spawn(containers(), ["rm", "-f", ...found], { stdio: "ignore" }).on("close", () => resolve()).on("error", () => resolve());
     });
   });
 }
@@ -182,7 +189,7 @@ function terminate(run, signal = "SIGTERM") {
   // or revision) may already have started under the same label.
   if (!run.child || run.child.exitCode !== null || run.child.signalCode !== null) return;
   // Signals reach the docker client, not necessarily the container.
-  if (run.sandboxed && signal === "SIGKILL") spawn("docker", ["rm", "-f", run.containerName], { stdio: "ignore" }).on("error", () => {});
+  if (run.sandboxed && signal === "SIGKILL") spawn(containers(), ["rm", "-f", run.containerName], { stdio: "ignore" }).on("error", () => {});
   try {
     if (process.platform !== "win32" && run.child.pid) process.kill(-run.child.pid, signal);
     else run.child.kill(signal);
@@ -203,7 +210,7 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error
  * and its container. Resolves once the process is gone.
  */
 export async function stopLeftoverRun({ taskId, pid, container }) {
-  if (container) await new Promise((resolve) => spawn("docker", ["rm", "-f", container], { stdio: "ignore" }).on("close", resolve).on("error", resolve));
+  if (container) await new Promise((resolve) => spawn(containers(), ["rm", "-f", container], { stdio: "ignore" }).on("close", resolve).on("error", resolve));
   if (!pid || !commandLine(pid)?.includes(taskId)) return;
   for (const target of [-pid, pid]) { try { process.kill(target, "SIGKILL"); } catch {} }
   for (let waited = 0; alive(pid) && waited < 5_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
@@ -248,6 +255,15 @@ export class OpenClawWorkerAdapter {
       if (prior?.status === "completed") return { runId, completion: Promise.resolve(prior) };
     }
     if (!this.relay) return { runId, completion: Promise.resolve({ status: "failed", code: "MODEL_RELAY_MISSING", message: "EV's model relay is not running, so the agent cannot reach a model" }) };
+    // What it sees of the machine is read now, so a grant made since the last turn applies.
+    const files = this.sandbox?.files?.() ?? null;
+    if (this.sandbox) {
+      // No container runtime, or a path that cannot be mounted safely: the run does not start, and says why.
+      const problem = await containerProblem(containers());
+      if (problem) return { runId, completion: Promise.resolve({ status: "failed", code: "CONTAINER_RUNTIME_MISSING", message: problem }) };
+      try { mountArgs(files ?? {}, containers()); }
+      catch (error) { return { runId, completion: Promise.resolve({ status: "failed", code: error.code ?? "UNSAFE_PATH", message: error.message }) }; }
+    }
     ensurePrivateDirectorySync(this.sessionDir);
     // Valid for this run only; revoked when it ends.
     const grant = await this.relay.grant({ taskId: this.taskId, model: this.model, socket: Boolean(this.sandbox) });
@@ -261,6 +277,7 @@ export class OpenClawWorkerAdapter {
     const containerName = `ev-openclaw-${runId.slice(0, 12)}-${randomBytes(3).toString("hex")}`;
     const { command, args } = openClawCommand({
       containerName, executable: this.executable, sandbox: this.sandbox, workspacePath: this.workspacePath, sessionDir: this.sessionDir, homeDir: this.homeDir, runId, taskId: this.taskId, relaySocket: grant.socket,
+      files,
       args: ["agent", "--local", "--agent", "ev-worker", "--session-id", this.taskId, "--message", prompt, "--json", "--timeout", String(OPENCLAW_TURN_SECONDS)]
     });
     const child = spawn(command, args, {
