@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# kenwise: start, stop and open the KenWise daemon. Installed by install.sh as ~/.local/bin/kenwise.
+set -euo pipefail
+
+self=$0
+while [ -L "$self" ]; do
+  target=$(readlink "$self")
+  case $target in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
+done
+KENWISE_HOME=$(cd "$(dirname "$self")/.." && pwd)
+
+# The daemon reads .env itself; kenwise only needs to know where it keeps its files and port.
+setting() {
+  local value=${!1:-}
+  if [ -z "$value" ] && [ -f "$KENWISE_HOME/.env" ]; then
+    value=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$KENWISE_HOME/.env" | tail -n 1 | tr -d "\"'")
+  fi
+  printf '%s' "${value:-$2}"
+}
+DATA=$(setting EV_DATA_DIR "$KENWISE_HOME/data")
+case $DATA in /*) ;; *) DATA=$KENWISE_HOME/$DATA ;; esac
+PORT=$(setting EV_PORT 4317)
+PID_FILE=$DATA/kenwise.pid
+LOG_FILE=$DATA/kenwise.log
+
+running_pid() {
+  [ -f "$PID_FILE" ] || return 1
+  local pid
+  pid=$(cat "$PID_FILE")
+  kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= 2>/dev/null | grep -q "server.mjs" && echo "$pid"
+}
+
+url() {
+  local token
+  token=$(cat "$DATA/api-token" 2>/dev/null || true)
+  echo "http://127.0.0.1:$PORT/${token:+?token=$token}"
+}
+
+open_url() {
+  if command -v open >/dev/null 2>&1 && [ "$(uname -s)" = Darwin ]; then open "$1"
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1" >/dev/null 2>&1 &
+  else echo "Open this link: $1"; fi
+}
+
+start() {
+  if pid=$(running_pid); then echo "KenWise is already running (pid $pid): $(url)"; return; fi
+  mkdir -p "$DATA"
+  touch "$LOG_FILE"
+  local from=$(( $(wc -l <"$LOG_FILE") + 1 ))
+  (cd "$KENWISE_HOME" || exit 1; nohup node apps/daemon/server.mjs >>"$LOG_FILE" 2>&1 & echo $! >"$PID_FILE")
+  for _ in $(seq 1 50); do
+    if tail -n "+$from" "$LOG_FILE" | grep -q "^EV: http"; then
+      echo "KenWise is running: $(url)"
+      echo "Logs: kenwise logs    Stop: kenwise stop"
+      return
+    fi
+    running_pid >/dev/null || break
+    sleep 0.2
+  done
+  echo "KenWise did not start. What it said ($LOG_FILE):" >&2
+  tail -n "+$from" "$LOG_FILE" | tail -n 20 >&2
+  exit 1
+}
+
+stop() {
+  if pid=$(running_pid); then
+    kill "$pid"
+    for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+    echo "KenWise stopped."
+  else
+    echo "KenWise is not running."
+  fi
+  rm -f "$PID_FILE"
+}
+
+update() {
+  local was_running=""
+  running_pid >/dev/null && was_running=yes
+  git -C "$KENWISE_HOME" pull --ff-only
+  (cd "$KENWISE_HOME" && npm ci --omit=dev --no-audit --no-fund)
+  if docker info >/dev/null 2>&1; then (cd "$KENWISE_HOME" && npm run --silent openclaw:image); fi
+  if [ -n "$was_running" ]; then stop; start; fi
+}
+
+case ${1:-help} in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  status) if pid=$(running_pid); then echo "KenWise is running (pid $pid): $(url)"; else echo "KenWise is not running."; exit 1; fi ;;
+  open) running_pid >/dev/null || start; open_url "$(url)" ;;
+  logs) exec tail -n 50 -f "$LOG_FILE" ;;
+  run) cd "$KENWISE_HOME" && exec node apps/daemon/server.mjs ;;
+  update) update ;;
+  config) echo "$KENWISE_HOME/.env" ;;
+  *)
+    cat <<EOF
+Usage: kenwise <command>
+
+  start     start the daemon in the background and print its link
+  open      start it if needed and open KenWise in your browser
+  stop      stop the daemon (work in progress is kept and picked up on the next start)
+  restart   stop, then start
+  status    say whether it is running
+  logs      follow the daemon's log
+  run       run the daemon in this terminal instead
+  update    pull the latest KenWise, reinstall, rebuild the agent image, restart if it was running
+  config    print the path of the settings file
+
+KenWise lives in $KENWISE_HOME. Its data is in $DATA.
+EOF
+    ;;
+esac
