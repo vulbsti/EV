@@ -251,11 +251,18 @@ export class Connections {
     return [...providers].flatMap((providerId) => this.connectionsOf(providerId)).map((connection) => ({ ...connection, providerName: this.providerName(connection.provider) }));
   }
 
-  /** The connection EV uses for this provider now: the active stored one, else the one from the environment. */
+  /**
+   * The connection EV uses for this provider now: the active stored one, else
+   * the one from the environment. When that one is limited or needs a sign-in
+   * and another account of the same provider is usable, that one serves
+   * instead, so a second account carries on where the first ran out.
+   */
   serving(providerId) {
     const stored = this._stored(providerId);
-    if (stored.length) return stored.find((connection) => connection.active) ?? stored[0];
-    return this._envConnection(providerId);
+    const env = stored.length ? null : this._envConnection(providerId);
+    const preferred = stored.find((connection) => connection.active) ?? stored[0] ?? env;
+    if (!preferred || this.usable(preferred)) return preferred;
+    return stored.find((connection) => this.usable(connection)) ?? preferred;
   }
 
   usable(connection, now = Date.now()) {
@@ -299,17 +306,6 @@ export class Connections {
   /** The provider stopped accepting this account's key or token. */
   needsSignIn(connection, message) {
     return this._setStatus(connection, { status: "needs-sign-in", until: null, message: String(message ?? "The provider refused the key").slice(0, 300) });
-  }
-
-  /** Marks the account limited and returns the error the caller throws: it waits for the reset. */
-  limitHit(connection, retryAfterMs, code) { this.limited(connection, retryAfterMs); return this._waitError(connection.provider, code); }
-
-  /** Marks the account as needing a new sign-in and returns the error the caller throws. */
-  refused(connection, message, code) { this.needsSignIn(connection, message); return this._waitError(connection.provider, code); }
-
-  _waitError(providerId, code) {
-    try { this.forCall(providerId, code); } catch (error) { return error; }
-    return coded(code, `${this.providerName(providerId)} could not be reached`);
   }
 
   /** A call through this account worked. */

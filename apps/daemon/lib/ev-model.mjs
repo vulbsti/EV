@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Connections, retryAfterMs as readRetryAfter } from "./connections.mjs";
+import { ModelRoutes } from "./model-routes.mjs";
 
 /**
  * One way for EV's own model calls (main agent, reviewer, memory) to
@@ -22,12 +23,14 @@ import { Connections, retryAfterMs as readRetryAfter } from "./connections.mjs";
  * (openai-responses, openai-completions or anthropic-messages) says how it is
  * spoken to when the catalogue does not know the model.
  *
- * Calls go through the provider's connection (connections.mjs): its key or
- * subscription token, never one pi-ai finds on its own. An account that is
- * limited or needs a new sign-in is not called; the error carries `wait`
- * saying what the work waits for. A usage limit (429 once retries are spent,
- * or a reset too far off to wait out here) marks the account limited until
- * its reset, and a refused key (401, 403) marks it as needing a new sign-in.
+ * Calls go through the best route to the model (model-routes.mjs): the same
+ * model at whichever connected provider and account serves it best now, with
+ * that account's key or subscription token, never one pi-ai finds on its own.
+ * A usage limit (429 once retries are spent, or a reset too far off to wait
+ * out here) marks the account limited until its reset, and a refused key
+ * (401, 403) marks it as needing a new sign-in; either way the call moves to
+ * the next route. When no route is usable the error carries `wait` saying
+ * what the work waits for.
  *
  * Each role can have its own model: EV_MODEL_<ROLE> (EV, REVIEWER, LEARNER,
  * and the roles later engines add, such as FILER, GROUPER, PORTRAIT) wins over
@@ -35,7 +38,8 @@ import { Connections, retryAfterMs as readRetryAfter } from "./connections.mjs";
  * the one place that decides which model a role gets.
  *
  * Every call writes one log line (role, session, attempts, duration, tokens,
- * outcome), so cost and failures of EV's own thinking are visible.
+ * outcome) and one row in the record of model calls, so cost and failures of
+ * EV's own thinking are visible and each route's speed is measured.
  */
 
 const DEFAULT_MODEL = "opencode-go/gpt-6-luna";
@@ -47,9 +51,11 @@ const APIS = ["anthropic-messages", "openai-completions", "openai-responses"];
 const LONGEST_RETRY_MS = 30_000;
 // Until the daemon hands over its own (with the store and the secrets file), keys come from the environment only.
 let connections = new Connections();
+let routes = new ModelRoutes({ connections });
 /** Makes every model call go through these connections. */
-export function useConnections(next) { connections = next; }
-export const currentConnections = () => connections;
+export function useConnections(next) { connections = next; routes = new ModelRoutes({ connections: next }); }
+/** The routes (and the record of model calls) over the current connections. */
+export const currentRoutes = () => routes;
 
 const configError = (message) => Object.assign(new Error(message), { code: "MODEL_NOT_CONFIGURED" });
 
@@ -139,19 +145,36 @@ function listening(fetchImpl, heard, quiet, seen) {
  * `parse(text, message)` gives `value`; a reply it rejects is retried like a
  * provider blip. Throws an error with `code` once retries are spent.
  */
-export async function modelTurn({ context, parse = (text) => text, session, code, label, role = label, silenceMs = SILENCE_MS, apiKey, fetchImpl, signal, retryDelaysMs = RETRY_DELAYS_MS, env = process.env }) {
-  let model;
-  try { model = modelSettings(env, modelFor(role, env)); } catch (error) { throw Object.assign(error, { code }); }
+export async function modelTurn({ context, session, code, label, role = label, apiKey, env = process.env, workId = null, ...rest }) {
+  let asked;
+  try { asked = modelSettings(env, modelFor(role, env)); } catch (error) { throw Object.assign(error, { code }); }
   // An explicit key (tests, the harness's self-test) bypasses the accounts.
-  if (!apiKey) await connections.scanned;
-  const account = apiKey ? null : connections.forCall(model.provider, code);
+  if (apiKey) return turnOn({ ...rest, context, session, code, label, apiKey, workId, model: asked, account: null });
+  await connections.scanned;
+  // Each pass marks one account limited or signed out, so this ends: on a reply, or when no route is left.
+  for (;;) {
+    const { model, connection } = routes.pick(asked, code);
+    try { return await turnOn({ ...rest, context, session, code, label, workId, model, account: connection }); }
+    catch (error) { if (!error.reroute) throw error; }
+  }
+}
+
+const reroute = (connection) => Object.assign(new Error(`${connection.provider} can no longer be used for now`), { reroute: true });
+
+/** One model turn through one route: `account` is its connection (null with an explicit key). */
+async function turnOn({ context, parse = (text) => text, session, code, label, silenceMs = SILENCE_MS, apiKey, fetchImpl, signal, retryDelaysMs = RETRY_DELAYS_MS, workId, model, account }) {
   if (account?.method === "oauth") {
     // A subscription token that cannot be refreshed means signing in again.
     try { await providerFor(model).getAuth(model, { signal }); }
-    catch (error) { throw connections.refused(account, error.message, code); }
+    catch (error) { connections.needsSignIn(account, error.message); throw reroute(account); }
   }
   const started = Date.now();
-  const log = (outcome, attempts, extra = {}) => logCall({ role: label, session, model: `${model.provider}/${model.id}`, attempts, ms: Date.now() - started, inputChars: chars(context.messages), outcome, ...extra });
+  let firstByteMs = null;
+  const log = (outcome, attempts, extra = {}) => {
+    const ms = Date.now() - started;
+    logCall({ role: label, session, model: `${model.provider}/${model.id}`, attempts, ms, inputChars: chars(context.messages), outcome, ...extra });
+    if (!apiKey) routes.record({ role: label, workId, model, connectionId: account?.id ?? null, outcome, status: extra.status ?? null, ms, firstByteMs, tokens: extra.tokens ?? null });
+  };
   let failure;
   let attempt = 0;
   for (; attempt <= retryDelaysMs.length; attempt++) {
@@ -177,6 +200,7 @@ export async function modelTurn({ context, parse = (text) => text, session, code
         // Seen here because the provider SDKs throw away the status of a failed reply.
         fetch: listening(fetchImpl, heard, quiet.signal, (response) => {
           status = response.status;
+          firstByteMs = Date.now() - started;
           resetMs = readRetryAfter(response.headers?.get?.("retry-after"));
           retryAfterMs = Math.min(resetMs, LONGEST_RETRY_MS);
         })
@@ -193,9 +217,10 @@ export async function modelTurn({ context, parse = (text) => text, session, code
       failure = Object.assign(new Error(`${label} model call failed${status >= 400 ? ` (HTTP ${status})` : ""}: ${String(why).replace(/\s+/g, " ").slice(0, 300)}`), { code, status: status >= 400 ? status : null, retryAfterMs, resetMs });
       if (status >= 400 && !transient(status)) {
         log("rejected", attempt + 1, { status });
-        throw account && (status === 401 || status === 403) ? connections.refused(account, why, code) : failure;
+        if (account && (status === 401 || status === 403)) { connections.needsSignIn(account, why); throw reroute(account); }
+        throw failure;
       }
-      if (account && status === 429 && resetMs > LONGEST_RETRY_MS) { log("limited", attempt + 1, { status }); throw connections.limitHit(account, resetMs, code); }
+      if (account && status === 429 && resetMs > LONGEST_RETRY_MS) { log("limited", attempt + 1, { status }); connections.limited(account, resetMs); throw reroute(account); }
       continue;
     }
     // With tools on offer, a turn may end with nothing left to say.
@@ -211,7 +236,7 @@ export async function modelTurn({ context, parse = (text) => text, session, code
     return { message, text, toolCalls, usage, value };
   }
   log("failed", attempt, { status: failure?.status ?? null, error: failure?.message?.slice(0, 200) ?? null });
-  if (account && failure?.status === 429) throw connections.limitHit(account, failure.resetMs, code);
+  if (account && failure?.status === 429) { connections.limited(account, failure.resetMs); throw reroute(account); }
   throw failure;
 }
 

@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { currentConnections, modelSettings } from "./ev-model.mjs";
+import { currentRoutes, modelSettings } from "./ev-model.mjs";
 import { FORWARDER } from "./model-relay.mjs";
 import { ensurePrivateDirectorySync } from "./file-permissions.mjs";
 import { publicUsage } from "./pi-worker-adapter.mjs";
@@ -20,9 +20,9 @@ export const workerModel = () => modelSettings(process.env, process.env.EV_OPENC
 // Inside a container the relay is reached on this port, forwarded to its socket file.
 const RELAY_PORT_IN_CONTAINER = 4319;
 
-/** What agents' model account waits for (limited, a sign-in, no account), or null when it is usable. */
+/** What agents' model waits for (every route limited, a sign-in, no account), or null when a route is usable. */
 export function workerAccountWait() {
-  try { currentConnections().forCall(workerModel().provider, "AGENT_MODEL_UNAVAILABLE"); return null; }
+  try { currentRoutes().pick(workerModel(), "AGENT_MODEL_UNAVAILABLE", { sameApi: true }); return null; }
   catch (error) { return error.wait ?? null; }
 }
 
