@@ -40,6 +40,22 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 - `L9-07` / `L9-08` A follow-up after two finished pieces of work goes into the one it is about; a similar-sounding new ask does not.
 - `L8-04` / `L6-07` A vague request is met with a stated assumption when being wrong is cheap, and with a question before anything that cannot be undone.
 
+## Task 10: Accounts EV reaches models through
+
+EV reaches models through the person's own accounts: a key in its environment, a key they paste, or a subscription they sign in to. A key is kept in one protected place and nowhere else, not even with the agents doing the work. An account that hits its usage limit or stops being accepted is a known state, not an error: what needs a model waits, the person is told once, and it goes on by itself when an account is usable again.
+
+- ✓ **C-01** A key EV finds in its environment shows as a working account that says where it comes from; the key itself is never shown, and the account cannot be removed from the screen.
+- ✓ **C-02** A key the person pastes is tried at once: one the provider refuses is reported straight away and not kept; one it accepts is used from EV's next message on, ahead of the environment's, until it is removed.
+- ✓ **C-03** A pasted key survives a restart and is kept in exactly one file that only the person's own user can read: not in the conversation, the store, search or anything given to an agent.
+- ✓ **C-04** An agent's model calls reach the provider with the person's key, while nothing the agent is given (its environment, its config, its files) holds a key.
+- ✓ **C-05** When an account hits its usage limit, it shows as limited until a time, the person is told once, and their message waits and is answered after the reset without being sent again.
+- ✓ **C-06** When an account's key stops being accepted, it shows as needing a new sign-in, the person is told once, and their message waits; once they give a key that works, the waiting message is answered.
+- ✓ **C-07** Signing in with a subscription gives the person a link to finish it and a way to paste the result back when the browser cannot reach EV; a sign-in they abandon ends without adding an account.
+
+Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
+
+- One real run on the test server: a real account forced into its limit, and an agent in docker reaching its model through the relay.
+
 ## Task 3: One store with real ids
 
 Everything EV holds lives in one place and is linked: a message to the work it started, the work to its result, a memory to where it came from. Because of that, forgetting reaches every copy, a restart loses nothing, and a result can never be too large to keep.

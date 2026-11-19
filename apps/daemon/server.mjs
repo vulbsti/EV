@@ -15,6 +15,8 @@ import { importSessions } from "./lib/outside-sessions.mjs";
 import { sessionHeader, tryKey, useConnections } from "./lib/ev-model.mjs";
 import { Connections } from "./lib/connections.mjs";
 import { SignIns } from "./lib/sign-in.mjs";
+import { ModelRelay } from "./lib/model-relay.mjs";
+import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView } from "./lib/ev-memory.mjs";
 import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
@@ -48,7 +50,9 @@ const assistantOwnerId = "default-person";
 // left unanalysed by a restart.
 const memoryLearner = new MemoryLearner({ memory: assistantMemory, ownerId: assistantOwnerId });
 memoryLearner.kick();
-const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate });
+// Agents reach their model through EV, so no key enters their container.
+const modelRelay = await new ModelRelay({ connections }).start();
+const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait });
 await assistantWorkers.start();
 const standingStore = StandingResponsibilityStore.open({ store });
 const githubStandingConnector = new GitHubPullRequestConnector();

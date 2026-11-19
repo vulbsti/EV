@@ -4,7 +4,7 @@ An assistant that understands the person first, then coordinates agents that wor
 
 ## Run it
 
-Needs Node.js 22.19+, OpenClaw 2026.10+, docker, and `OPENCODE_API` in the local `.env`.
+Needs Node.js 22.19+, OpenClaw 2026.10+, docker, and an account for a model: a key in the local `.env` (`OPENCODE_API` for OpenCode Go, or any key pi-ai knows, such as `OPENAI_API_KEY`), or one added after start through `/api/assistant/setup`.
 
 ```bash
 npm install              # pi-ai, the one library EV uses to talk to models
@@ -16,7 +16,7 @@ Open the link the daemon prints (`http://127.0.0.1:4317/?token=…`). The token 
 
 Settings in `.env` (all optional):
 
-- `EV_MODEL` (default `opencode-go/gpt-6-luna`): the model EV and its agents use, as `provider/model`; a bare model id means `opencode-go`. Its API shape, base URL and quirks come from pi-ai's OpenCode Go catalogue, and `OPENCODE_API` is its key.
+- `EV_MODEL` (default `opencode-go/gpt-6-luna`): the model EV and its agents use, as `provider/model` from pi-ai's catalogue; a bare model id means `opencode-go`. Its API shape, base URL and quirks come from the catalogue, and the key from that provider's account (below).
 - `EV_MODEL_URL` sends the calls (EV's and the agents') to another endpoint, such as a stub model in tests or any OpenAI- or Anthropic-compatible server. A model the catalogue does not know also needs `EV_MODEL_API`: `openai-responses`, `openai-completions` or `anthropic-messages`. Give OpenAI-style base URLs with their `/v1`; an Anthropic base URL has none.
 - `EV_OPENCLAW_MODEL`: a different model for agents, named the same way.
 - `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you. The default is docker: each agent sees only its goal folder plus its own home folder. Either way each piece of work has its own home, never yours. `EV_OPENCLAW_IMAGE` overrides the image name.
@@ -25,6 +25,24 @@ Settings in `.env` (all optional):
 - `EV_WORKER_STALL_MS` (default `600000`): how long an agent may show no progress before it is restarted in the same session. There is no limit on how long an agent that keeps making progress may take.
 - `EV_DATA_DIR`: where state lives (default `data/`).
 - `EV_API_TOKEN`: pins the API token instead of a random one per start.
+
+## Accounts
+
+EV reaches models through accounts, one or more per provider, one of them active. A key in the environment is an account that shows where it was found and is changed there; a key pasted through the settings API is tried with one tiny call before it is kept, and wins over the environment's. Subscriptions sign in directly where the provider allows other apps to (ChatGPT, GitHub Copilot, SuperGrok, OpenRouter, Kimi, Meta): the sign-in gives a link or a device code, and when the browser cannot reach EV (EV on another machine) you paste the final redirect URL back. A Claude subscription is not offered, because Anthropic's terms do not allow it in other apps.
+
+Keys and tokens are kept in one file, `data/secrets/credentials.json`, readable only by your user and never indexed, searched or given to an agent. Agents reach their model through a relay inside EV with a token that works only for their own run: EV swaps in the real key on the way out, so no key enters an agent's container, and EV is the only one that refreshes a subscription token.
+
+An account that hits its usage limit is marked limited until its reset time, and one whose key stops being accepted is marked as needing a new sign-in. Neither is called until it is usable again. A message that needs a model meanwhile waits in its inbox and EV says so once; it is answered at the reset, or as soon as an account is added. Work in progress and the reviewer wait the same way without counting it as a failure.
+
+| Call | Does |
+|---|---|
+| `GET /api/assistant/setup` | Providers (with whether a key or a subscription sign-in is offered) and accounts with their status. Never a secret, only a hint |
+| `POST /api/assistant/setup/connections` `{provider, key, label?}` | Tries the key, then saves it as the provider's active account |
+| `POST /api/assistant/setup/connections/:id` `{active?, label?}` | Makes it the active account, or renames it |
+| `DELETE /api/assistant/setup/connections/:id` | Removes a saved account |
+| `POST /api/assistant/setup/signin` `{provider, label?}` | Starts a subscription sign-in; poll it with `GET /api/assistant/setup/signin/:id` (link or device code, then saved, failed, expired or cancelled after 10 minutes) |
+| `POST /api/assistant/setup/signin/:id/code` `{code}` | Answers what the sign-in asks for, usually the pasted redirect URL |
+| `DELETE /api/assistant/setup/signin/:id` | Cancels it |
 
 ## What to expect
 
