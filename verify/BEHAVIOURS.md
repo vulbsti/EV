@@ -49,8 +49,8 @@ EV is one conversation that never ends, and the page is a live view of it. Whate
 - ✓ **P-03** When one message asks for two pieces of work, both are tied to that message, and the page shows both under it.
 - ✓ **P-04** Forgetting something takes it off an open page at once, without a reload.
 - ✓ **P-05** Each role can be given its own model, so the reviewer and the learner can run on a cheaper one while EV thinks with its own.
-- ✗ **P-06** Something the person opened on the page stays open while new messages and work updates arrive.
-- ✗ **P-07** There is one conversation: the page offers no way to start a separate chat, and the same conversation shows on a phone.
+- ✓ **P-06** Something the person opened on the page stays open while new messages and work updates arrive.
+- ✓ **P-07** There is one conversation: the page offers no way to start a separate chat, and the same conversation shows on a phone.
 
 ## Task 3: One store with real ids
 
