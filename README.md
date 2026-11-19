@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/vulbsti/KenWise/main/install.sh | b
 
 The script puts KenWise in `~/.kenwise`, installs its one npm dependency, builds the container the agents run in, and links a `kenwise` command into `~/.local/bin`. It never uses sudo. Run it again to update, or run `kenwise update`. To install from a clone instead: `git clone https://github.com/vulbsti/KenWise && cd KenWise && ./install.sh`.
 
-KenWise reaches models through [OpenCode Go](https://opencode.ai) today, so put your key in `~/.kenwise/.env`:
+KenWise reaches models through your own accounts. The quickest start is an [OpenCode Go](https://opencode.ai) key in `~/.kenwise/.env` (other keys and subscription sign-in: [configuration](docs/configuration.md#accounts)):
 
 ```bash
 OPENCODE_API=...

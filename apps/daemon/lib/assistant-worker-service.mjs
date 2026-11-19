@@ -27,9 +27,9 @@ const TRANSIENT_WORKER_CODES = new Set(["PI_PROCESS_EXIT", "PI_PROCESS_START", "
 // Admission order: finish work already under way before starting new work,
 // and let what the user is waiting on go ahead of background preparation.
 const PRIORITY = Object.freeze({ continuing: 0, interactive: 1, background: 2 });
-// The "now" line follows the agent's steps at most this often; a change of
-// phase (waiting, working, checking) goes out at once.
-const NOW_EVERY_MS = 15_000;
+// The "now" line follows the agent's newest step, at most this often so a
+// burst of steps is one write; a change of phase goes out at once.
+const NOW_EVERY_MS = 2_000;
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -206,6 +206,11 @@ export class AssistantWorkerService {
     // openClawCommand. EV_OPENCLAW_SANDBOX=host runs agents uncontained, as
     // the person, and should only be used when asked for.
     openClawSandbox = process.env.EV_OPENCLAW_SANDBOX === "host" ? null : { image: process.env.EV_OPENCLAW_IMAGE || "ev-openclaw" },
+    // How agents reach their model without a key (model-relay.mjs).
+    relay = null,
+    // What the agents' model account waits for, or null when it is usable
+    // (the daemon passes workerAccountWait).
+    accountWait = () => null
   }) {
     if (!supervisor) throw codedError("INVALID_SERVICE", "supervisor is required");
     if (typeof workerRoot !== "string" || !workerRoot) throw codedError("INVALID_SERVICE", "workerRoot is required");
@@ -224,6 +229,8 @@ export class AssistantWorkerService {
     this.settlementDelayMs = Math.max(0, settlementDelayMs);
     this.reviewHoldMs = reviewHoldMs;
     this.openClawSandbox = openClawSandbox;
+    this.relay = relay;
+    this.accountWait = accountWait;
     this.activeRuns = new Map();
     this.reviewer = reviewer;
     this.maxConcurrentWorkers = Math.max(1, Math.min(8, Number(maxConcurrentWorkers) || 3));
@@ -235,7 +242,7 @@ export class AssistantWorkerService {
     this.stopping = false;
     this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => profile.capability === "openclaw-general-v1"
       ? new OpenClawWorkerAdapter({
-        taskId: task.taskId, workspacePath, sessionDir, stallMs: this.stallMs, homeDir: this._home(task.taskId),
+        taskId: task.taskId, workspacePath, sessionDir, stallMs: this.stallMs, homeDir: this._home(task.taskId), relay: this.relay,
         sandbox: this.openClawSandbox && { ...this.openClawSandbox, mountRoot: task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath }
       })
       : new PiWorkerAdapter({
@@ -529,6 +536,15 @@ export class AssistantWorkerService {
     let result = await this._runOnce(active, prompt, options);
     for (let restart = 1; active.isGeneral && ["failed", "stalled"].includes(result?.status) && restart <= RESTARTS_BEFORE_ASKING; restart++) {
       if (active.stopRequested || active.shutdownRequested) break;
+      // The agent stopped because its model account is limited or signed
+      // out: the work waits for the account, and that is not a restart.
+      const wait = this.accountWait();
+      if (wait) {
+        await this._holdForAccount(active, wait, "the agent");
+        restart--;
+        result = await this._runOnce(active, `You were interrupted while working on this. Check what is already in your workspace and carry on from where you left off.\n\n${prompt}`, { ...options, reuseCompleted: false, phase: "Carrying on now the account is back" });
+        continue;
+      }
       this._steps(active, [{ kind: "restarted", label: `The agent stopped (${result.message ?? result.status}), so it was restarted in the same session`, code: result.code ?? null }]);
       result = await this._runOnce(active, `You were interrupted while working on this. Check what is already in your workspace and carry on from where you left off.\n\n${prompt}`, { ...options, reuseCompleted: false, phase: "Restarted in the same session; carrying on" });
     }
@@ -823,6 +839,21 @@ export class AssistantWorkerService {
     } catch { return null; }
   }
 
+  /**
+   * Waits until the model account `wait` names may be usable again: its
+   * reset time, or a minute when it waits for the person (a sign-in, an
+   * account). Says so once on the work. Throws if the work is stopped.
+   */
+  async _holdForAccount(active, wait, who) {
+    const message = wait.until ? `Waiting for ${who}'s model: the ${wait.providerName} account is limited until ${wait.until}.` : `Waiting for ${who}'s model: the ${wait.providerName} account ${wait.reason === "none" ? "is not connected" : "needs a new sign-in"}.`;
+    if (message !== active.holding) await this._phase(active, message.replace(/\.$/, ""));
+    active.holding = message;
+    active.controller = new AbortController();
+    try { await abortableDelay(wait.until ? Math.max(1_000, Date.parse(wait.until) - Date.now() + 500) : 60_000, active.controller.signal); }
+    catch { throw codedError("STALE_FENCING_TOKEN", "Task was stopped"); }
+    finally { active.controller = null; }
+  }
+
   async _review(active, task, { request, brief, report, workspacePath, hostNotes = [], sessionEvents = [] }) {
     const round = active.round;
     await this.supervisor.beginVerification({ taskId: task.taskId, runId: active.runId, fencingToken: active.lease.fencingToken, round });
@@ -843,6 +874,15 @@ export class AssistantWorkerService {
         break;
       } catch (error) {
         if (active.stopRequested || active.shutdownRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
+        // No account can reach the reviewer's model yet (limited, or waiting
+        // for a sign-in): that is not the reviewer failing, so the result is
+        // held for as long as it takes, checking again at the reset or every
+        // minute, without counting towards giving up.
+        if (error.wait) {
+          attempt--;
+          await this._holdForAccount(active, error.wait, "EV's quality check");
+          continue;
+        }
         if (attempt >= this.reviewHoldMs.length) {
           throw codedError("QUALITY_REVIEW_UNAVAILABLE", "The agent finished, but EV's quality check could not run, so the result was held back instead of delivered unchecked.", { heldAnswer: String(report.answer ?? "").slice(0, 6_000), cause: error.message });
         }
@@ -855,7 +895,7 @@ export class AssistantWorkerService {
     }
     active.reviews.push(review);
     await this._progress(active, { round, verdict: review.verdict, intentMatch: review.intentMatch ?? null, summary: review.summary, missing: review.missing, feedback: review.feedback, progress: review.progress ?? null, askPerson: review.askPerson || null, unavailable: Boolean(review.unavailable) }, "review");
-    if (!review.unavailable) this._steps(active, [{ kind: "reviewed", label: review.verdict === "accept" ? "EV's review accepted it" : `EV's review sent it back${review.summary ? `: ${review.summary}` : ""}`.slice(0, 300), round, accepted: review.verdict === "accept" }]);
+    if (!review.unavailable) this._steps(active, [{ kind: "reviewed", label: review.verdict === "accept" ? "The review accepted it" : `The review sent it back${review.summary ? `: ${review.summary}` : ""}`.slice(0, 300), round, accepted: review.verdict === "accept" }]);
     const sharedPath = this._sharedPath(task);
     if (sharedPath) await writeSharedFiles(sharedPath, { "REVIEW.md": renderReviews(active.reviews) }).catch(() => {});
     else if (workspacePath) await writeArtifact(workspacePath, "REVIEW.md", Buffer.from(renderReviews(active.reviews))).catch(() => {});

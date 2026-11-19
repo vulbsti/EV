@@ -48,7 +48,22 @@ EV is one conversation that never ends, and the page is a live view of it. These
 - ✓ **P-03** When one message asks for two pieces of work, both are tied to that message, and the page shows both under it.
 - ✓ **P-04** Forgetting something takes it off an open page at once, without a reload.
 
-## Task 11: Live work
+## Task 11: Accounts EV reaches models through
+
+EV reaches models through the person's own accounts: a key in its environment, a key they paste, or a subscription they sign in to. A key is kept in one protected place and nowhere else, not even with the agents doing the work. An account that hits its usage limit or stops being accepted is a known state, not an error: what needs a model waits, the person is told once, and it goes on by itself when an account is usable again.
+
+- ✓ **C-01** A key EV finds in its environment shows as a working account that says where it comes from; the key itself is never shown, and the account cannot be removed from the screen.
+- ✓ **C-02** A key the person pastes is tried at once: one the provider refuses is reported straight away and not kept; one it accepts is used from EV's next message on, ahead of the environment's, until it is removed.
+- ✓ **C-03** A pasted key survives a restart and is kept in exactly one file that only the person's own user can read: not in the conversation, the store, search or anything given to an agent.
+- ✓ **C-04** An agent's model calls reach the provider with the person's key, while nothing the agent is given (its environment, its config, its files) holds a key.
+- ✓ **C-05** When an account hits its usage limit, it shows as limited until a time, the person is told once, and their message waits and is answered after the reset without being sent again.
+- ✓ **C-06** When an account's key stops being accepted, it shows as needing a new sign-in, the person is told once, and their message waits; once they give a key that works, the waiting message is answered.
+
+Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
+
+- One real run on the test server: a real account forced into its limit, and an agent in docker reaching its model through the relay.
+
+## Task 12: Live work
 
 The person can watch an agent work, step by step, and come back to it later. Under that view are two guarantees that hold whatever EV or its agents decide: the steps reach a page that lost its connection with nothing missing and nothing twice, and work on hold shows nothing new from an agent it has stopped. Everything else about the live view (labels, the "now" line, the pane) was walked through once against its state chart (design/build/verification/live-work.md), not checked on every push.
 

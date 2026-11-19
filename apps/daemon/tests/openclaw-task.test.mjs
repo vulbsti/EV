@@ -9,11 +9,13 @@ import { validateOpenClawTaskReport } from "../lib/openclaw-task-report.mjs";
 import { reviewOpenClawReport } from "../lib/ev-quality-gate.mjs";
 import { modelReply, shownInput } from "./model-reply.mjs";
 
-test("parallel tasks use distinct OpenCode sessions without storing the API key", () => {
-  const first = openClawTaskConfig({ taskId: "agent-one", workspacePath: "/tmp/agent-one" });
-  const second = openClawTaskConfig({ taskId: "agent-two", workspacePath: "/tmp/agent-two" });
+test("parallel tasks use distinct OpenCode sessions and reach the model through the relay, without a key", () => {
+  const relay = { baseUrl: "http://127.0.0.1:9/relay", token: "ev-task-one" };
+  const first = openClawTaskConfig({ taskId: "agent-one", workspacePath: "/tmp/agent-one", relay });
+  const second = openClawTaskConfig({ taskId: "agent-two", workspacePath: "/tmp/agent-two", relay: { ...relay, token: "ev-task-two" } });
   const provider = first.models.providers["opencode-go"];
-  assert.equal(provider.apiKey, "${OPENCODE_API}");
+  assert.equal(provider.apiKey, "ev-task-one");
+  assert.equal(provider.baseUrl, "http://127.0.0.1:9/relay");
   assert.equal(provider.api, "openai-responses");
   assert.notEqual(provider.headers["x-opencode-session"], second.models.providers["opencode-go"].headers["x-opencode-session"]);
   assert.equal(first.agents.entries["ev-worker"].model.primary, "opencode-go/gpt-6-luna");

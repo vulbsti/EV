@@ -87,3 +87,17 @@ test("a sandboxed OpenClaw worker mounts only its goal, its config and its own h
   for (const flag of ["--cap-drop", "--memory", "--pids-limit", "--cpus"]) assert.ok(args.includes(flag), flag);
   assert.ok(!args.includes("--privileged") && !args.some((arg) => arg.includes("docker.sock")));
 });
+
+test("a sandboxed worker gets the model relay's socket and no key in its environment", () => {
+  const { args } = openClawCommand({
+    executable: "openclaw", args: ["agent"], sandbox: { image: "ev-openclaw", mountRoot: "/ev/workspaces/goal" },
+    workspacePath: "/ev/workspaces/goal/tasks/t1", sessionDir: "/ev/sessions/t1", homeDir: "/ev/homes/t1", runId: "run-1234567890ab", taskId: "t1", relaySocket: "/tmp/ev-relay-abc.sock"
+  });
+  const mounts = args.flatMap((arg, index) => args[index - 1] === "-v" ? [arg] : []);
+  assert.ok(mounts.includes("/tmp/ev-relay-abc.sock:/tmp/ev-relay-abc.sock"));
+  const passed = args.flatMap((arg, index) => args[index - 1] === "-e" ? [arg] : []);
+  assert.deepEqual(passed.map((entry) => entry.split("=")[0]).sort(), ["HOME", "OPENCLAW_CONFIG_PATH"]);
+  const image = args.indexOf("ev-openclaw");
+  assert.deepEqual(args.slice(image + 1, image + 3), ["sh", "-c"]);
+  assert.deepEqual(args.slice(-2), ["openclaw", "agent"]);
+});

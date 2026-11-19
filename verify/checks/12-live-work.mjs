@@ -4,7 +4,7 @@ const AUTH_STEPS = (ev, taskId) => ev.api(`/api/assistant/tasks/${encodeURICompo
 const busy = (count, waitMs) => Array.from({ length: count }, (_, index) => ({ waitMs, call: { name: "exec", arguments: { command: `cat notes-${index + 1}.md` } } }));
 
 export default {
-  task: 11,
+  task: 12,
   name: "Live work",
   goal: "The person can watch an agent work, step by step, and come back to it later. Under that view are two guarantees that hold whatever EV or its agents decide: the steps reach a page that lost its connection with nothing missing and nothing twice, and work on hold shows nothing new from an agent it has stopped. Everything else about the live view (labels, the \"now\" line, the pane) was walked through once against its state chart (design/build/verification/live-work.md), not checked on every push.",
   live: [],
