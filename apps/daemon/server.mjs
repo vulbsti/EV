@@ -17,6 +17,7 @@ import { Connections } from "./lib/connections.mjs";
 import { SignIns } from "./lib/sign-in.mjs";
 import { ModelRelay } from "./lib/model-relay.mjs";
 import { ModelGuide } from "./lib/model-guide.mjs";
+import { ModelLearning } from "./lib/model-learning.mjs";
 import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView, rightNow } from "./lib/ev-memory.mjs";
@@ -80,6 +81,10 @@ const modelRelay = await new ModelRelay({
 }).start();
 // What EV reads to choose each piece of work's model, and how work and its reviewer get theirs.
 const modelGuide = new ModelGuide({ routes: currentRoutes(), store });
+// The personal layer: a weekly analysis of the person's own work rewrites their claims about models.
+const modelLearning = new ModelLearning({ store, guide: modelGuide });
+modelLearning.noticeAtlas(modelGuide.atlas);
+void modelLearning.kick();
 const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait, models: modelGuide });
 await assistantWorkers.start();
 const standingStore = StandingResponsibilityStore.open({ store });
@@ -375,6 +380,7 @@ function postTaskUpdate(task) {
   const content = taskUpdate(task);
   const conversationId = task.input?.metadata?.conversationId;
   if (task.input?.capability === "openclaw-general-v1") {
+    void modelLearning.kick();
     try { memoryLearner.recordTask(task); }
     catch (error) { console.error(`[${new Date().toISOString()}] Could not record task ${task.taskId} for memory: ${error.message}`); }
   }
@@ -608,6 +614,12 @@ async function handleSetup(request, response, url) {
   const path = url.pathname.slice("/api/assistant/setup".length);
   const { method } = request;
   if (method === "GET" && path === "") return json(response, 200, { providers: connections.providers(), connections: connections.list() });
+  // The model guide: what KenWise has learnt about each model it can choose, for the Models tab.
+  if (method === "GET" && path === "/guide") return json(response, 200, guideView());
+  if (method === "POST" && path === "/guide/note") { const body = await readJson(request); return json(response, 201, modelLearning.note({ text: body.text, model: body.model ?? null })); }
+  if (method === "POST" && path === "/guide/undo") return json(response, 200, modelLearning.undo(String((await readJson(request)).change ?? "")));
+  if (method === "POST" && path === "/guide/run") return json(response, 200, { changes: await modelLearning.run({ why: "asked" }) });
+  if (method === "POST" && path === "/guide/off") { const body = await readJson(request); return json(response, 200, modelGuide.setOff(String(body.model ?? ""), body.off !== false)); }
   if (method === "POST" && path === "/connections") {
     const body = await readJson(request);
     const provider = String(body.provider ?? "");
@@ -639,6 +651,23 @@ async function handleSetup(request, response, url) {
   if (attempt && method === "DELETE" && !attempt[2]) return json(response, 200, signIns.cancel(decodeURIComponent(attempt[1])));
   if (attempt && method === "POST" && attempt[2]) return json(response, 200, signIns.answer(decodeURIComponent(attempt[1]), (await readJson(request)).code));
   return false;
+}
+
+/** The model guide as the page shows it: each model's claims with their standing, what changed lately, notes and what is switched off. */
+function guideView() {
+  const view = (claim) => ({ id: claim.id ?? null, text: claim.text, state: claim.state, source: claim.source ?? null, evidence: claim.evidence ?? [] });
+  return {
+    models: modelGuide.entries().map((entry) => ({
+      key: entry.key, name: entry.name, spec: entry.spec, via: [...new Set(currentRoutes().routes(entry.record).map((route) => connections.providerName(route.model.provider)))],
+      subscription: entry.subscription, personal: entry.personal.map(view), atlas: entry.claims.map(view), speed: entry.speed
+    })),
+    unknown: modelGuide.unknown(),
+    general: modelLearning.claims(null).map(view),
+    changes: modelLearning.changes({ since: Date.now() - 30 * 24 * 60 * 60 * 1000 }),
+    off: modelGuide.off(),
+    lastRun: modelLearning.lastRun(),
+    nextRun: modelLearning.nextRun()
+  };
 }
 
 function safeConversation(url) {
@@ -1070,6 +1099,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     standingScheduler.stop();
     threadsEngine.stop();
     portrait.stop();
+    modelLearning.stop();
     for (const stream of streams) stream.end();
     await assistantWorkers.shutdown().catch((error) => console.error(`Worker shutdown failed: ${error.message}`));
     store.close();

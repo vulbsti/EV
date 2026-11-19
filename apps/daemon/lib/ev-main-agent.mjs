@@ -46,10 +46,10 @@ const model = {
   properties: {
     first: string("The model, named as the list names it."),
     why: string("One sentence on why it suits this work, such as \"Mostly visual design, where Fable is strongest, and it did your last design job in one round.\""),
-    second: string("Another model for when the first cannot be reached."),
+    second: string("Another model for when the first cannot be reached. Leave it out when there is no real alternative."),
     second_why: string("One sentence on why.")
   },
-  required: ["first", "why", "second", "second_why"],
+  required: ["first", "why"],
   additionalProperties: false
 };
 const readAs = strings("Optional: how you read their words for this work, as a few short phrases they can strike if wrong (\"One page\", \"Ready by Thursday evening\", \"Sources linked\"). Only readings that were yours to make, not what they said outright.");
