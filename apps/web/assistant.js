@@ -158,7 +158,11 @@ function setText(node, text) {
 const ICON = {
   chevron: '<svg class="ic sm chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>',
   pause: '<svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"></path></svg>',
-  file: '<svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"></path></svg>'
+  file: '<svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"></path></svg>',
+  up: '<svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"></path></svg>',
+  out: '<svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M11 7H6v11h11v-5"></path></svg>',
+  back: '<svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 19H5v-5M5 19l8-8M13 17h5V6H7v5"></path></svg>',
+  play: '<svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z"></path></svg>'
 };
 
 const startOfDay = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -360,7 +364,7 @@ function messageNode(message) {
       node = make("article", "msg turn-me");
       const bubble = make("div", "me");
       bubble.append(make("p"));
-      node.append(bubble, make("span", "sending"), make("div", "cards"));
+      node.append(bubble, make("span", "sending"), make("span", "to-agent"), make("div", "cards"));
     } else {
       node = make("article", "msg said");
       node.append(make("p", "answer"), make("div", "cards"));
@@ -377,6 +381,11 @@ function messageNode(message) {
     note.classList.toggle("failed", Boolean(message.failed));
     setText(note, message.pending ? message.failed ? "Not sent yet. Retrying when KenWise is reachable." : "Sending" : "");
     note.hidden = !message.pending;
+    // Typed in the pane: it went to that work's agent, not to KenWise.
+    const told = node.querySelector(".to-agent");
+    const work = message.toAgent ? tasks.get(message.taskId) : null;
+    setText(told, message.toAgent ? `To the agent of “${work?.title ?? "this work"}”${work?.live?.queued?.includes(message.messageId) ? ` · ${queuedWait(work)}` : ""}` : "");
+    told.hidden = !message.toAgent;
   } else {
     setHtml(node.querySelector(".answer"), renderAnswer(message.content));
   }
@@ -391,8 +400,9 @@ function cardNode(task) {
     const detailsId = `work-${task.taskId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
     card.innerHTML = `<div class="card-h"><button type="button" class="card-t" data-toggle aria-expanded="false" aria-controls="${escapeHtml(detailsId)}"></button><span class="state"><span class="dot"></span><span class="state-label"></span></span></div>
       <p class="now"></p>
+      <div class="livebox" hidden><ul class="feed" aria-live="polite"></ul><p class="routed"></p></div>
       <div class="details" id="${escapeHtml(detailsId)}" hidden></div>
-      <div class="acts qa"><button type="button" class="btn quiet" data-toggle aria-expanded="false" aria-controls="${escapeHtml(detailsId)}">${ICON.chevron}<span>Details</span></button><button type="button" class="btn quiet" data-hold>${ICON.pause}Hold</button></div>`;
+      <div class="acts qa"><button type="button" class="btn quiet" data-toggle aria-expanded="false" aria-controls="${escapeHtml(detailsId)}">${ICON.chevron}<span>Details</span></button><button type="button" class="btn quiet" data-watch hidden></button><button type="button" class="btn quiet" data-pop hidden></button><button type="button" class="btn quiet" data-hold>${ICON.pause}Hold</button><button type="button" class="btn quiet" data-carry hidden>${ICON.play}Carry on</button></div>`;
     cards.set(task.taskId, card);
   }
   const state = taskState(task);
@@ -413,6 +423,10 @@ function cardNode(task) {
   const hold = card.querySelector("[data-hold]");
   hold.hidden = resting(task);
   if (!holdCommands.has(task.taskId) || resting(task)) hold.disabled = false;
+  const carry = card.querySelector("[data-carry]");
+  carry.hidden = task.status !== "held";
+  if (!holdCommands.has(task.taskId)) carry.disabled = false;
+  drawLive(card, task);
   card.dataset.status = task.status;
   return card;
 }
@@ -485,6 +499,8 @@ function render() {
   elements.earlier.hidden = !earlier || Boolean(focus);
   elements.empty.hidden = !loaded || list.length > 0 || earlier;
   renderWork();
+  if (!poppedOut && restorePop && tasks.has(restorePop)) { const taskId = restorePop; restorePop = null; popOut(taskId); return; }
+  if (poppedOut) drawPane();
   if (following) toBottom();
 }
 
@@ -541,6 +557,288 @@ function showTask(taskId, { open = false } = {}) {
   card.classList.add("flash");
 }
 
+// ---------- Live work: the feed, watching in place, and the pane ----------
+// Steps come from the stream as the agent finishes them; the card's "now"
+// line and the step under way come from the work's status record (live).
+
+const steps = new Map(); // taskId -> { bySeq: Map(seq -> step), earlier, loaded }
+const watching = new Set(); // taskIds whose feed is open in place
+const outputs = new Map(); // `${taskId}|${stepId}` -> text, or null while loading
+let poppedOut = null; // the one piece of work in the pane beside the chat
+const POP_KEY = `ev.popped.v1.${conversationId}`;
+// The work that was popped out before a reload, opened again once it is known.
+let restorePop = (() => { try { return sessionStorage.getItem(POP_KEY); } catch { return null; } })();
+const pane = { draftFiles: [], draftPath: null, draft: null, timer: null, fetchedAt: 0 };
+const EXPLORING = new Set(["read", "searched"]);
+const OPENS = new Set(["ran", "read", "searched", "web", "used"]);
+
+/** What a message to an agent is waiting for, in the person's terms. */
+function queuedWait(task) {
+  if (task?.status === "held") return "waiting until you carry on";
+  if (task?.live?.step?.running) return "waiting for its current step to finish, at most 2 minutes";
+  return "waiting for its next step";
+}
+const isAgentWork = (task) => task.capability === "openclaw-general-v1" && task.status !== "queued" || Boolean(steps.get(task.taskId)?.bySeq.size);
+
+function stepsOf(taskId) {
+  if (!steps.has(taskId)) steps.set(taskId, { bySeq: new Map(), earlier: false, loaded: false });
+  return steps.get(taskId);
+}
+
+function takeSteps(incoming) {
+  for (const step of incoming) stepsOf(step.taskId).bySeq.set(step.seq, step);
+  // A file can change through any step (a command, a script), so any step of the popped work refetches.
+  if (incoming.some((step) => step.taskId === poppedOut)) refreshDrafts();
+}
+
+/** Loads a piece of work's steps (the newest page, or the page before what is loaded). */
+async function loadSteps(taskId, { older = false } = {}) {
+  const entry = stepsOf(taskId);
+  const first = Math.min(...entry.bySeq.keys());
+  const query = older && Number.isFinite(first) ? `?before=${first}` : "";
+  try {
+    const body = await fetch(`/api/assistant/tasks/${encodeURIComponent(taskId)}/steps${query}`, { cache: "no-store" }).then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)));
+    for (const step of body.steps) entry.bySeq.set(step.seq, step);
+    if (older || !entry.loaded) entry.earlier = body.earlier;
+    entry.loaded = true;
+    const task = tasks.get(taskId);
+    if (task && body.live) tasks.set(taskId, { ...task, live: body.live });
+  } catch (error) { showStatus(`Couldn't load what the agent did: ${error.message}`); setTimeout(() => showStatus(""), 5_000); }
+  render();
+  if (poppedOut === taskId) drawPane();
+}
+
+const clock = (iso) => { const at = new Date(iso); return Number.isNaN(at.getTime()) ? "" : at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
+function elapsed(iso) {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.round(seconds / 60);
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+/** Folds a run of reads and searches into one row, the way Codex shows "Explored". */
+function feedRows(list) {
+  const rows = [];
+  for (const step of list) {
+    const last = rows.at(-1);
+    if (last && EXPLORING.has(step.kind) && last.group && !step.failed) { last.steps.push(step); continue; }
+    rows.push({ group: EXPLORING.has(step.kind) && !step.failed, steps: [step] });
+  }
+  return rows.map(({ steps: run }) => {
+    if (run.length === 1) return { step: run[0], label: run[0].label };
+    const reads = run.filter((step) => step.kind === "read").flatMap((step) => step.parsed?.map((item) => item.target) ?? [step.label.replace(/^Read /, "")]);
+    const searches = run.filter((step) => step.kind === "searched");
+    const name = (path) => String(path).split("/").at(-1);
+    const parts = [];
+    if (reads.length) parts.push(reads.length <= 3 ? `Read ${reads.map(name).join(", ")}` : `Read ${reads.length} files`);
+    if (searches.length) parts.push(searches.length === 1 ? searches[0].label : `searched ${searches.length} times`);
+    return { step: run[0], label: parts.join(", "), folded: run.length };
+  });
+}
+
+function feedHtml(task, { limit = 40 } = {}) {
+  const entry = steps.get(task.taskId);
+  const list = entry ? [...entry.bySeq.values()].sort((a, b) => a.seq - b.seq) : [];
+  const rows = feedRows(list);
+  const shown = rows.slice(-limit);
+  const live = task.live;
+  const running = live?.step?.running && ["leased", "running"].includes(task.status) ? live : null;
+  const items = shown.map(({ step, label, folded }) => {
+    const tone = step.kind === "reviewed" && !step.accepted ? " is-review" : step.cut || step.failed ? " is-cut" : step.kind === "asked" ? " is-review" : "";
+    const opens = !folded && OPENS.has(step.kind) && step.id;
+    const key = `${task.taskId}|${step.id}`;
+    const output = outputs.has(key) ? `<pre class="out">${escapeHtml(outputs.get(key) ?? "Loading…")}</pre>` : "";
+    return `<li class="${(tone + (opens ? " opens" : "")).trim()}"${opens ? ` data-step="${escapeHtml(step.id)}" title="Show what it printed"` : ""}><time>${escapeHtml(clock(step.endedAt ?? step.startedAt))}</time><span class="pt"></span><span>${escapeHtml(label)}${step.failed ? " (failed)" : ""}</span>${output}</li>`;
+  });
+  if (running) items.push(`<li class="is-now"><time>${escapeHtml(clock(running.step.startedAt))}</time><span class="pt"></span><span>${escapeHtml(running.now)} <span class="el">· ${escapeHtml(elapsed(running.step.startedAt))}</span></span></li>`);
+  else if (live?.now && ["leased", "running", "verifying", "queued"].includes(task.status)) items.push(`<li class="is-now"><time>${escapeHtml(clock(live.nowAt))}</time><span class="pt"></span><span>${escapeHtml(live.now)}</span></li>`);
+  if (!items.length) return `<li><time></time><span class="pt"></span><span>${entry?.loaded ? "Nothing yet." : "Loading…"}</span></li>`;
+  return items.join("");
+}
+
+function routedLine(task) {
+  const model = task.live?.model;
+  if (!model) return "";
+  const [provider, ...rest] = model.split("/");
+  return rest.length ? `On ${rest.join("/")} through ${provider}.` : `On ${model}.`;
+}
+
+/** The card's own live parts: Watch or Less, Pop out or Pop back in, and the feed when watched. */
+function drawLive(card, task) {
+  const agent = isAgentWork(task);
+  const watch = card.querySelector("[data-watch]");
+  const pop = card.querySelector("[data-pop]");
+  const isOut = poppedOut === task.taskId;
+  const open = watching.has(task.taskId) && !isOut;
+  watch.hidden = !agent || isOut;
+  pop.hidden = !agent;
+  setHtml(watch, open ? `${ICON.up}Less` : `${ICON.chevron}Watch`);
+  watch.setAttribute("aria-expanded", String(open));
+  setHtml(pop, isOut ? `${ICON.back}Pop back in` : `${ICON.out}Pop out`);
+  card.classList.toggle("watching", open);
+  const box = card.querySelector(".livebox");
+  box.hidden = !open;
+  if (open) {
+    setHtml(box.querySelector(".feed"), feedHtml(task, { limit: 12 }));
+    setText(box.querySelector(".routed"), routedLine(task));
+  }
+  if (isOut) setText(card.querySelector(".now"), "Open beside the chat");
+}
+
+function toggleWatch(taskId) {
+  if (watching.has(taskId)) watching.delete(taskId);
+  else { watching.add(taskId); if (!stepsOf(taskId).loaded) void loadSteps(taskId); }
+  render();
+}
+
+function popOut(taskId) {
+  poppedOut = taskId;
+  pane.status = tasks.get(taskId)?.status;
+  try { sessionStorage.setItem(POP_KEY, taskId); } catch {}
+  pane.draftFiles = []; pane.draftPath = null; pane.draft = null;
+  root.classList.add("live-out");
+  if (!stepsOf(taskId).loaded) void loadSteps(taskId);
+  refreshDrafts(true);
+  render();
+  drawPane();
+  requestAnimationFrame(() => $("pane-input").focus());
+}
+
+function popIn() {
+  const taskId = poppedOut;
+  poppedOut = null;
+  restorePop = null;
+  try { sessionStorage.removeItem(POP_KEY); } catch {}
+  root.classList.remove("live-out");
+  clearTimeout(pane.timer);
+  render();
+  if (taskId) cards.get(taskId)?.querySelector("[data-pop]")?.focus();
+}
+
+/** What the agent has made so far, refetched at most every half second while the pane is open. */
+function refreshDrafts(now = false) {
+  if (!poppedOut) return;
+  clearTimeout(pane.timer);
+  const wait = now ? 0 : Math.max(0, pane.fetchedAt + 500 - Date.now());
+  pane.timer = setTimeout(async () => {
+    const taskId = poppedOut;
+    if (!taskId) return;
+    pane.fetchedAt = Date.now();
+    const base = `/api/assistant/tasks/${encodeURIComponent(taskId)}/drafts`;
+    try {
+      const list = await fetch(base, { cache: "no-store" }).then((response) => response.json());
+      if (poppedOut !== taskId) return;
+      pane.draftFiles = list.files ?? [];
+      if (!pane.draftFiles.some((file) => file.path === pane.draftPath)) pane.draftPath = pane.draftFiles[0]?.path ?? null;
+      pane.draft = pane.draftPath ? (await fetch(`${base}?path=${encodeURIComponent(pane.draftPath)}`, { cache: "no-store" }).then((response) => response.json())).draft ?? null : null;
+    } catch { /* the pane keeps what it showed */ }
+    if (poppedOut === taskId) drawPane();
+  }, wait);
+}
+
+/** What the files in the pane are: the agent's draft, a result in review, or the delivered result. */
+function draftKind(task) {
+  if (task?.status === "completed") return { heading: "Delivered", badge: "" };
+  if (task?.status === "verifying") return { heading: "In review", badge: `<span class="badge b-guess">Being reviewed</span>` };
+  return { heading: "Draft so far", badge: `<span class="badge b-guess">Not reviewed yet</span>` };
+}
+
+function draftHtml(task) {
+  if (!pane.draftFiles.length) return `<p class="note">${task?.status === "completed" ? "No files." : "Nothing written yet."}</p>`;
+  const chooser = pane.draftFiles.length > 1 ? `<div class="files">${pane.draftFiles.slice(0, 8).map((file) => `<button type="button" class="btn quiet" data-draft="${escapeHtml(file.path)}" aria-pressed="${file.path === pane.draftPath}">${escapeHtml(file.path)}</button>`).join("")}</div>` : "";
+  const draft = pane.draft;
+  const body = !draft ? `<p class="note">Loading…</p>` : draft.text !== undefined ? `<pre>${escapeHtml(draft.text)}</pre>` : `<p class="note">${draft.binary ? "Not a text file." : "Too large to show here."} ${escapeHtml(String(draft.bytes))} bytes, last changed ${escapeHtml(clock(draft.modifiedAt))}.</p>`;
+  return `${chooser}<div class="tile doc"><div class="card-h"><span class="doc-t">${escapeHtml(pane.draftPath ?? "")}</span>${draftKind(task).badge}</div>${body}</div>`;
+}
+
+/** The pane beside the chat: the whole feed, the draft so far, and a line to its agent. */
+function drawPane() {
+  const task = poppedOut ? tasks.get(poppedOut) : null;
+  if (!task) { if (poppedOut) popIn(); return; }
+  setText($("pane-title"), task.title ?? "Background task");
+  // A new state (sent back, accepted, reopened) can mean new files.
+  if (task.status !== pane.status) { pane.status = task.status; refreshDrafts(); }
+  const state = taskState(task);
+  const badge = $("pane-state");
+  badge.className = `state ${state.tone}`.trim();
+  const round = task.live?.round > 1 ? `, round ${task.live.round}` : "";
+  setText(badge.querySelector(".state-label"), `${state.label}${["leased", "running", "verifying"].includes(task.status) ? round : ""}`);
+  const holdButton = $("pane-hold");
+  holdButton.hidden = task.status === "completed";
+  setHtml(holdButton, task.status === "held" ? `${ICON.play}Carry on` : `${ICON.pause}Hold`);
+  holdButton.disabled = holdCommands.has(task.taskId);
+  const entry = steps.get(task.taskId);
+  const body = $("pane-body");
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  setHtml(body, `<section><h3>Live</h3>${entry?.earlier ? `<button type="button" class="btn quiet" data-older>Earlier steps</button>` : ""}<ul class="feed" aria-live="polite">${feedHtml(task, { limit: 400 })}</ul></section><section><h3>${draftKind(task).heading}</h3>${draftHtml(task)}</section><p class="routed">${escapeHtml(routedLine(task))}</p>`);
+  if (atBottom) body.scrollTop = body.scrollHeight;
+  const waiting = (task.live?.queued ?? []).map((id) => messages.get(id)).filter((message) => message?.toAgent);
+  const queued = $("pane-queued");
+  queued.hidden = !waiting.length;
+  setHtml(queued, waiting.map((message) => `<li>${escapeHtml(queuedWait(task).replace(/^w/, "W"))}: ${escapeHtml(message.content)}</li>`).join(""));
+  const open = task.status !== "completed";
+  $("pane-input").placeholder = task.status === "held" ? "Tell it something and it carries on" : task.status === "completed" ? "Tell it something to reopen this work" : "Tell this agent something";
+  $("pane-now").hidden = !["leased", "running"].includes(task.status) || !open;
+}
+
+async function toggleOutput(taskId, stepId) {
+  const key = `${taskId}|${stepId}`;
+  if (outputs.has(key)) { outputs.delete(key); render(); if (poppedOut === taskId) drawPane(); return; }
+  outputs.set(key, null);
+  render(); if (poppedOut === taskId) drawPane();
+  try {
+    const body = await fetch(`/api/assistant/tasks/${encodeURIComponent(taskId)}/steps/${encodeURIComponent(stepId)}/output`, { cache: "no-store" }).then((response) => response.json());
+    if (!outputs.has(key)) return;
+    outputs.set(key, body.output ? (body.output.text || "(printed nothing)") : "The agent's record of this step is gone.");
+  } catch { outputs.set(key, "Couldn't load it just now."); }
+  render(); if (poppedOut === taskId) drawPane();
+}
+
+/** Sends what the person typed in the pane straight to this work's agent. */
+async function tellAgent(mode) {
+  const taskId = poppedOut;
+  const input = $("pane-input");
+  const text = input.value.trim();
+  if (!taskId || !text) return;
+  input.value = "";
+  try {
+    const response = await fetch(`/api/assistant/tasks/${encodeURIComponent(taskId)}/messages`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientMessageId: crypto.randomUUID(), text, mode })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+    upsertMessages([body.message]);
+    const task = tasks.get(taskId);
+    if (task && body.live) tasks.set(taskId, { ...task, live: body.live });
+    render();
+  } catch (error) {
+    input.value = text;
+    showStatus(`Not sent to the agent: ${error.message}`);
+    setTimeout(() => showStatus(""), 5_000);
+  }
+}
+
+$("pane-form").addEventListener("submit", (event) => { event.preventDefault(); void tellAgent("next"); });
+$("pane-now").addEventListener("click", () => void tellAgent("interrupt"));
+$("pane-in").addEventListener("click", () => popIn());
+$("pane-hold").addEventListener("click", (event) => {
+  const task = tasks.get(poppedOut);
+  if (!task) return;
+  event.currentTarget.disabled = true;
+  void holdTask(task.taskId, true, task.status === "held" ? "carry_on" : "hold");
+});
+$("pane-body").addEventListener("click", (event) => {
+  if (event.target.closest("[data-older]")) { void loadSteps(poppedOut, { older: true }); return; }
+  const file = event.target.closest("[data-draft]");
+  if (file) { pane.draftPath = file.dataset.draft; pane.draft = null; drawPane(); refreshDrafts(true); return; }
+  const row = event.target.closest(".feed li[data-step]");
+  if (row) void toggleOutput(poppedOut, row.dataset.step);
+});
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && poppedOut && !SHEETS.some((name) => root.classList.contains(name))) popIn(); });
+// A long step shows how long it has been going, so a quiet agent does not look stuck.
+setInterval(() => { if (watching.size || poppedOut) render(); }, 10_000);
+
 // ---------- The stream of changes ----------
 
 let source = null;
@@ -571,6 +869,7 @@ function applyChange(data) {
     const task = tasks.get(record.taskId);
     if (task) tasks.set(record.taskId, { ...task, live: record });
   }
+  takeSteps(data.steps ?? []);
   if (typeof data.thinking === "boolean") thinking = data.thinking;
   if (data.look) takeLook(data.look);
   render();
@@ -708,16 +1007,17 @@ elements.input.addEventListener("keydown", (event) => {
 
 // ---------- Hold ----------
 
-async function holdTask(taskId, retryOnConflict = true) {
+/** Hold (or, with type carry_on, carry on) one piece of work, replay-safe by its command id. */
+async function holdTask(taskId, retryOnConflict = true, type = "hold") {
   const task = tasks.get(taskId);
-  if (!task || resting(task)) return;
+  if (!task || (type === "hold" ? resting(task) : task.status !== "held")) return;
   const commandId = holdCommands.get(taskId) ?? crypto.randomUUID();
   holdCommands.set(taskId, commandId);
   try {
     const response = await fetch(`/api/assistant/tasks/${encodeURIComponent(taskId)}/commands`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ commandId, type: "hold", expectedRevision: task.revision })
+      body: JSON.stringify({ commandId, type, expectedRevision: task.revision })
     });
     const body = await response.json().catch(() => ({}));
     if (response.status === 409 && retryOnConflict) {
@@ -725,9 +1025,10 @@ async function holdTask(taskId, retryOnConflict = true) {
       const latest = await fetch(`/api/assistant/tasks?conversationId=${encodeURIComponent(conversationId)}`, { cache: "no-store" }).then((reply) => reply.json()).catch(() => ({}));
       upsertTasks((latest.tasks ?? []).filter((item) => item.taskId === taskId));
       holdCommands.delete(taskId);
-      return holdTask(taskId, false);
+      return holdTask(taskId, false, type);
     }
-    if (!response.ok) throw new Error(body.error ?? `Hold failed: HTTP ${response.status}`);
+    if (!response.ok) throw new Error(body.error ?? `${type === "hold" ? "Hold" : "Carry on"} failed: HTTP ${response.status}`);
+    holdCommands.delete(taskId);
     upsertTasks([body.task]);
   } catch (error) {
     holdCommands.delete(taskId);
@@ -768,7 +1069,14 @@ elements.col.addEventListener("click", (event) => {
   if (hold) {
     hold.disabled = true;
     void holdTask(taskId);
+    return;
   }
+  const carry = event.target.closest("[data-carry]");
+  if (carry) { carry.disabled = true; void holdTask(taskId, true, "carry_on"); return; }
+  if (event.target.closest("[data-watch]")) { toggleWatch(taskId); return; }
+  if (event.target.closest("[data-pop]")) { if (poppedOut === taskId) popIn(); else popOut(taskId); return; }
+  const row = event.target.closest(".feed li[data-step]");
+  if (row) void toggleOutput(taskId, row.dataset.step);
 });
 
 elements.stream.addEventListener("scroll", () => {
