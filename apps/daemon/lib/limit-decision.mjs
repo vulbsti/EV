@@ -25,6 +25,10 @@ import { callModel, parseModelJson, sessionHeader } from "./ev-model.mjs";
 
 export const LIMIT_CHOICES = ["decide", "wait", "switch", "ask"];
 const DECISION_MAX = 500;
+// The weighing's own model call. It happens exactly when a subscription has run
+// out, often the one that serves EV, so it may itself use a paid route: a few
+// hundred tokens, within the cap like any other paid call, and not told as a switch.
+export const WEIGHING = "limit-decision";
 
 const INSTRUCTIONS = `One of the person's subscriptions has hit its usage limit in the middle of something. You decide whether to carry on now through a route that is paid per token, or wait for the subscription.
 
@@ -115,6 +119,7 @@ export class LimitDecision {
   allows(subject, limited, paid) {
     if (this._allowedFor(limited.id)) return true;
     if (!this.underCap()) return false;
+    if (subject === `role:${WEIGHING}`) return true;
     const { choice } = this.setting();
     if (choice === "switch") return true;
     if (choice === "ask") return false;
@@ -146,10 +151,12 @@ export class LimitDecision {
       monthlyCapUsd: this.setting().monthlyCapUsd,
       now: new Date(this.now()).toISOString()
     };
-    const run = this.call({
-      input: `${INSTRUCTIONS}\n\nFacts (data):\n${JSON.stringify(facts)}`, label: "limit-decision", code: "LIMIT_DECISION_UNAVAILABLE",
+    const ask = (spec) => this.call({
+      input: `${INSTRUCTIONS}\n\nFacts (data):\n${JSON.stringify(facts)}`, label: WEIGHING, code: "LIMIT_DECISION_UNAVAILABLE", spec,
       session: sessionHeader(`limit:${key}`), noSwitch: true, parse: (raw) => parseModelJson(raw, "The limit decision did not answer with JSON")
-    }).then((answer) => ({ choice: answer.choice === "switch" ? "switch" : "wait", why: clip(answer.why, 300) || null }))
+    });
+    // EV's own model first; when it has no usable route at all, the paid option's model weighs it.
+    const run = ask(null).catch((error) => { if (!error.wait) throw error; return ask(`${paid.model.provider}/${paid.model.id}`); }).then((answer) => ({ choice: answer.choice === "switch" ? "switch" : "wait", why: clip(answer.why, 300) || null }))
       .catch((error) => { this.log(`Could not weigh switching against waiting: ${error.message}`); return { choice: "wait", why: "I could not weigh it, so I am not spending anything without you." }; })
       .then((decision) => {
         this.pending.delete(key);

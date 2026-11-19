@@ -165,7 +165,8 @@ export async function modelTurn({ context, session, code, label, role = label, s
       await routes.decider.decide({ subject, limited: error.limited, paid: error.paid, personWaiting: label === "main-agent", title: label, conversationId });
       continue;
     }
-    if (route.instead) routes.decider?.switched({ subject, limited: route.instead, paid: route, conversationId });
+    // `noSwitch` is the limit weighing itself: its few paid tokens are not a switch to tell.
+    if (route.instead && !noSwitch) routes.decider?.switched({ subject, limited: route.instead, paid: route, conversationId });
     try { return await turnOn({ ...rest, context, session, code, label, workId, model: route.model, account: route.connection }); }
     catch (error) { if (!error.reroute) throw error; }
   }
