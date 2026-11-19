@@ -499,6 +499,7 @@ function render() {
   elements.earlier.hidden = !earlier || Boolean(focus);
   elements.empty.hidden = !loaded || list.length > 0 || earlier;
   renderWork();
+  if (!poppedOut && restorePop && tasks.has(restorePop)) { const taskId = restorePop; restorePop = null; popOut(taskId); return; }
   if (poppedOut) drawPane();
   if (following) toBottom();
 }
@@ -564,6 +565,9 @@ const steps = new Map(); // taskId -> { bySeq: Map(seq -> step), earlier, loaded
 const watching = new Set(); // taskIds whose feed is open in place
 const outputs = new Map(); // `${taskId}|${stepId}` -> text, or null while loading
 let poppedOut = null; // the one piece of work in the pane beside the chat
+const POP_KEY = `ev.popped.v1.${conversationId}`;
+// The work that was popped out before a reload, opened again once it is known.
+let restorePop = (() => { try { return sessionStorage.getItem(POP_KEY); } catch { return null; } })();
 const pane = { draftFiles: [], draftPath: null, draft: null, timer: null, fetchedAt: 0 };
 const EXPLORING = new Set(["read", "searched"]);
 const OPENS = new Set(["ran", "read", "searched", "web", "used"]);
@@ -583,8 +587,8 @@ function stepsOf(taskId) {
 
 function takeSteps(incoming) {
   for (const step of incoming) stepsOf(step.taskId).bySeq.set(step.seq, step);
-  const wrote = incoming.some((step) => step.taskId === poppedOut && step.kind === "wrote");
-  if (wrote) refreshDrafts();
+  // A file can change through any step (a command, a script), so any step of the popped work refetches.
+  if (incoming.some((step) => step.taskId === poppedOut)) refreshDrafts();
 }
 
 /** Loads a piece of work's steps (the newest page, or the page before what is loaded). */
@@ -689,6 +693,8 @@ function toggleWatch(taskId) {
 
 function popOut(taskId) {
   poppedOut = taskId;
+  pane.status = tasks.get(taskId)?.status;
+  try { sessionStorage.setItem(POP_KEY, taskId); } catch {}
   pane.draftFiles = []; pane.draftPath = null; pane.draft = null;
   root.classList.add("live-out");
   if (!stepsOf(taskId).loaded) void loadSteps(taskId);
@@ -701,6 +707,8 @@ function popOut(taskId) {
 function popIn() {
   const taskId = poppedOut;
   poppedOut = null;
+  restorePop = null;
+  try { sessionStorage.removeItem(POP_KEY); } catch {}
   root.classList.remove("live-out");
   clearTimeout(pane.timer);
   render();
@@ -728,12 +736,19 @@ function refreshDrafts(now = false) {
   }, wait);
 }
 
-function draftHtml() {
-  if (!pane.draftFiles.length) return `<p class="note">Nothing written yet.</p>`;
+/** What the files in the pane are: the agent's draft, a result in review, or the delivered result. */
+function draftKind(task) {
+  if (task?.status === "completed") return { heading: "Delivered", badge: "" };
+  if (task?.status === "verifying") return { heading: "In review", badge: `<span class="badge b-guess">Being reviewed</span>` };
+  return { heading: "Draft so far", badge: `<span class="badge b-guess">Not reviewed yet</span>` };
+}
+
+function draftHtml(task) {
+  if (!pane.draftFiles.length) return `<p class="note">${task?.status === "completed" ? "No files." : "Nothing written yet."}</p>`;
   const chooser = pane.draftFiles.length > 1 ? `<div class="files">${pane.draftFiles.slice(0, 8).map((file) => `<button type="button" class="btn quiet" data-draft="${escapeHtml(file.path)}" aria-pressed="${file.path === pane.draftPath}">${escapeHtml(file.path)}</button>`).join("")}</div>` : "";
   const draft = pane.draft;
   const body = !draft ? `<p class="note">Loading…</p>` : draft.text !== undefined ? `<pre>${escapeHtml(draft.text)}</pre>` : `<p class="note">${draft.binary ? "Not a text file." : "Too large to show here."} ${escapeHtml(String(draft.bytes))} bytes, last changed ${escapeHtml(clock(draft.modifiedAt))}.</p>`;
-  return `${chooser}<div class="tile doc"><div class="card-h"><span class="doc-t">${escapeHtml(pane.draftPath ?? "")}</span><span class="badge b-guess">Not reviewed yet</span></div>${body}</div>`;
+  return `${chooser}<div class="tile doc"><div class="card-h"><span class="doc-t">${escapeHtml(pane.draftPath ?? "")}</span>${draftKind(task).badge}</div>${body}</div>`;
 }
 
 /** The pane beside the chat: the whole feed, the draft so far, and a line to its agent. */
@@ -741,6 +756,8 @@ function drawPane() {
   const task = poppedOut ? tasks.get(poppedOut) : null;
   if (!task) { if (poppedOut) popIn(); return; }
   setText($("pane-title"), task.title ?? "Background task");
+  // A new state (sent back, accepted, reopened) can mean new files.
+  if (task.status !== pane.status) { pane.status = task.status; refreshDrafts(); }
   const state = taskState(task);
   const badge = $("pane-state");
   badge.className = `state ${state.tone}`.trim();
@@ -753,7 +770,7 @@ function drawPane() {
   const entry = steps.get(task.taskId);
   const body = $("pane-body");
   const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-  setHtml(body, `<section><h3>Live</h3>${entry?.earlier ? `<button type="button" class="btn quiet" data-older>Earlier steps</button>` : ""}<ul class="feed" aria-live="polite">${feedHtml(task, { limit: 400 })}</ul></section><section><h3>Draft so far</h3>${draftHtml()}</section><p class="routed">${escapeHtml(routedLine(task))}</p>`);
+  setHtml(body, `<section><h3>Live</h3>${entry?.earlier ? `<button type="button" class="btn quiet" data-older>Earlier steps</button>` : ""}<ul class="feed" aria-live="polite">${feedHtml(task, { limit: 400 })}</ul></section><section><h3>${draftKind(task).heading}</h3>${draftHtml(task)}</section><p class="routed">${escapeHtml(routedLine(task))}</p>`);
   if (atBottom) body.scrollTop = body.scrollHeight;
   const waiting = (task.live?.queued ?? []).map((id) => messages.get(id)).filter((message) => message?.toAgent);
   const queued = $("pane-queued");
