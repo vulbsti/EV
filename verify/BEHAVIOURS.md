@@ -42,15 +42,11 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 ## Task 10: The page stays live
 
-EV is one conversation that never ends, and the page is a live view of it. Whatever happens (a message, an answer, work moving, something forgotten) reaches an open page as it happens, without the page asking again, and a page that lost its connection catches up on exactly what it missed. A message can be about several pieces of work at once, and the page shows each of them where it belongs.
+EV is one conversation that never ends, and the page is a live view of it. These are the guarantees under that view: a page that lost its connection catches up on exactly what it missed, a message about several pieces of work loses none of them, and what was forgotten leaves an open page at once. How the page looks and behaves was walked through once after it was built (design/build/verification/plumbing.md), not checked on every push.
 
-- ✓ **P-01** With the page open, each change reaches it as it happens: the person's message, EV's answer, and the work it started, up to the moment it is delivered.
 - ✓ **P-02** A page that lost its connection, even across a restart of EV, catches up on exactly what it missed: nothing lost, nothing twice, and it ends up seeing what a freshly opened page sees.
 - ✓ **P-03** When one message asks for two pieces of work, both are tied to that message, and the page shows both under it.
 - ✓ **P-04** Forgetting something takes it off an open page at once, without a reload.
-- ✓ **P-05** Each role can be given its own model, so the reviewer and the learner can run on a cheaper one while EV thinks with its own.
-- ✓ **P-06** Something the person opened on the page stays open while new messages and work updates arrive.
-- ✓ **P-07** There is one conversation: the page offers no way to start a separate chat, and the same conversation shows on a phone.
 
 ## Task 3: One store with real ids
 
