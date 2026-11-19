@@ -15,6 +15,10 @@ const valid = (tz) => {
 /** Sets the zone (an IANA name such as "Asia/Kolkata"); anything else falls back to UTC. Returns what is in force. */
 export function useTimeZone(tz) { zone = valid(tz) ? tz : null; return zone; }
 
+let hour12 = false;
+/** The person's clock style, as their browser shows times: 12-hour ("12:55 AM") or 24-hour ("00:55"). */
+export function useClock(twelve) { hour12 = Boolean(twelve); return hour12; }
+
 /** The zone in force, or null for UTC. */
 export function timeZone() { return zone; }
 
@@ -23,12 +27,17 @@ const day = (at) => { const p = parts(at, { year: "numeric", month: "2-digit", d
 
 /** A time to tell the person: "15:50", "tomorrow 09:10" or "Sat 22 Nov 09:10"; with " UTC" when their zone is not known. */
 export function clock(at, now = Date.now()) {
-  const p = parts(at, { hour: "2-digit", minute: "2-digit" });
-  const hm = `${p.hour}:${p.minute}${zone ? "" : " UTC"}`;
+  const hm = `${time(at)}${zone ? "" : " UTC"}`;
   if (day(at) === day(now)) return hm;
   if (day(at) === day(Number(now) + 86_400_000)) return `tomorrow ${hm}`;
   const d = parts(at, { weekday: "short", day: "numeric", month: "short" });
   return `${d.weekday} ${d.day} ${d.month} ${hm}`;
+}
+
+/** Hours and minutes in the person's clock style. */
+function time(at) {
+  if (!hour12) { const p = parts(at, { hour: "2-digit", minute: "2-digit" }); return `${p.hour}:${p.minute}`; }
+  return new Intl.DateTimeFormat("en-US", { timeZone: zone ?? "UTC", hour: "numeric", minute: "2-digit", hour12: true }).format(new Date(at));
 }
 
 /** The person's date as YYYY-MM-DD. */

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Accounts tab in settings: every account with its state (ready, limited until a time in your own zone, or needing a new sign-in or key), sign in to a subscription or paste a key from the page, choose which of several accounts is used, remove one, and the limit setting. A first-run screen when nothing is connected, and a bar while a message is held for an account, saying what it waits for, with a button to carry on through a paid account when one could.
 - The Models tab in settings: what KenWise has learnt about each model from your work and from the shared research, with its standing and source; what changed lately with Undo; your own notes; switching a model off; and the limit setting with the monthly cap.
 - Times KenWise tells you (limit notices, when a passing state ends, the time in its own prompt) are in your own time zone, which the page reports.
 - One-line installer for macOS and Linux (`install.sh`) and a `kenwise` command to start, stop, open and update the daemon.

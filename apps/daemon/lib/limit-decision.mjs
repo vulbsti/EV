@@ -105,9 +105,11 @@ export class LimitDecision {
 
   view() {
     const { choice, monthlyCapUsd, allowed } = this.setting();
-    // Accounts out of use now: what a say-so (allow) would be for.
-    const outNow = this.connections.list().filter((connection) => !this.connections.usable(connection)).map((connection) => this.connections.providerName(connection.provider));
-    return { choice, monthlyCapUsd, spentThisMonthUsd: Number(this.spentThisMonth().toFixed(4)), allowed, allowedNow: this.allowedNow(), outNow };
+    // Subscriptions out of use now, and whether a paid route could carry on meanwhile: what a say-so (allow) would be for.
+    const list = this.connections.list();
+    const outNow = list.filter((connection) => !this.connections.usable(connection) && this.routes.isSubscription(connection.provider, connection.id)).map((connection) => this.connections.providerName(connection.provider));
+    const paidReady = list.some((connection) => this.connections.usable(connection) && !this.routes.isSubscription(connection.provider, connection.id));
+    return { choice, monthlyCapUsd, spentThisMonthUsd: Number(this.spentThisMonth().toFixed(4)), allowed, allowedNow: this.allowedNow(), outNow, paidReady };
   }
 
   // ------------------------------------------------------------ deciding

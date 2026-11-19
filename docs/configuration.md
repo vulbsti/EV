@@ -23,15 +23,15 @@ The same model is often served by several of your accounts: Haiku 5.5 through Op
 | `GET /api/assistant/setup/guide` | Each model KenWise can choose: what your work showed (with its standing), what the atlas says (with its source), the routes that reach it, speed; models in your subscriptions nothing is known about; what changed in the last 30 days; notes; what is switched off; the last and next analysis |
 | `POST /api/assistant/setup/guide/note` `{text, model?}` | Adds your own note about a model, or about choosing models |
 | `DELETE /api/assistant/setup/guide/note/:id` | Forgets a note |
-| `GET /api/assistant/setup/limit` | The limit setting (`decide`, `wait`, `switch`, `ask`), the monthly cap, what was spent on paid routes this month, and which accounts are out of use now |
+| `GET /api/assistant/setup/limit` | The limit setting (`decide`, `wait`, `switch`, `ask`), the monthly cap, what was spent on paid routes this month, and which subscriptions are out of use now and whether a paid route could carry on |
 | `POST /api/assistant/setup/limit` `{choice?, monthlyCapUsd?}` | Changes them; a cap of 0 or null means none |
 | `POST /api/assistant/setup/limit/allow` | You say paid routes may be used, past the cap too, until the accounts out of use now are back |
 | `POST /api/assistant/setup/guide/undo` `{change}` | Undoes one change |
 | `POST /api/assistant/setup/guide/run` | Runs the analysis now |
 | `POST /api/assistant/setup/guide/off` `{model, off}` | Switches a model off, or back on |
-| `POST /api/assistant/setup/time-zone` `{timeZone}` | The page reports the browser's time zone (an IANA name); every time KenWise tells you, and the time in its own prompt, is in it. Until a page reports one, times are in UTC and say so |
+| `POST /api/assistant/setup/time-zone` `{timeZone, hour12?}` | The page reports the browser's time zone (an IANA name) and clock style; every time KenWise tells you, and the time in its own prompt, is in them. Until a page reports one, times are in UTC and say so |
 
-The page shows all of this under Settings, Models.
+The page shows the guide under Settings, Models, and the accounts, sign-ins and the limit setting under Settings, Accounts. With no account at all, the page opens on a first-run screen. While a message is held for an account, a bar under the conversation says what it waits for (the conversation's stream carries this as `held`), and offers the paid route when one could carry on.
 
 An account that hits its usage limit is marked limited until its reset time, and one whose key stops being accepted is marked as needing a new sign-in. Neither is called until it is usable again. A message that needs a model meanwhile waits in its inbox and KenWise says so once; it is answered at the reset, or as soon as an account is added. Work in progress and the reviewer wait the same way without counting it as a failure.
 

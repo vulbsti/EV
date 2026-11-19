@@ -181,6 +181,17 @@ function dayLabel(iso) {
   const sameYear = date.getFullYear() === new Date().getFullYear();
   return date.toLocaleDateString(undefined, { day: "numeric", month: "long", ...(sameYear ? {} : { year: "numeric" }) });
 }
+// A time to come, written as the daemon writes it in the conversation: "12:55 AM", "tomorrow 12:55 AM", "Sat 22 Nov 12:55 AM".
+const HOUR12 = Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions().hour12 === true;
+function untilLabel(iso) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "";
+  const time = HOUR12 ? date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  const days = Math.round((startOfDay(date) - startOfDay(new Date())) / 86_400_000);
+  if (days <= 0) return time;
+  if (days === 1) return `tomorrow ${time}`;
+  return `${date.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })} ${time}`;
+}
 function shortWhen(iso) {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return "";
@@ -877,6 +888,7 @@ function applySnapshot(data) {
   thinking = Boolean(data.thinking);
   earlier = Boolean(data.earlier);
   takeLook(data.look);
+  takeHeld(data.held ?? null);
   loaded = true;
   render();
   toBottom();
@@ -896,6 +908,7 @@ function applyChange(data) {
   takeSteps(data.steps ?? []);
   if (typeof data.thinking === "boolean") thinking = data.thinking;
   if (data.look) takeLook(data.look);
+  if ("held" in data) takeHeld(data.held);
   render();
 }
 
@@ -1135,7 +1148,7 @@ function closeSheets({ restore = true } = {}) {
 $("open-find").addEventListener("click", (event) => openSheet("sheet-find", event.currentTarget));
 $("open-work").addEventListener("click", (event) => openSheet("sheet-work", event.currentTarget));
 $("open-you").addEventListener("click", (event) => { openSheet("sheet-you", event.currentTarget); void showUnderstanding(); });
-$("open-look").addEventListener("click", (event) => { openSheet("sheet-settings", event.currentTarget); if (root.classList.contains("stab-models")) void loadModels(); });
+$("open-look").addEventListener("click", (event) => { openSheet("sheet-settings", event.currentTarget); settingsTab(["models", "accounts", "look"].find((name) => root.classList.contains(`stab-${name}`)) ?? "models"); });
 $("scrim").addEventListener("click", () => closeSheets());
 for (const button of document.querySelectorAll("[data-close]")) button.addEventListener("click", () => closeSheets());
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSheets(); });
@@ -1781,16 +1794,14 @@ function renderLimit(limit) {
   const spent = `$${Number(limit.spentThisMonthUsd ?? 0).toFixed(2)}`;
   $("limit-spent").textContent = `${spent} spent on paid routes this month${limit.monthlyCapUsd ? ` of your $${limit.monthlyCapUsd} cap` : ""}. The cap is never crossed without your say-so.`;
   // The say-so is offered only while an account is out of use and nothing already allows paying.
-  $("limit-allow").hidden = !limit.outNow?.length || limit.allowedNow;
+  $("limit-allow").hidden = !limit.outNow?.length || !limit.paidReady || limit.allowedNow;
   $("limit-allow").textContent = `Use paid routes until ${limit.outNow?.join(", ") || "my subscriptions"} ${limit.outNow?.length === 1 ? "is" : "are"} back`;
 }
 
 async function loadModels() {
   $("models-status").textContent = modelsView ? "" : "Loading what I've learnt…";
   try {
-    const [view, limit] = await Promise.all([setupCall("/guide"), setupCall("/limit")]);
-    renderModels(view);
-    renderLimit(limit);
+    renderModels(await setupCall("/guide"));
     $("models-status").textContent = "";
   } catch (error) { $("models-status").textContent = `Could not load this: ${error.message}`; }
 }
@@ -1800,13 +1811,16 @@ async function modelsAct(run) {
   try { await run(); await loadModels(); } catch (error) { $("models-status").textContent = error.message; }
 }
 
+function settingsTab(name) {
+  root.classList.remove("stab-models", "stab-accounts", "stab-look");
+  root.classList.add(`stab-${name}`);
+  for (const tab of $("settings-tabs").querySelectorAll("[data-stab]")) tab.setAttribute("aria-pressed", String(tab.dataset.stab === name));
+  if (name === "models") void loadModels();
+  if (name === "accounts") void loadAccounts();
+}
 $("settings-tabs").addEventListener("click", (event) => {
   const button = event.target.closest("[data-stab]");
-  if (!button) return;
-  root.classList.remove("stab-models", "stab-look");
-  root.classList.add(`stab-${button.dataset.stab}`);
-  for (const tab of $("settings-tabs").querySelectorAll("[data-stab]")) tab.setAttribute("aria-pressed", String(tab === button));
-  if (button.dataset.stab === "models") void loadModels();
+  if (button) settingsTab(button.dataset.stab);
 });
 $("sheet-look").addEventListener("click", (event) => {
   const more = event.target.closest("[data-more]");
@@ -1824,7 +1838,7 @@ $("sheet-look").addEventListener("click", (event) => {
   if (undoChange) void modelsAct(() => setupCall("/guide/undo", { method: "POST", body: { change: undoChange } }));
   else if (forgetClaim) void modelsAct(() => setupCall(`/guide/note/${encodeURIComponent(forgetClaim)}`, { method: "DELETE" }));
   else if (modelOff || modelOn) void modelsAct(() => setupCall("/guide/off", { method: "POST", body: { model: modelOff || modelOn, off: Boolean(modelOff) } }));
-  else if (limit) void modelsAct(() => setupCall("/limit", { method: "POST", body: { choice: limit } })).finally(() => { target.disabled = false; });
+  else if (limit) void accountsAct(() => setupCall("/limit", { method: "POST", body: { choice: limit } })).finally(() => { target.disabled = false; });
 });
 $("models-run").addEventListener("click", (event) => {
   const button = event.currentTarget;
@@ -1840,12 +1854,239 @@ $("model-note-form").addEventListener("submit", (event) => {
 });
 $("limit-cap").addEventListener("change", (event) => {
   const value = event.target.value.trim();
-  void modelsAct(() => setupCall("/limit", { method: "POST", body: { monthlyCapUsd: value === "" ? null : Number(value) } }));
+  void accountsAct(() => setupCall("/limit", { method: "POST", body: { monthlyCapUsd: value === "" ? null : Number(value) } }));
 });
-$("limit-allow").addEventListener("click", () => void modelsAct(() => setupCall("/limit/allow", { method: "POST", body: {} })));
+$("limit-allow").addEventListener("click", () => void accountsAct(() => setupCall("/limit/allow", { method: "POST", body: {} })));
 
 // The person's time zone, so every time KenWise tells them is in their own time.
 try {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (timeZone) void fetch("/api/assistant/setup/time-zone", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeZone }) }).catch(() => {});
+  if (timeZone) void fetch("/api/assistant/setup/time-zone", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeZone, hour12: HOUR12 }) }).catch(() => {});
 } catch {}
+
+// ---------- Settings: accounts ----------
+
+// The accounts KenWise reaches models through. The page never sees a key or a
+// token, only a hint. Limits and sign-ins are facts the daemon keeps.
+let setup = { providers: [], connections: [] };
+let signIn = null; // the attempt in progress: { id, tab }
+let removing = null; // the account whose Remove was pressed once
+
+const COMMON_KEYS = ["opencode-go", "openrouter", "openai", "anthropic", "google", "deepseek", "mistral", "zai", "opencode"];
+const usableNow = (connection) => connection.status === "ready" || (connection.status === "limited" && (!connection.until || Date.parse(connection.until) <= Date.now()));
+const DOTS = ["p-a", "p-b", "p-c"];
+const dotFor = (provider) => DOTS[[...provider].reduce((sum, character) => sum + character.charCodeAt(0), 0) % DOTS.length];
+
+function accountLine(connection) {
+  const name = `${connection.providerName}${connection.label ? ` (${connection.label})` : ""}`;
+  const how = connection.method === "oauth" ? `Signed in${connection.hint && connection.hint !== "signed in" ? ` as ${connection.hint}` : ""}`
+    : connection.method === "env" || connection.source ? `Key ${connection.hint ? `ending ${connection.hint.replace(/^…/, "")}, ` : ""}from ${connection.source ?? "the environment"}`
+      : `Key${connection.hint ? ` ending ${connection.hint.replace(/^…/, "")}` : ""}`;
+  const several = setup.connections.filter((other) => other.provider === connection.provider).length > 1;
+  const inUse = several ? (connection.active ? ". In use" : "") : "";
+  let state;
+  const covered = setup.connections.some((other) => other.provider === connection.provider && other.id !== connection.id && usableNow(other));
+  if (connection.status === "needs-sign-in" && covered) {
+    state = `<span class="state"><span class="dot"></span>Not used</span>`;
+  } else if (connection.status === "needs-sign-in") {
+    state = connection.method === "oauth"
+      ? `<button class="btn" type="button" data-resign="${escapeHtml(connection.provider)}">Sign in again</button>`
+      : `<button class="btn" type="button" data-rekey="${escapeHtml(connection.provider)}">Paste a new key</button>`;
+  } else if (!usableNow(connection)) {
+    state = `<span class="state st-you"><span class="dot"></span>Limited until ${escapeHtml(untilLabel(connection.until))}</span>`;
+  } else state = `<span class="state st-done"><span class="dot"></span>Ready</span>`;
+  const why = connection.status === "needs-sign-in" ? (connection.method === "oauth" ? ". The sign-in ran out" : ". The key is no longer accepted") : "";
+  const stored = !connection.source && connection.method !== "env";
+  const acts = [
+    several && !connection.active && stored ? `<button class="lnk" type="button" data-use="${escapeHtml(connection.id)}">Use this one</button>` : "",
+    stored ? `<button class="lnk" type="button" data-remove="${escapeHtml(connection.id)}">${removing === connection.id ? "Remove for good" : "Remove"}</button>` : ""
+  ].join("");
+  return `<div class="row"><span class="pdot ${dotFor(connection.provider)}"></span><div class="row-m"><span class="row-t">${escapeHtml(name)}</span><span class="row-s">${escapeHtml(how + inUse + why)}</span></div>${acts ? `<span class="acct-acts">${acts}</span>` : ""}${state}</div>`;
+}
+
+function renderAccounts() {
+  const list = setup.connections;
+  $("accounts-list").innerHTML = list.map(accountLine).join("") || `<div class="row"><div class="row-m"><span class="row-s">Nothing connected yet. Add a connection below.</span></div></div>`;
+  const signable = setup.providers.filter((provider) => provider.signIn);
+  $("signin-providers").innerHTML = signable.map((provider) => `<div class="row"><div class="row-m"><span class="row-t">${escapeHtml(provider.name)}</span></div>${provider.connected ? `<span class="row-s">Connected</span><button class="btn quiet" type="button" data-signin="${escapeHtml(provider.id)}">Add another</button>` : `<button class="btn" type="button" data-signin="${escapeHtml(provider.id)}">Sign in</button>`}</div>`).join("")
+    || `<div class="row"><div class="row-m"><span class="row-s">No subscription sign-in is offered yet.</span></div></div>`;
+  const select = $("key-provider");
+  const chosen = select.value;
+  // The usual places first; every provider pi-ai knows after them.
+  const withKey = setup.providers.filter((provider) => provider.key).sort((a, b) => a.name.localeCompare(b.name));
+  const option = (provider) => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)}</option>`;
+  const common = COMMON_KEYS.map((id) => withKey.find((provider) => provider.id === id)).filter(Boolean);
+  select.innerHTML = `<optgroup label="Common">${common.map(option).join("")}</optgroup><optgroup label="All">${withKey.map(option).join("")}</optgroup>`;
+  if (chosen) select.value = chosen;
+  renderResting();
+}
+
+// What the daemon says a held message waits for (null when nothing is held). It comes with the conversation's stream.
+let heldNow = null;
+function takeHeld(value) { heldNow = value && value.reason ? value : null; renderResting(); }
+
+/** The bar under the conversation while a message is held: what it waits for, and the say-so when paying could carry on. */
+function renderResting() {
+  root.classList.toggle("view-first", loadedSetup && !setup.connections.length);
+  root.classList.toggle("model-waiting", Boolean(heldNow));
+  if (!heldNow) return;
+  const { reason, account, until, paid, capUsd } = heldNow;
+  $("restbar-text").textContent = reason === "cap"
+    ? `I'm holding your message: answering would go past your monthly cap of $${capUsd}.`
+    : reason === "limited"
+      ? `I'm holding your message until ${until ? untilLabel(until) : `your ${account} account is back`}.${paid ? ` Your ${paid} account could carry on now, paid per token.` : ""}`
+      : reason === "needs-sign-in"
+        ? `I'm holding your message until ${account} is signed in again.${paid ? ` Your ${paid} account could carry on now, paid per token.` : ""}`
+        : "I'm holding your message until an account is added.";
+  const allow = $("restbar-allow");
+  allow.hidden = !(paid || reason === "cap");
+  allow.textContent = reason === "cap" ? "Go past the cap" : `Use ${paid}`;
+}
+
+let loadedSetup = false;
+async function loadAccounts() {
+  try {
+    setup = await setupCall("");
+    loadedSetup = true;
+    renderAccounts();
+    const limit = await setupCall("/limit");
+    renderLimit(limit);
+    $("accounts-status").textContent = "";
+  } catch (error) { $("accounts-status").textContent = `Could not load your accounts: ${error.message}`; }
+}
+
+async function accountsAct(run) {
+  $("accounts-status").textContent = "";
+  try { await run(); } catch (error) { $("accounts-status").textContent = error.message; }
+  await loadAccounts();
+}
+
+function addMode(mode) {
+  root.classList.remove("add-sub", "add-key");
+  if (mode === "sub" || mode === "key") root.classList.add(`add-${mode}`);
+  for (const option of document.querySelectorAll(".st-accounts [data-add].opt")) option.setAttribute("aria-pressed", String(option.dataset.add === mode));
+  if (mode !== "sub" && signIn && ["started", "waiting", "completing"].includes(signIn.state)) void cancelSignIn();
+  if (mode === "sub" && !signIn) signInView("idle");
+  if (mode === "key") requestAnimationFrame(() => $("key-value").focus());
+}
+
+function signInView(view) {
+  root.classList.remove("signin-idle", "signin-wait", "signin-done");
+  root.classList.add(`signin-${view}`);
+}
+
+async function startSignIn(provider) {
+  // A tab opened now, while the click counts, so the browser does not block it; it is sent to the sign-in page once that is known.
+  const tab = window.open("about:blank", "_blank");
+  if (tab) tab.opener = null;
+  signIn = { state: "started", tab, sent: false };
+  signInView("wait");
+  $("signin-title").textContent = "Starting the sign-in…";
+  $("signin-detail").textContent = "";
+  $("signin-link").hidden = true;
+  $("signin-code-form").hidden = true;
+  try {
+    const attempt = await setupCall("/signin", { method: "POST", body: { provider } });
+    signIn = { ...attempt, tab, sent: false };
+    void followSignIn();
+  } catch (error) { tab?.close(); signIn = null; signInDone(false, error.message); }
+}
+
+async function followSignIn() {
+  while (signIn?.id) {
+    let attempt;
+    try { attempt = await setupCall(`/signin/${encodeURIComponent(signIn.id)}`); } catch (error) { signInDone(false, error.message); return; }
+    if (!signIn || signIn.id !== attempt.id) return;
+    signIn = { ...attempt, tab: signIn.tab, sent: signIn.sent };
+    if (attempt.state === "saved") { signInDone(true); return; }
+    if (["failed", "expired", "cancelled"].includes(attempt.state)) {
+      signInDone(false, attempt.state === "expired" ? "The sign-in took too long and was stopped. Try again when you're ready." : attempt.state === "cancelled" ? null : attempt.error);
+      return;
+    }
+    if (attempt.url) {
+      if (signIn.tab && !signIn.sent && !signIn.tab.closed) { try { signIn.tab.location.href = attempt.url; } catch {} }
+      signIn.sent = true;
+      $("signin-link").href = attempt.url;
+      $("signin-link").hidden = false;
+    }
+    $("signin-title").textContent = attempt.deviceCode ? `Enter ${attempt.deviceCode} on the page that just opened` : attempt.url ? "Approve KenWise in the browser tab that just opened" : "Starting the sign-in…";
+    $("signin-detail").textContent = attempt.state === "completing" ? "Finishing…" : attempt.instructions ?? "This finishes by itself once you approve.";
+    $("signin-code-form").hidden = !attempt.paste;
+    if (attempt.paste) {
+      $("signin-question").textContent = attempt.question ?? "If I run on another machine, paste the code or the address the page ends on";
+      $("signin-code").type = "text";
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+  }
+}
+
+function signInDone(ok, error = null) {
+  signIn = null;
+  if (!ok && !error) { signInView("idle"); return; }
+  signInView("done");
+  $("signin-result").textContent = ok ? "Connected" : "Not connected";
+  $("signin-result").parentElement.classList.toggle("ok", ok);
+  $("signin-result-detail").textContent = ok ? "I'll start using its models where they suit the work. I renew the sign-in myself." : error;
+  void loadAccounts();
+}
+
+async function cancelSignIn() {
+  const attempt = signIn;
+  signIn = null;
+  attempt?.tab?.close?.();
+  if (attempt?.id) await setupCall(`/signin/${encodeURIComponent(attempt.id)}`, { method: "DELETE" }).catch(() => {});
+  signInView("idle");
+}
+
+$("sheet-look").addEventListener("click", (event) => {
+  const target = event.target.closest("[data-add], [data-signin], [data-resign], [data-rekey], [data-use], [data-remove]");
+  if (!target) return;
+  const { add, signin, resign, rekey, use, remove } = target.dataset;
+  if (add) { if (add === "none") signInView("idle"); addMode(add); return; }
+  if (signin || resign) { addMode("sub"); void startSignIn(signin || resign); return; }
+  if (rekey) { addMode("key"); $("key-provider").value = rekey; return; }
+  if (use) { void accountsAct(() => setupCall(`/connections/${encodeURIComponent(use)}`, { method: "POST", body: { active: true } })); return; }
+  if (remove) {
+    // Pressed twice to remove: an account signed in again costs the person a trip through the provider.
+    if (removing !== remove) { removing = remove; renderAccounts(); setTimeout(() => { if (removing === remove) { removing = null; renderAccounts(); } }, 4_000); return; }
+    removing = null;
+    void accountsAct(() => setupCall(`/connections/${encodeURIComponent(remove)}`, { method: "DELETE" }));
+  }
+});
+$("signin-cancel").addEventListener("click", () => void cancelSignIn());
+$("signin-code-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const code = $("signin-code").value.trim();
+  if (!code || !signIn?.id) return;
+  $("signin-code").value = "";
+  void setupCall(`/signin/${encodeURIComponent(signIn.id)}/code`, { method: "POST", body: { code } }).catch((error) => { $("signin-detail").textContent = error.message; });
+});
+$("key-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const key = $("key-value").value.trim();
+  if (!key) { $("key-note").textContent = "Paste the key first."; return; }
+  $("key-save").disabled = true;
+  $("key-note").textContent = "Trying the key…";
+  try {
+    const { connection } = await setupCall("/connections", { method: "POST", body: { provider: $("key-provider").value, key, label: $("key-label").value.trim() || null } });
+    $("key-value").value = "";
+    $("key-label").value = "";
+    $("key-note").textContent = "";
+    addMode("none");
+    $("accounts-status").textContent = `${connection.providerName ?? "The account"} is connected${connection.status === "limited" ? ", though it is at its limit right now" : ""}.`;
+    await loadAccounts();
+  } catch (error) { $("key-note").textContent = error.message; }
+  finally { $("key-save").disabled = false; }
+});
+for (const button of document.querySelectorAll("[data-first]")) button.addEventListener("click", (event) => {
+  openSheet("sheet-settings", event.currentTarget);
+  settingsTab("accounts");
+  addMode(button.dataset.first);
+});
+// The person's say-so: paid routes may carry on until the accounts out of use now are back (past the cap too).
+$("restbar-allow").addEventListener("click", (event) => {
+  event.currentTarget.disabled = true;
+  void setupCall("/limit/allow", { method: "POST", body: {} }).catch((error) => showStatus(error.message)).finally(() => { $("restbar-allow").disabled = false; });
+});
+$("restbar-open").addEventListener("click", (event) => { openSheet("sheet-settings", event.currentTarget); settingsTab("accounts"); });
+void loadAccounts();

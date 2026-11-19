@@ -19,7 +19,7 @@ import { ModelRelay } from "./lib/model-relay.mjs";
 import { ModelGuide } from "./lib/model-guide.mjs";
 import { ModelLearning } from "./lib/model-learning.mjs";
 import { LimitDecision } from "./lib/limit-decision.mjs";
-import { useTimeZone, clock, stamp, nowLine } from "./lib/local-time.mjs";
+import { useTimeZone, useClock, clock, stamp, nowLine } from "./lib/local-time.mjs";
 import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView, rightNow } from "./lib/ev-memory.mjs";
@@ -87,6 +87,7 @@ const modelGuide = new ModelGuide({ routes: currentRoutes(), store });
 const modelLearning = new ModelLearning({ store, guide: modelGuide });
 modelLearning.noticeAtlas(modelGuide.atlas);
 useTimeZone(store.setting("timeZone"));
+useClock(store.setting("hour12"));
 // When a subscription runs out: switch to a paid route or wait (issue 21). A switch is told once in the conversation.
 const limitDecision = new LimitDecision({ store, routes: currentRoutes(), onSwitch: ({ conversationId, key, content }) => store.recordUpdate({ conversationId, key, content }) });
 void modelLearning.kick();
@@ -252,7 +253,7 @@ async function streamSnapshot(conversationId) {
     if (isConversationWork(task, conversationId)) tasks.push(streamedTask(task));
   }
   const earlier = messages.length ? store.messagesBefore(conversationId, messages[0].sequence, 1).length > 0 : false;
-  return { seq, data: { messages: messages.map(publicMessage), tasks, thinking: thinkingIn(conversationId), earlier, look: store.setting("look") } };
+  return { seq, data: { messages: messages.map(publicMessage), tasks, thinking: thinkingIn(conversationId), earlier, look: store.setting("look"), held: held.get(conversationId) ?? null } };
 }
 
 /** The conversation each piece of work belongs to (it never changes). */
@@ -304,8 +305,9 @@ async function streamChange(conversationId, after) {
   const seq = events.at(-1).seq;
   // Something was filed or the threads were organised: the page reads the list of threads again.
   const threadsChanged = events.some((event) => event.type === "filed" || event.type === "regrouped");
-  if (!messages.size && !tasks.length && !live.length && !steps.length && !look && !threadsChanged) return { seq, data: null };
-  return { seq, data: { messages: [...messages.values()], tasks, ...(steps.length ? { steps } : {}), ...(live.length ? { live } : {}), thinking: thinkingIn(conversationId), ...(look ? { look: store.setting("look") } : {}), ...(threadsChanged ? { threadsChanged } : {}) } };
+  const heldChanged = events.some((event) => event.type === "held" && event.conversationId === conversationId);
+  if (!messages.size && !tasks.length && !live.length && !steps.length && !look && !threadsChanged && !heldChanged) return { seq, data: null };
+  return { seq, data: { messages: [...messages.values()], tasks, ...(steps.length ? { steps } : {}), ...(live.length ? { live } : {}), thinking: thinkingIn(conversationId), ...(look ? { look: store.setting("look") } : {}), ...(threadsChanged ? { threadsChanged } : {}), ...(heldChanged ? { held: held.get(conversationId) ?? null } : {}) } };
 }
 
 /**
@@ -488,10 +490,17 @@ async function handleItem(item) {
  * again at the reset time, or as soon as an account is added or changes.
  */
 const inboxTimers = new Map();
+// What a conversation's held message waits for, as the page's bar shows it. A fact of the inbox, not a guess from the accounts.
+const held = new Map();
+function setHeld(conversationId, value) {
+  const before = JSON.stringify(held.get(conversationId) ?? null);
+  if (value) held.set(conversationId, value); else held.delete(conversationId);
+  if (before !== JSON.stringify(value ?? null)) store.event({ type: "held", conversationId, data: value ?? {} });
+}
 function waitForAccount(conversationId, item, wait) {
   const who = `${wait.providerName}${wait.label ? ` (${wait.label})` : ""}`;
   // A paid route that could carry on now, offered rather than taken (the limit setting, or its weighing, said wait).
-  const paid = wait.paid ? ` I could carry on through your ${wait.paid.providerName} account meanwhile, paid per token: choose that under Accounts if you want it.` : "";
+  const paid = wait.paid ? ` I could carry on through your ${wait.paid.providerName} account meanwhile, paid per token: say so with the button below if you want it.` : "";
   const content = wait.reason === "cap"
     ? `Answering would mean paying for ${wait.providerName} past your monthly cap of $${wait.capUsd}, so I’m holding your message. Raise the cap or say I may go past it under Accounts, and I’ll answer it straight away.`
     : wait.reason === "limited"
@@ -500,6 +509,7 @@ function waitForAccount(conversationId, item, wait) {
       ? `My ${who} account is no longer being accepted (${String(wait.message ?? "").slice(0, 160)}), so I’m holding your message. Sign in again or add a key in settings and I’ll answer it straight away.${paid}`
       : `I have no account to reach my model at ${who} yet, so I’m holding your message. Add one in settings and I’ll answer it straight away.`;
   store.recordUpdate({ conversationId, key: `wait:${conversationId}:${wait.connectionId ?? wait.provider}:${wait.since ?? item.itemId}`, content });
+  setHeld(conversationId, { reason: wait.reason, account: who, until: wait.until ?? null, paid: wait.paid?.providerName ?? null, capUsd: wait.capUsd ?? null });
   clearTimeout(inboxTimers.get(conversationId));
   if (wait.until) inboxTimers.set(conversationId, setTimeout(() => { inboxTimers.delete(conversationId); void drainInbox(conversationId); }, Math.max(0, Date.parse(wait.until) - Date.now()) + 100));
 }
@@ -520,6 +530,8 @@ async function drainInbox(conversationId) {
   handling.add(conversationId);
   try {
     for (let item = store.nextItem(conversationId); item && !stopping; item = store.nextItem(conversationId)) {
+      // Being answered now: no longer held (a wait that recurs sets it again at once, before any model call).
+      setHeld(conversationId, null);
       try { await handleItem(item); }
       catch (error) {
         if (stopping) return;
@@ -533,6 +545,8 @@ async function drainInbox(conversationId) {
       threadsEngine.kick();
       void portrait.kick();
     }
+    // Everything waiting has been handled: nothing is held any more.
+    if (!stopping) setHeld(conversationId, null);
   } finally { handling.delete(conversationId); }
 }
 
@@ -629,7 +643,14 @@ async function handleSetup(request, response, url) {
   if (method === "GET" && path === "/guide") return json(response, 200, guideView());
   // The limit setting: what to do when a subscription runs out, and the monthly cap on paid spend.
   // The browser's time zone, reported by the page: every time told to the person is in it.
-  if (method === "POST" && path === "/time-zone") { const body = await readJson(request); const timeZone = useTimeZone(body.timeZone); if (timeZone) store.saveSetting("timeZone", timeZone); return json(response, 200, { timeZone }); }
+  if (method === "POST" && path === "/time-zone") {
+    const body = await readJson(request);
+    const timeZone = useTimeZone(body.timeZone);
+    if (timeZone) store.saveSetting("timeZone", timeZone);
+    // And how their browser writes a time, so the conversation and the page say "12:55 AM" (or "00:55") alike.
+    if (typeof body.hour12 === "boolean") store.saveSetting("hour12", useClock(body.hour12));
+    return json(response, 200, { timeZone, hour12: store.setting("hour12") ?? false });
+  }
   if (method === "GET" && path === "/limit") return json(response, 200, limitDecision.view());
   if (method === "POST" && path === "/limit") { const body = await readJson(request); return json(response, 200, limitDecision.save({ choice: body.choice, monthlyCapUsd: body.monthlyCapUsd })); }
   if (method === "POST" && path === "/limit/allow") return json(response, 200, limitDecision.allow());
