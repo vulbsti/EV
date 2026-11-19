@@ -26,11 +26,14 @@
  * away the provider's prompt cache. Speed for the price decides the next
  * task's route, not the next request's.
  *
- * When the subscription that would have served is limited, moving to a
- * route that is paid per token is not taken here: whether to spend money or
- * wait for the reset is the limit decision (GitHub issue 21), so until that
- * is built the work waits. Another subscription, or another account, is
- * taken at once.
+ * When the subscription that would have served is out of use, another
+ * subscription or account is taken at once. Moving to a route paid per token
+ * instead is the limit decision (limit-decision.mjs, GitHub issue 21): this
+ * file only takes it when that decision, the person's setting or their
+ * say-so allows it for this subject, and otherwise throws the wait with
+ * `paid` naming the option, so the caller can have it weighed. A paid route
+ * is never used past the person's monthly cap without their say-so. A task
+ * moved to a paid route goes back to the subscription once it is usable.
  *
  * Every model call, EV's own and agents' through the relay, leaves one row in
  * model_calls: which route, how it ended, how long it took, tokens and cost
@@ -91,6 +94,7 @@ export class ModelRoutes {
     this.store = connections.store;
     this.memoryCalls = []; // without a store
     this.sticky = new Map(); // task or turn -> the route key it is on
+    this.decider = null; // the limit decision, when the daemon has one
     if (this.store) this.store.db.exec(SCHEMA);
   }
 
@@ -154,6 +158,13 @@ export class ModelRoutes {
     }).filter(Boolean);
   }
 
+  /** Whether calls through this provider and account are already paid for (a plan or a subscription sign-in). */
+  isSubscription(providerId, connectionId = null) {
+    if (PLAN_PROVIDERS.has(providerId)) return true;
+    const connection = connectionId ? this.connections.connectionsOf(providerId).find((candidate) => candidate.id === connectionId) : this.connections.serving(providerId);
+    return connection?.method === "oauth";
+  }
+
   /** Routes in the order they would be used. Each carries `usable` and `rank` (lower is better). */
   ranked(model, options = {}) {
     const routes = this.routes(model, options).map((route) => ({ ...route, usable: this.connections.usable(route.connection), speed: this.speed(route.model.provider, route.model.id) }));
@@ -173,13 +184,17 @@ export class ModelRoutes {
    * soonest). With `stick` (a task's or a turn's id), the route chosen the
    * first time is kept for as long as its account is usable.
    */
-  pick(model, code, { stick = null, ...options } = {}) {
+  pick(model, code, { stick = null, subject = stick, ...options } = {}) {
     this.connections.ensureProvider(model.provider);
     if (stick && this.sticky.has(stick)) {
-      const kept = this.routes(model, options).find((route) => routeKey(route) === this.sticky.get(stick));
-      if (kept && this.connections.usable(kept.connection)) return kept;
+      const routes = this.routes(model, options);
+      const kept = routes.find((route) => routeKey(route) === this.sticky.get(stick));
+      // A paid stop-gap lasts only until a subscription can take the work back, and never past the cap.
+      const back = kept && !kept.subscription && routes.some((route) => route.subscription && this.connections.usable(route.connection));
+      const capped = kept && !kept.subscription && this.decider && !this.decider.underCap() && !this.decider.allowedNow();
+      if (kept && this.connections.usable(kept.connection) && !back && !capped) return kept;
     }
-    const chosen = this._choose(model, code, options);
+    const chosen = this._choose(model, code, { ...options, subject });
     if (stick) {
       this.sticky.delete(stick);
       this.sticky.set(stick, routeKey(chosen));
@@ -191,16 +206,36 @@ export class ModelRoutes {
   /** Lets a finished task's route go. */
   unstick(stick) { this.sticky.delete(stick); }
 
-  _choose(model, code, options) {
+  _choose(model, code, { subject = null, ...options }) {
     const ranked = this.ranked(model, options);
     const best = ranked[0];
-    const paidInstead = best && !best.subscription && ranked.some((route) => route.subscription && !route.usable);
-    if (best?.usable && !paidInstead) return best;
+    const limited = best && !best.subscription ? ranked.find((route) => route.subscription && !route.usable) : null;
+    const capped = best?.usable && !best.subscription && this.decider && !this.decider.underCap() && !this.decider.allowedNow();
+    if (best?.usable && !limited && !capped) return best;
+    if (best?.usable && limited && !capped && this.decider?.allows(subject, limited.connection, best)) return { ...best, instead: limited.connection };
+    if (capped) {
+      const next = new Date(Date.now());
+      const until = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 1)).toISOString();
+      throw Object.assign(new Error(`Paying for ${best.model.provider} would go past the monthly cap`), { code, wait: { reason: "cap", provider: best.model.provider, providerName: this.connections.providerName(best.model.provider), connectionId: null, until, since: null, capUsd: this.decider.setting().monthlyCapUsd } });
+    }
+    if (best?.usable && limited) {
+      // The wait names the paid option, so it can be weighed (or offered to the person).
+      const error = this._wait(model, code, options);
+      error.paid = best;
+      error.limited = limited.connection;
+      error.subject = subject;
+      if (error.wait) error.wait = { ...error.wait, paid: { provider: best.model.provider, providerName: this.connections.providerName(best.model.provider), model: best.model.id } };
+      throw error;
+    }
+    throw this._wait(model, code, options);
+  }
+
+  _wait(model, code, options) {
     const waits = [];
     for (const provider of new Set([model.provider, ...this.routes(model, options).map((route) => route.model.provider)])) {
       try { this.connections.forCall(provider, code); } catch (error) { waits.push(error); }
     }
     const resets = (error) => error.wait?.until ? Date.parse(error.wait.until) : Number.POSITIVE_INFINITY;
-    throw waits.sort((a, b) => resets(a) - resets(b))[0] ?? Object.assign(new Error(`${model.provider}/${model.id} cannot be reached`), { code });
+    return waits.sort((a, b) => resets(a) - resets(b))[0] ?? Object.assign(new Error(`${model.provider}/${model.id} cannot be reached`), { code });
   }
 }

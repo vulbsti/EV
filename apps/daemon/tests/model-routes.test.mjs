@@ -52,3 +52,25 @@ test("when the subscription runs out and only a pay-per-token route is left, not
   assert.ok(connections.usable(connections.serving("opencode")), "the paid route is there to be taken");
   assert.throws(() => routes.pick(model, "X"), (error) => error.wait?.reason === "limited" && error.wait.provider === "opencode-go");
 });
+
+test("the monthly cap on paid spend is never crossed without the person's say-so, whatever the limit setting", async () => {
+  const { openStore } = await import("../lib/store.mjs");
+  const { LimitDecision } = await import("../lib/limit-decision.mjs");
+  const store = openStore();
+  const connections = await Connections.open({ store, env: { OPENCODE_API_KEY: "key" } });
+  const routes = new ModelRoutes({ connections });
+  const decision = new LimitDecision({ store, routes, log: () => {}, call: async () => ({ choice: "switch", why: "test" }) });
+  const model = connections.models.getModel("opencode-go", "claude-haiku-5-5");
+  decision.save({ choice: "switch", monthlyCapUsd: 1 });
+  connections.limited(connections.serving("opencode-go"), 3_600_000);
+  // Under the cap, "always switch" moves to the paid route at once.
+  assert.equal(routes.pick(model, "X", { subject: "work:w1" }).model.provider, "opencode");
+  routes.record({ role: "agent", workId: "w1", model: connections.models.getModel("opencode", "claude-haiku-5-5"), connectionId: connections.serving("opencode").id, outcome: "ok", tokens: { input: 20_000_000, output: 0, cached: 0 } });
+  // Past it, nothing more is paid for, whatever the setting says...
+  assert.throws(() => routes.pick(model, "X", { subject: "work:w2" }), (error) => error.wait?.reason === "cap");
+  assert.throws(() => routes.pick(model, "X", { subject: "work:w1", stick: "w1" }), (error) => error.wait?.reason === "cap");
+  // ...until the person says so.
+  decision.allow();
+  assert.equal(routes.pick(model, "X", { subject: "work:w2" }).model.provider, "opencode");
+  store.close();
+});

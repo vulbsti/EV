@@ -145,18 +145,29 @@ function listening(fetchImpl, heard, quiet, seen) {
  * `parse(text, message)` gives `value`; a reply it rejects is retried like a
  * provider blip. Throws an error with `code` once retries are spent.
  */
-export async function modelTurn({ context, session, code, label, role = label, spec = null, apiKey, env = process.env, workId = null, ...rest }) {
+export async function modelTurn({ context, session, code, label, role = label, spec = null, apiKey, env = process.env, workId = null, conversationId = null, noSwitch = false, ...rest }) {
   let asked;
   // `spec` (provider/model) overrides the role's model, as when a reviewer should not be the worker's model.
   try { asked = modelSettings(env, spec || modelFor(role, env)); } catch (error) { throw Object.assign(error, { code }); }
   // An explicit key (tests, the harness's self-test) bypasses the accounts.
   if (apiKey) return turnOn({ ...rest, context, session, code, label, apiKey, workId, model: asked, account: null });
   await connections.scanned;
-  // Each pass marks one account limited or signed out, so this ends: on a reply, or when no route is left.
+  // Who a move to a paid route would be for: the person waiting on EV's reply, a piece of work, or background upkeep.
+  const subject = workId ? `work:${workId}` : label === "main-agent" ? `turn:${conversationId ?? "default"}` : `role:${label}`;
+  // Each pass marks one account limited or signed out, or settles whether to pay, so this ends.
   for (;;) {
+    let route;
     // One turn of EV's stays on one route while it can (the provider's prompt cache).
-    const { model, connection } = routes.pick(asked, code, { stick: session ? `${label}:${session}` : null });
-    try { return await turnOn({ ...rest, context, session, code, label, workId, model, account: connection }); }
+    try { route = routes.pick(asked, code, { stick: session ? `${label}:${session}` : null, subject }); }
+    catch (error) {
+      // A subscription ran out and only a paid route is left: weigh it once (limit-decision.mjs), then look again.
+      if (!error.paid || noSwitch || !routes.decider?.open(subject, error.limited)) throw error;
+      await routes.decider.decide({ subject, limited: error.limited, paid: error.paid, personWaiting: label === "main-agent", title: label, conversationId });
+      continue;
+    }
+    // `noSwitch` is the limit weighing itself: its few paid tokens are not a switch to tell.
+    if (route.instead && !noSwitch) routes.decider?.switched({ subject, limited: route.instead, paid: route, conversationId });
+    try { return await turnOn({ ...rest, context, session, code, label, workId, model: route.model, account: route.connection }); }
     catch (error) { if (!error.reroute) throw error; }
   }
 }

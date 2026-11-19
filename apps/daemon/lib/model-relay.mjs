@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { retryAfterMs } from "./connections.mjs";
 import { ModelRoutes } from "./model-routes.mjs";
+import { TailBuffer } from "./worker-usage.mjs";
 
 /**
  * How agents reach their model without ever holding a key.
@@ -129,13 +130,15 @@ export class ModelRelay {
       const again = now && this.connections.usable(now) ? null : await this._send(grant, request, url, body);
       if (again && !again.error) { await sent.answer.body?.cancel().catch(() => {}); sent.record(); sent = again; }
     }
-    const { answer, record } = sent;
+    const { answer, record, tail } = sent;
     // fetch has already undone any compression, so its length no longer applies.
     const back = Object.fromEntries([...answer.headers].filter(([name]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(name)));
     response.writeHead(answer.status, back);
     if (!answer.body) { record(); return response.end(); }
     response.on("close", record);
     const stream = Readable.fromWeb(answer.body);
+    // The end of the answer carries its token counts: kept so the call's cost is known (the monthly cap counts it).
+    stream.on("data", (chunk) => tail.push(chunk));
     request.on("close", () => { if (!response.writableFinished) stream.destroy(); });
     stream.on("error", () => response.destroy());
     stream.pipe(response);
@@ -149,13 +152,20 @@ export class ModelRelay {
    */
   async _send(grant, request, url, body) {
     let route;
-    try { route = this.routes.pick(grant.model, "AGENT_MODEL_UNAVAILABLE", { sameApi: true, stick: grant.token }); }
+    const subject = `work:${grant.taskId}`;
+    try { route = this.routes.pick(grant.model, "AGENT_MODEL_UNAVAILABLE", { sameApi: true, stick: grant.token, subject }); }
     catch (error) {
+      // A subscription ran out and only a paid route is left: weigh it once (limit-decision.mjs), then look again.
+      if (error.paid && this.routes.decider?.open(subject, error.limited)) {
+        await this.routes.decider.decide({ subject, limited: error.limited, paid: error.paid });
+        return this._send(grant, request, url, body);
+      }
       const wait = error.wait ?? {};
       const seconds = wait.until ? Math.max(1, Math.ceil((Date.parse(wait.until) - Date.now()) / 1_000)) : 60;
       return { error: [wait.reason === "limited" ? 429 : 503, error.message, { "Retry-After": String(seconds) }] };
     }
     const { model, connection: account } = route;
+    if (route.instead) this.routes.decider?.switched({ subject, limited: route.instead, paid: route });
     this._noticeRoute(grant, route);
     let resolved;
     try { resolved = await this.connections.models.getAuth(model); }
@@ -172,12 +182,13 @@ export class ModelRelay {
     const firstByteMs = Date.now() - started;
     this._observe(account, answer);
     let recorded = false;
+    const tail = new TailBuffer(64 * 1024);
     const record = () => {
       if (recorded) return;
       recorded = true;
-      this.routes.record({ role: "agent", workId: grant.taskId, model, connectionId: account.id, outcome: answer.ok ? "ok" : answer.status === 429 ? "limited" : "rejected", status: answer.status, ms: Date.now() - started, firstByteMs });
+      this.routes.record({ role: "agent", workId: grant.taskId, model, connectionId: account.id, outcome: answer.ok ? "ok" : answer.status === 429 ? "limited" : "rejected", status: answer.status, ms: Date.now() - started, firstByteMs, tokens: answer.ok ? tokensIn(tail.text()) : null });
     };
-    return { answer, account, record };
+    return { answer, account, record, tail };
   }
 
   /** Tells onRouteChange when this task's requests start going out on another route. */
@@ -201,6 +212,26 @@ export class ModelRelay {
     }
     if (answer.ok) { this.refusals.delete(account.id); this.connections.ready(account); }
   }
+}
+
+/**
+ * Token counts from the end of a provider's answer, in any of the three API
+ * shapes (input_tokens / prompt_tokens, output_tokens / completion_tokens,
+ * cached reads). The last count of each wins. Null when none is found.
+ */
+export function tokensIn(text) {
+  const last = (names) => {
+    let found = null;
+    for (const name of names) for (const match of text.matchAll(new RegExp(`"${name}"\\s*:\\s*(\\d+)`, "g"))) found = Math.max(found ?? 0, Number(match[1]));
+    return found;
+  };
+  const input = last(["input_tokens", "prompt_tokens"]);
+  const output = last(["output_tokens", "completion_tokens"]);
+  const cached = last(["cache_read_input_tokens", "cached_tokens"]) ?? 0;
+  if (input === null && output === null) return null;
+  // Anthropic counts cached reads apart from input; the OpenAI shapes count them inside it.
+  const apart = /"cache_read_input_tokens"/.test(text);
+  return { input: (input ?? 0) + (apart ? cached : 0), output: output ?? 0, cached };
 }
 
 async function bodyOf(request) {

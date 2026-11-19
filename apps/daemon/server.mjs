@@ -18,6 +18,7 @@ import { SignIns } from "./lib/sign-in.mjs";
 import { ModelRelay } from "./lib/model-relay.mjs";
 import { ModelGuide } from "./lib/model-guide.mjs";
 import { ModelLearning } from "./lib/model-learning.mjs";
+import { LimitDecision } from "./lib/limit-decision.mjs";
 import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView, rightNow } from "./lib/ev-memory.mjs";
@@ -84,6 +85,8 @@ const modelGuide = new ModelGuide({ routes: currentRoutes(), store });
 // The personal layer: a weekly analysis of the person's own work rewrites their claims about models.
 const modelLearning = new ModelLearning({ store, guide: modelGuide });
 modelLearning.noticeAtlas(modelGuide.atlas);
+// When a subscription runs out: switch to a paid route or wait (issue 21). A switch is told once in the conversation.
+const limitDecision = new LimitDecision({ store, routes: currentRoutes(), onSwitch: ({ conversationId, key, content }) => store.recordUpdate({ conversationId, key, content }) });
 void modelLearning.kick();
 const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait, models: modelGuide });
 await assistantWorkers.start();
@@ -457,7 +460,8 @@ async function handleItem(item) {
     ({ text: closing } = await takeTurn({
       prompt: turnPrompt({ portrait: portraitView(store), profile: memoryView(assistantMemory, assistantOwnerId, { audience: "ev" }).text, history: historyView(assistantMemory), recent: recentConversation(conversationId, message.sequence), work, models: modelGuide.text(), message: message.content }),
       run: turn.run,
-      session: sessionHeader(`ev:${message.messageId}`)
+      session: sessionHeader(`ev:${message.messageId}`),
+      conversationId
     }));
   } catch (error) {
     // No account can reach the model now: the message stays in the inbox.
@@ -483,10 +487,14 @@ async function handleItem(item) {
 const inboxTimers = new Map();
 function waitForAccount(conversationId, item, wait) {
   const who = `${wait.providerName}${wait.label ? ` (${wait.label})` : ""}`;
-  const content = wait.reason === "limited"
-    ? `My ${who} account has reached its usage limit, so I’m holding your message until about ${time(wait.until)} UTC and will answer it then. Adding another account in settings would let me carry on sooner.`
+  // A paid route that could carry on now, offered rather than taken (the limit setting, or its weighing, said wait).
+  const paid = wait.paid ? ` I could carry on through your ${wait.paid.providerName} account meanwhile, paid per token: choose that under Accounts if you want it.` : "";
+  const content = wait.reason === "cap"
+    ? `Answering would mean paying for ${wait.providerName} past your monthly cap of $${wait.capUsd}, so I’m holding your message. Raise the cap or say I may go past it under Accounts, and I’ll answer it straight away.`
+    : wait.reason === "limited"
+    ? `My ${who} account has reached its usage limit, so I’m holding your message until about ${time(wait.until)} UTC and will answer it then.${paid || " Adding another account in settings would let me carry on sooner."}`
     : wait.reason === "needs-sign-in"
-      ? `My ${who} account is no longer being accepted (${String(wait.message ?? "").slice(0, 160)}), so I’m holding your message. Sign in again or add a key in settings and I’ll answer it straight away.`
+      ? `My ${who} account is no longer being accepted (${String(wait.message ?? "").slice(0, 160)}), so I’m holding your message. Sign in again or add a key in settings and I’ll answer it straight away.${paid}`
       : `I have no account to reach my model at ${who} yet, so I’m holding your message. Add one in settings and I’ll answer it straight away.`;
   store.recordUpdate({ conversationId, key: `wait:${conversationId}:${wait.connectionId ?? wait.provider}:${wait.since ?? item.itemId}`, content });
   clearTimeout(inboxTimers.get(conversationId));
@@ -616,6 +624,10 @@ async function handleSetup(request, response, url) {
   if (method === "GET" && path === "") return json(response, 200, { providers: connections.providers(), connections: connections.list() });
   // The model guide: what KenWise has learnt about each model it can choose, for the Models tab.
   if (method === "GET" && path === "/guide") return json(response, 200, guideView());
+  // The limit setting: what to do when a subscription runs out, and the monthly cap on paid spend.
+  if (method === "GET" && path === "/limit") return json(response, 200, limitDecision.view());
+  if (method === "POST" && path === "/limit") { const body = await readJson(request); return json(response, 200, limitDecision.save({ choice: body.choice, monthlyCapUsd: body.monthlyCapUsd })); }
+  if (method === "POST" && path === "/limit/allow") return json(response, 200, limitDecision.allow());
   if (method === "POST" && path === "/guide/note") { const body = await readJson(request); return json(response, 201, modelLearning.note({ text: body.text, model: body.model ?? null })); }
   const note = /^\/guide\/note\/([^/]+)$/.exec(path);
   if (note && method === "DELETE") return json(response, 200, modelLearning.erase(decodeURIComponent(note[1])));
