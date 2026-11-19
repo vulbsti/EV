@@ -84,7 +84,7 @@ npm run qa                                 # everything
 
 Each scenario gets its own EV server on a free port with `EV_DATA_DIR` pointing at `data/qa-runs/<run>/<scenario>/ev-data`, so memory starts empty and your real EV data is untouched. Results go to `data/qa-runs/<run>/<scenario>/scorecard.md` (grade here) and `result.json`. `data/qa-runs/<run>/summary.md` collects the auto-checks across scenarios.
 
-Real runs need what the product needs: `openclaw` on `PATH` and `OPENCODE_API` set (in `.env` is fine). Without the key, EV's main agent can't read messages and falls back to starting a task for every one, and every task fails with `OPENCODE_KEY_MISSING`. That only tests the plumbing.
+Real runs need what the product needs: `openclaw` on `PATH` and a model account (`OPENCODE_API` in `.env` is fine). Without one, EV holds every message in its inbox until an account is added, so nothing is tested.
 
 ### Time between sessions
 

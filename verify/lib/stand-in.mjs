@@ -30,7 +30,8 @@ export async function startStandIn(script = {}) {
   const errors = [];
   const pending = new Map(); // tool call id -> the turn waiting for its result
   const closing = new Set(); // ids of the last call of a finished turn
-  const outage = new Map(); // role -> HTTP status to answer with
+  const outage = new Map(); // role -> { status, retryAfter } to answer with
+  const refused = new Map(); // key -> HTTP status for any call made with it
   let callSeq = 0;
 
   /** Runs a role's script as a turn that can pause on tool calls. */
@@ -111,10 +112,16 @@ export async function startStandIn(script = {}) {
     if (ended) { closing.delete(ended); return stream(response, dialect, textResponse(dialect, "")); }
     const text = shownText(dialect, body);
     const role = roleOf({ userAgent: request.headers["user-agent"], text });
-    const call = { role, at: Date.now(), text, tools: offeredTools(dialect, body), body, session: request.headers["x-opencode-session"] ?? null };
+    // The key the call was made with, whichever header the API shape uses.
+    const auth = String(request.headers.authorization ?? "").replace(/^Bearer\s+/i, "") || request.headers["x-api-key"] || null;
+    const call = { role, at: Date.now(), text, tools: offeredTools(dialect, body), body, auth, session: request.headers["x-opencode-session"] ?? null };
     calls.push(call);
-    const status = outage.get(role) ?? outage.get("*");
-    if (status) { call.refused = status; return send(response, status, { error: "stand-in outage" }); }
+    if (refused.has(auth)) { call.refused = refused.get(auth); return send(response, call.refused, { error: { message: "invalid api key" } }); }
+    const down = outage.get(role) ?? outage.get("*");
+    if (down) {
+      call.refused = down.status;
+      return send(response, down.status, { error: { message: down.status === 429 ? "usage limit reached" : "stand-in outage" } }, down.retryAfter ? { "Retry-After": String(down.retryAfter) } : {});
+    }
     const turn = beginTurn(role, call, dialect);
     stream(response, dialect, await turn.step.promise);
   }
@@ -145,9 +152,9 @@ export async function startStandIn(script = {}) {
     response.end(streamEvents(dialect, reply).join(""));
   }
 
-  function send(response, status, value) {
+  function send(response, status, value, headers = {}) {
     if (response.writableEnded || response.destroyed) return;
-    response.writeHead(status, { "Content-Type": "application/json" });
+    response.writeHead(status, { "Content-Type": "application/json", ...headers });
     response.end(JSON.stringify(value));
   }
 
@@ -169,9 +176,15 @@ export async function startStandIn(script = {}) {
     /** Every turn a worker was started for, oldest first. */
     jobs: (taskId = null) => taskId ? jobs.filter((job) => job.taskId === taskId) : jobs,
     notBuilt, errors,
-    /** Makes model calls for a role (or "*") fail with this HTTP status until restored. */
-    outage: (role = "*", status = 503) => { outage.set(role, status); },
+    /**
+     * Makes model calls for a role (or "*") fail with this HTTP status until
+     * restored. retryAfter (seconds) is sent as Retry-After, the way a
+     * provider says when a usage limit resets.
+     */
+    outage: (role = "*", status = 503, { retryAfter = null } = {}) => { outage.set(role, { status, retryAfter }); },
     restore: (role = null) => { if (role) outage.delete(role); else outage.clear(); },
+    /** Refuses every call made with this key, as a provider does a revoked or mistyped key. */
+    refuse: (key, status = 401) => { refused.set(key, status); },
     async stop() { server.closeAllConnections?.(); await new Promise((done) => server.close(done)); }
   };
   return control;

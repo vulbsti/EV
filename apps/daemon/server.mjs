@@ -12,7 +12,11 @@ import { executionPrompt, workBrief } from "./lib/ev-work-prompts.mjs";
 import { takeTurn, taskUpdate, turnPrompt } from "./lib/ev-main-agent.mjs";
 import { createTurn, lookups, workState } from "./lib/ev-tools.mjs";
 import { importSessions } from "./lib/outside-sessions.mjs";
-import { sessionHeader } from "./lib/ev-model.mjs";
+import { sessionHeader, tryKey, useConnections } from "./lib/ev-model.mjs";
+import { Connections } from "./lib/connections.mjs";
+import { SignIns } from "./lib/sign-in.mjs";
+import { ModelRelay } from "./lib/model-relay.mjs";
+import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView } from "./lib/ev-memory.mjs";
 import { Threads } from "./lib/threads.mjs";
@@ -35,6 +39,10 @@ const daemonToken = createDaemonToken({ dataRoot });
 // Everything EV keeps: one SQLite file, delivered files beside it, and one
 // folder per piece of work (its workspace, session and home).
 const store = openStore({ path: join(dataRoot, "ev.sqlite") });
+// The accounts EV reaches models through; keys live in data/secrets/, never in the store.
+const connections = await Connections.open({ store, dataRoot });
+useConnections(connections);
+const signIns = new SignIns({ connections });
 const assistantWorkerRoot = join(dataRoot, "work");
 const assistantSupervisor = await AssistantSupervisor.open({ store, artifactRoot: join(dataRoot, "files") });
 const assistantMemory = AssistantMemoryStore.open({ store });
@@ -52,7 +60,9 @@ const threadsEngine = new Threads({
 });
 threadsEngine.kick();
 const facts = threadsEngine.facts;
-const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate });
+// Agents reach their model through EV, so no key enters their container.
+const modelRelay = await new ModelRelay({ connections }).start();
+const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait });
 await assistantWorkers.start();
 const standingStore = StandingResponsibilityStore.open({ store });
 const githubStandingConnector = new GitHubPullRequestConnector();
@@ -107,7 +117,7 @@ function publicTask(task) {
     brief: task.input?.metadata?.brief ?? null,
     request: task.input?.metadata?.sourceRequest ?? null,
     parentTaskId: task.input?.metadata?.parentTaskId ?? null,
-    progress: task.history.findLast((event) => event.type === "progress") ?? null,
+    live: assistantSupervisor.live(task.taskId),
     reviews: task.history.filter((event) => event.type === "review").map(({ round, verdict, summary, missing }) => ({ round, verdict, summary, missing })),
     history: task.history
   };
@@ -210,18 +220,40 @@ async function streamSnapshot(conversationId) {
     if (isConversationWork(task, conversationId)) tasks.push(streamedTask(task));
   }
   const earlier = messages.length ? store.messagesBefore(conversationId, messages[0].sequence, 1).length > 0 : false;
-  return { seq, data: { messages: messages.map(publicMessage), tasks, thinking: thinkingIn(conversationId), earlier } };
+  return { seq, data: { messages: messages.map(publicMessage), tasks, thinking: thinkingIn(conversationId), earlier, look: store.setting("look") } };
 }
 
-/** One frame for the events after `after`: the latest version of each message and piece of work they touched. */
+/** The conversation each piece of work belongs to (it never changes). */
+const workConversation = new Map();
+function conversationOfWork(workId) {
+  if (!workConversation.has(workId)) {
+    const row = store.db.prepare("SELECT conversation_id FROM work WHERE work_id = ?").get(workId);
+    if (!row) return null;
+    workConversation.set(workId, row.conversation_id ?? "default");
+  }
+  return workConversation.get(workId);
+}
+
+/**
+ * One frame for the events after `after`: the latest version of each message
+ * and piece of work they touched. An agent's steps and "now" line travel on
+ * their own (`steps`, `live`), so a busy agent never resends its whole work.
+ */
 async function streamChange(conversationId, after) {
   const events = store.eventsAfter(after);
   if (!events.length) return null;
   const messageIds = new Set();
   const workIds = new Set();
+  const liveIds = new Set();
+  const steps = [];
+  const look = events.some((event) => event.type === "setting" && event.data?.key === "look");
   for (const event of events) {
     if (event.messageId) messageIds.add(event.messageId);
-    if (event.workId) workIds.add(event.workId);
+    if (event.type === "step" || event.type === "now") {
+      if (conversationOfWork(event.workId) !== conversationId) continue;
+      liveIds.add(event.workId);
+      if (event.type === "step") steps.push({ taskId: event.workId, seq: event.seq, ...event.data });
+    } else if (event.workId) workIds.add(event.workId);
   }
   const messages = new Map();
   for (const messageId of messageIds) {
@@ -236,11 +268,12 @@ async function streamChange(conversationId, after) {
     const task = await assistantSupervisor.getTask(workId).catch(() => null);
     if (isConversationWork(task, conversationId)) tasks.push(streamedTask(task));
   }
+  const live = [...liveIds].filter((id) => !workIds.has(id)).map((id) => assistantSupervisor.live(id));
   const seq = events.at(-1).seq;
   // Something was filed or the threads were organised: the page reads the list of threads again.
   const threadsChanged = events.some((event) => event.type === "filed" || event.type === "regrouped");
-  if (!messages.size && !tasks.length && !threadsChanged) return { seq, data: null };
-  return { seq, data: { messages: [...messages.values()], tasks, thinking: thinkingIn(conversationId), ...(threadsChanged ? { threadsChanged } : {}) } };
+  if (!messages.size && !tasks.length && !live.length && !steps.length && !look && !threadsChanged) return { seq, data: null };
+  return { seq, data: { messages: [...messages.values()], tasks, ...(steps.length ? { steps } : {}), ...(live.length ? { live } : {}), thinking: thinkingIn(conversationId), ...(look ? { look: store.setting("look") } : {}), ...(threadsChanged ? { threadsChanged } : {}) } };
 }
 
 /**
@@ -256,6 +289,10 @@ async function openStream(request, response, conversationId) {
   let after = asked !== undefined && /^\d+$/.test(asked) ? Number(asked) : null;
   response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
   const send = (type, id, data) => response.write(`id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  // A page that reads slowly never slows EV or its agents: while its socket
+  // is full, nothing more is written, and the next frame covers everything
+  // that changed meanwhile, from the same position. Nothing is lost.
+  const drained = () => new Promise((resolve) => { const done = () => { response.off("drain", done); response.off("close", done); resolve(); }; response.on("drain", done); response.on("close", done); });
   // A position from before this store existed (a fresh data folder) cannot be resumed.
   if (after === null || after > store.lastSeq()) {
     const snapshot = await streamSnapshot(conversationId);
@@ -270,8 +307,8 @@ async function openStream(request, response, conversationId) {
       do {
         again = false;
         for (let change = await streamChange(conversationId, after); change && !closed; change = await streamChange(conversationId, after)) {
-          if (change.data) send("change", change.seq, change.data);
           after = change.seq;
+          if (change.data && !send("change", change.seq, change.data)) await drained();
         }
       } while (again && !closed);
     } catch (error) {
@@ -362,7 +399,6 @@ function newWork({ taskId, conversationId, message, title, request }) {
 }
 
 function unavailableReply(status) {
-  if (!process.env.OPENCODE_API) return "My model isn’t configured (OPENCODE_API is not set), so I can’t work on anything yet.";
   if (status >= 400 && status < 500 && status !== 429) return `My model is rejecting requests (HTTP ${status}), which looks like a setup problem rather than a blip, so I haven’t started anything. The daemon log has the details.`;
   return "I couldn’t think this through just now because my model didn’t answer, so I haven’t started anything. Send it again in a moment.";
 }
@@ -393,6 +429,8 @@ async function handleItem(item) {
       session: sessionHeader(`ev:${message.messageId}`)
     }));
   } catch (error) {
+    // No account can reach the model now: the message stays in the inbox.
+    if (error.wait) throw Object.assign(error, { item });
     // Fail closed: nothing EV was in the middle of deciding is carried out.
     console.error(`[${new Date().toISOString()}] EV could not finish its turn on message ${message.messageId}: ${error.message}`);
     const reply = error.code === "TURN_TOO_LONG" ? "I went round in circles on this and stopped without doing anything. Could you say it another way?" : unavailableReply(error.status ?? null);
@@ -404,6 +442,29 @@ async function handleItem(item) {
   if (!reply && !turn.acted()) return store.handled(item.itemId, { reply: "I didn’t come up with an answer to this, so I haven’t started anything. Send it again, or say it another way.", data: { action: "nothing (EV gave no answer)", recentWork: work } });
   turn.commit({ reply, recentWork: work });
 }
+
+/**
+ * A message that needs a model while no account can reach one waits in the
+ * inbox, with everything after it. The person is told once per conversation
+ * and account episode (the account's status since), and the inbox is tried
+ * again at the reset time, or as soon as an account is added or changes.
+ */
+const inboxTimers = new Map();
+function waitForAccount(conversationId, item, wait) {
+  const who = `${wait.providerName}${wait.label ? ` (${wait.label})` : ""}`;
+  const content = wait.reason === "limited"
+    ? `My ${who} account has reached its usage limit, so I’m holding your message until about ${time(wait.until)} UTC and will answer it then. Adding another account in settings would let me carry on sooner.`
+    : wait.reason === "needs-sign-in"
+      ? `My ${who} account is no longer being accepted (${String(wait.message ?? "").slice(0, 160)}), so I’m holding your message. Sign in again or add a key in settings and I’ll answer it straight away.`
+      : `I have no account to reach my model at ${who} yet, so I’m holding your message. Add one in settings and I’ll answer it straight away.`;
+  store.recordUpdate({ conversationId, key: `wait:${conversationId}:${wait.connectionId ?? wait.provider}:${wait.since ?? item.itemId}`, content });
+  clearTimeout(inboxTimers.get(conversationId));
+  if (wait.until) inboxTimers.set(conversationId, setTimeout(() => { inboxTimers.delete(conversationId); void drainInbox(conversationId); }, Math.max(0, Date.parse(wait.until) - Date.now()) + 100));
+}
+connections.onChange(() => {
+  for (const conversationId of store.waitingConversations()) void drainInbox(conversationId);
+  memoryLearner.kick();
+});
 
 /**
  * One inbox per conversation, handled one item at a time in arrival order, so
@@ -420,6 +481,7 @@ async function drainInbox(conversationId) {
       try { await handleItem(item); }
       catch (error) {
         if (stopping) return;
+        if (error.wait) return waitForAccount(conversationId, error.item, error.wait);
         // Tell the person once rather than retrying a message that cannot be handled.
         console.error(`[${new Date().toISOString()}] Could not handle message ${item.message.messageId}: ${error.stack ?? error.message}`);
         try { store.handled(item.itemId, { reply: `Something went wrong on my side while handling this (${error.message}), so I haven’t started anything. Send it again if you still want it.`, data: { action: "failed" } }); }
@@ -511,6 +573,48 @@ async function readJson(request) {
   catch { throw Object.assign(new Error("Invalid JSON body"), { statusCode: 400 }); }
 }
 
+/**
+ * The settings screen's calls: the accounts EV reaches models through. No
+ * answer ever carries a key or token, only a hint (its last characters, or
+ * the account it signed in as).
+ */
+async function handleSetup(request, response, url) {
+  const path = url.pathname.slice("/api/assistant/setup".length);
+  const { method } = request;
+  if (method === "GET" && path === "") return json(response, 200, { providers: connections.providers(), connections: connections.list() });
+  if (method === "POST" && path === "/connections") {
+    const body = await readJson(request);
+    const provider = String(body.provider ?? "");
+    const key = String(body.key ?? "").trim();
+    if (!connections.models.getProvider(provider)) throw Object.assign(new Error(`Unknown provider: ${provider}`), { statusCode: 400, code: "UNKNOWN_PROVIDER" });
+    if (!key || key.length > 4_096) throw Object.assign(new Error("Paste the key to add"), { statusCode: 400, code: "KEY_MISSING" });
+    // Tried before it is kept, so a typo shows now rather than mid-conversation.
+    const tried = await tryKey(provider, key);
+    if (!tried.ok && tried.status !== 429) {
+      const why = tried.status === 401 || tried.status === 403 ? `${connections.providerName(provider)} refused this key (HTTP ${tried.status})` : `The key could not be checked: ${tried.error}`;
+      throw Object.assign(new Error(why), { statusCode: 400, code: "KEY_REFUSED" });
+    }
+    let connection = connections.save({ provider, method: "key", credential: { type: "api_key", key }, label: typeof body.label === "string" ? body.label.trim().slice(0, 80) || null : null });
+    if (tried.status === 429) connection = connections.limited(connection);
+    return json(response, 201, { connection });
+  }
+  const one = /^\/connections\/([^/]+)$/.exec(path);
+  if (one && method === "DELETE") { connections.remove(decodeURIComponent(one[1])); return json(response, 200, { removed: true }); }
+  if (one && (method === "PATCH" || method === "POST")) {
+    const body = await readJson(request);
+    return json(response, 200, { connection: connections.update(decodeURIComponent(one[1]), { active: body.active === true, label: body.label }) });
+  }
+  if (method === "POST" && path === "/signin") {
+    const body = await readJson(request);
+    return json(response, 201, signIns.start({ provider: String(body.provider ?? ""), label: typeof body.label === "string" ? body.label.trim().slice(0, 80) || null : null }));
+  }
+  const attempt = /^\/signin\/([^/]+)(\/code)?$/.exec(path);
+  if (attempt && method === "GET" && !attempt[2]) return json(response, 200, signIns.get(decodeURIComponent(attempt[1])));
+  if (attempt && method === "DELETE" && !attempt[2]) return json(response, 200, signIns.cancel(decodeURIComponent(attempt[1])));
+  if (attempt && method === "POST" && attempt[2]) return json(response, 200, signIns.answer(decodeURIComponent(attempt[1]), (await readJson(request)).code));
+  return false;
+}
+
 function safeConversation(url) {
   const conversationId = url.searchParams.get("conversationId") ?? "default";
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
@@ -538,6 +642,17 @@ async function handleApi(request, response, url) {
     }
     return json(response, 200, { conversationId, ...await publicConversation(conversationId, after) });
   }
+  if (request.method === "POST" && url.pathname === "/api/assistant/settings/look") {
+    // The page's look, saved here so it follows the person to every device; the page checks the choices.
+    const body = await readJson(request);
+    const look = body?.look;
+    if (!look || typeof look !== "object" || Array.isArray(look) || Object.keys(look).length > 20
+      || !Object.entries(look).every(([key, value]) => /^[a-z]{1,20}$/.test(key) && typeof value === "string" && /^[a-z-]{1,20}$/.test(value))) {
+      throw Object.assign(new Error("look must be a small object of short names"), { statusCode: 400 });
+    }
+    store.saveSetting("look", look);
+    return json(response, 200, { look });
+  }
   if (request.method === "GET" && url.pathname === "/api/assistant/stream") {
     return openStream(request, response, safeConversation(url));
   }
@@ -557,6 +672,7 @@ async function handleApi(request, response, url) {
       }
     });
   }
+  if (url.pathname.startsWith("/api/assistant/setup")) return handleSetup(request, response, url);
   if (request.method === "GET" && url.pathname === "/api/assistant/responsibilities") {
     const responsibilities = await standingStore.listResponsibilities();
     return json(response, 200, { responsibilities: await Promise.all(responsibilities.map(publicResponsibility)) });
@@ -633,6 +749,13 @@ async function handleApi(request, response, url) {
       revision: snapshot.revision,
       tasks: snapshot.tasks.filter((task) => task.revision > after && (task.input?.metadata?.conversationId ?? "default") === conversationId).map(publicTask)
     });
+  }
+  if (request.method === "GET" && /^\/api\/assistant\/tasks\/[^/]+\/steps$/.test(url.pathname)) {
+    // A page of one piece of work's finished steps, oldest first; ?before= goes further back.
+    const taskId = decodeURIComponent(url.pathname.slice("/api/assistant/tasks/".length, -"/steps".length));
+    const before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
+    if (before !== undefined && (!Number.isInteger(before) || before < 1)) throw Object.assign(new Error("before must be a positive integer"), { statusCode: 400 });
+    return json(response, 200, { ...assistantSupervisor.steps(taskId, { before }), live: assistantSupervisor.live(taskId) });
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/search") {
     const query = String(url.searchParams.get("q") ?? "").slice(0, 500);
@@ -827,7 +950,9 @@ const server = createServer(async (request, response) => {
       CONNECTOR_RESOURCE_UNAVAILABLE: 404,
       CONNECTOR_RATE_LIMITED: 429,
       CONNECTOR_TIMEOUT: 504,
-      CONNECTOR_READ_FAILED: 502
+      CONNECTOR_READ_FAILED: 502,
+      CONNECTION_NOT_FOUND: 404,
+      CONNECTION_FROM_ENVIRONMENT: 409
     }[error.code];
     if (!response.headersSent) json(response, error.statusCode ?? codedStatus ?? 500, { error: error.message, code: error.code ?? null });
     else response.end();

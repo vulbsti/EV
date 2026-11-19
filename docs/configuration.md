@@ -2,13 +2,31 @@
 
 KenWise reads `.env` in its folder (`~/.kenwise/.env` after the installer) each time it starts. Every setting is optional except a model key. After a change, run `kenwise restart`.
 
-`.env` is the only way to configure KenWise today. Signing in with accounts you already have, from a settings screen, is being designed; `.env` will keep working when it lands.
+Model accounts can also be added while KenWise runs, by key or by signing in with a subscription (see Accounts below); the settings screen for them is being built. `.env` keeps working.
 
 ## Model
 
-- `OPENCODE_API`: the key for [OpenCode Go](https://opencode.ai), which KenWise uses by default.
-- `EV_MODEL` (default `opencode-go/gpt-6-luna`): the model KenWise and its agents use, as `provider/model`; a bare model id means `opencode-go`. Its API shape, base URL and quirks come from pi-ai's OpenCode Go catalogue, and `OPENCODE_API` is its key.
+- `OPENCODE_API`: the key for [OpenCode Go](https://opencode.ai), which KenWise uses by default. Any key pi-ai knows (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`...) is found the same way and shows as an account.
+- `EV_MODEL` (default `opencode-go/gpt-6-luna`): the model KenWise and its agents use, as `provider/model` from pi-ai's catalogue; a bare model id means `opencode-go`. Its API shape, base URL and quirks come from the catalogue, and the key from that provider's account.
 - `EV_MODEL_URL` sends the calls (KenWise's and the agents') to another endpoint, such as a stub model in tests or any OpenAI- or Anthropic-compatible server. A model the catalogue does not know also needs `EV_MODEL_API`: `openai-responses`, `openai-completions` or `anthropic-messages`. Give OpenAI-style base URLs with their `/v1`; an Anthropic base URL has none.
+
+## Accounts
+
+KenWise reaches models through accounts, one or more per provider, one of them active. A key in the environment is an account that shows where it was found and is changed there; a key pasted through the settings API is tried with one tiny call before it is kept, and wins over the environment's. Subscriptions and accounts sign in directly where the provider allows other apps to (ChatGPT, GitHub Copilot, SuperGrok, OpenRouter, Kimi, Meta, and an OpenCode account for Zen and Go): the sign-in gives a link or a device code, and when the browser cannot reach KenWise (KenWise on another machine) you paste the final redirect URL back. A Claude subscription is not offered, because Anthropic's terms do not allow it in other apps.
+
+Keys and tokens are kept in one file, `data/secrets/credentials.json`, readable only by your user and never indexed, searched or given to an agent. Agents reach their model through a relay inside KenWise with a token that works only for their own run: KenWise swaps in the real key on the way out, so no key enters an agent's container, and KenWise is the only one that refreshes a subscription token.
+
+An account that hits its usage limit is marked limited until its reset time, and one whose key stops being accepted is marked as needing a new sign-in. Neither is called until it is usable again. A message that needs a model meanwhile waits in its inbox and KenWise says so once; it is answered at the reset, or as soon as an account is added. Work in progress and the reviewer wait the same way without counting it as a failure.
+
+| Call | Does |
+|---|---|
+| `GET /api/assistant/setup` | Providers (with whether a key or a subscription sign-in is offered) and accounts with their status. Never a secret, only a hint |
+| `POST /api/assistant/setup/connections` `{provider, key, label?}` | Tries the key, then saves it as the provider's active account |
+| `POST /api/assistant/setup/connections/:id` `{active?, label?}` | Makes it the active account, or renames it |
+| `DELETE /api/assistant/setup/connections/:id` | Removes a saved account |
+| `POST /api/assistant/setup/signin` `{provider, label?}` | Starts a subscription sign-in; poll it with `GET /api/assistant/setup/signin/:id` (link or device code, then saved, failed, expired or cancelled after 10 minutes) |
+| `POST /api/assistant/setup/signin/:id/code` `{code}` | Answers what the sign-in asks for, usually the pasted redirect URL |
+| `DELETE /api/assistant/setup/signin/:id` | Cancels it |
 
 ## Agents and review
 

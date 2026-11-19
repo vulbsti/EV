@@ -3,7 +3,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { modelSettings } from "./ev-model.mjs";
+import { currentConnections, modelSettings } from "./ev-model.mjs";
+import { FORWARDER } from "./model-relay.mjs";
 import { ensurePrivateDirectorySync } from "./file-permissions.mjs";
 import { publicUsage } from "./pi-worker-adapter.mjs";
 import { readTranscript } from "./openclaw-transcript.mjs";
@@ -15,7 +16,15 @@ const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 const OPENCLAW_TURN_SECONDS = 7 * 24 * 60 * 60;
 // Agents use the model EV_MODEL names (its API shape and base URL come from
 // the same record as EV's own calls); EV_OPENCLAW_MODEL picks a different one.
-const workerModel = () => modelSettings(process.env, process.env.EV_OPENCLAW_MODEL || undefined);
+export const workerModel = () => modelSettings(process.env, process.env.EV_OPENCLAW_MODEL || undefined);
+// Inside a container the relay is reached on this port, forwarded to its socket file.
+const RELAY_PORT_IN_CONTAINER = 4319;
+
+/** What agents' model account waits for (limited, a sign-in, no account), or null when it is usable. */
+export function workerAccountWait() {
+  try { currentConnections().forCall(workerModel().provider, "AGENT_MODEL_UNAVAILABLE"); return null; }
+  catch (error) { return error.wait ?? null; }
+}
 
 // Key-free web search. The ev-openclaw image bakes the DuckDuckGo plugin in;
 // on the host, EV_OPENCLAW_SEARCH_PLUGIN names an npm-installed copy
@@ -33,7 +42,11 @@ function stableSessionHeader(taskId) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null }) {
+/**
+ * relay: { baseUrl, token } from EV's model relay. The agent's key is the
+ * task token; the relay swaps in the real one, so no key is in the config.
+ */
+export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null, relay }) {
   const model = workerModel();
   const primary = `${model.provider}/${model.id}`;
   const port = 24000 + (createHash("sha256").update(`browser:${taskId}`).digest().readUInt16BE(0) % 18000);
@@ -61,8 +74,8 @@ export function openClawTaskConfig({ taskId, workspacePath, searchPlugin = null 
       mode: "merge",
       providers: {
         [model.provider]: {
-          baseUrl: model.baseUrl,
-          apiKey: "${OPENCODE_API}",
+          baseUrl: relay.baseUrl,
+          apiKey: relay.token,
           api: model.api,
           headers: { "x-opencode-session": stableSessionHeader(taskId), "User-Agent": "ev-openclaw-prototype/0.1" },
           models: [{ id: model.id, name: model.name ?? model.id, reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272000, maxTokens: 16000, ...(model.api.startsWith("openai") ? { compat: { supportsPromptCacheKey: true } } : {}) }]
@@ -126,9 +139,15 @@ function accumulateUsage(events, state) {
  * own user (so files it writes stay theirs) and never as root on the host.
  * Paths are mounted at the same absolute location, so prompts stay valid.
  */
-export function openClawCommand({ executable, args, sandbox, workspacePath, sessionDir, homeDir, runId, taskId, containerName = `ev-openclaw-${runId.slice(0, 12)}` }) {
+export function openClawCommand({ executable, args, sandbox, workspacePath, sessionDir, homeDir, runId, taskId, relaySocket = null, containerName = `ev-openclaw-${runId.slice(0, 12)}` }) {
   if (!sandbox) return { command: executable, args };
   const mounts = [...new Set([sandbox.mountRoot, homeDir])].flatMap((path) => ["-v", `${path}:${path}`]);
+  // The relay's socket, and a forwarder that makes it a loopback port inside (see model-relay.mjs).
+  const forwarder = join(sessionDir, "relay-forward.mjs");
+  const relay = relaySocket ? ["-v", `${relaySocket}:${relaySocket}`] : [];
+  const command = relaySocket
+    ? ["sh", "-c", 'node "$1" "$2" "$3" & shift 3; exec "$@"', "ev-agent", forwarder, relaySocket, String(RELAY_PORT_IN_CONTAINER), executable, ...args]
+    : [executable, ...args];
   return {
     command: "docker",
     args: [
@@ -136,9 +155,9 @@ export function openClawCommand({ executable, args, sandbox, workspacePath, sess
       "--user", `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
       "--cpus", String(sandbox.cpus ?? 2), "--memory", sandbox.memory ?? "4g", "--pids-limit", "1024", "--shm-size", "1g",
       "--security-opt", "no-new-privileges", "--cap-drop", "ALL",
-      ...mounts, "-v", `${sessionDir}:${sessionDir}:ro`, "-w", workspacePath,
-      "-e", `HOME=${homeDir}`, "-e", "OPENCODE_API", "-e", "OPENCLAW_CONFIG_PATH",
-      sandbox.image, executable, ...args
+      ...mounts, ...relay, "-v", `${sessionDir}:${sessionDir}:ro`, "-w", workspacePath,
+      "-e", `HOME=${homeDir}`, "-e", "OPENCLAW_CONFIG_PATH",
+      sandbox.image, ...command
     ]
   };
 }
@@ -195,7 +214,6 @@ function workerEnvironment(configPath, homeDir) {
   return {
     ...Object.fromEntries(allowed.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]]])),
     HOME: homeDir,
-    OPENCODE_API: process.env.OPENCODE_API,
     OPENCLAW_CONFIG_PATH: configPath
   };
 }
@@ -206,8 +224,9 @@ export class OpenClawWorkerAdapter {
    * that long is stopped and reported as stalled. One that keeps making
    * progress is never stopped for taking long.
    */
-  constructor({ taskId, workspacePath, sessionDir, homeDir, stallMs = 600_000, executable = "openclaw", sandbox = null }) {
+  constructor({ taskId, workspacePath, sessionDir, homeDir, stallMs = 600_000, executable = "openclaw", sandbox = null, relay = null }) {
     this.taskId = taskId;
+    this.relay = relay;
     this.homeDir = homeDir;
     this.sandbox = sandbox;
     this.workspacePath = workspacePath;
@@ -216,25 +235,31 @@ export class OpenClawWorkerAdapter {
     this.executable = executable;
   }
 
-  async start({ runId, prompt, reuseCompleted = true, budget = null, onUsage = null, onProgress = null }) {
-    if (!process.env.OPENCODE_API) {
-      return { runId, completion: Promise.resolve({ status: "failed", code: "OPENCODE_KEY_MISSING", message: "OPENCODE_API is not configured" }) };
-    }
-    ensurePrivateDirectorySync(this.sessionDir);
-    const configPath = join(this.sessionDir, "openclaw-task-config.json");
-    await writeFile(configPath, JSON.stringify(openClawTaskConfig({ taskId: this.taskId, workspacePath: this.workspacePath, searchPlugin: searchPluginPath(this.sandbox) })), { mode: 0o600 });
+  /**
+   * onEvents receives this turn's new transcript events as they are read
+   * (about once a second), for the live steps. It must not throw or block.
+   */
+  async start({ runId, prompt, reuseCompleted = true, budget = null, onUsage = null, onProgress = null, onEvents = null }) {
     const transcript = (afterSeq) => readTranscript({ homeDir: this.homeDir, sessionId: this.taskId, afterSeq });
     const earlier = transcript(0);
     if (reuseCompleted && earlier.events.length) {
       const prior = completedResult(earlier.events);
       if (prior?.status === "completed") return { runId, completion: Promise.resolve(prior) };
     }
+    if (!this.relay) return { runId, completion: Promise.resolve({ status: "failed", code: "MODEL_RELAY_MISSING", message: "EV's model relay is not running, so the agent cannot reach a model" }) };
+    ensurePrivateDirectorySync(this.sessionDir);
+    // Valid for this run only; revoked when it ends.
+    const grant = await this.relay.grant({ taskId: this.taskId, model: workerModel(), socket: Boolean(this.sandbox) });
+    const configPath = join(this.sessionDir, "openclaw-task-config.json");
+    const relay = { token: grant.token, baseUrl: grant.socket ? `http://127.0.0.1:${RELAY_PORT_IN_CONTAINER}/relay` : grant.baseUrl };
+    await writeFile(configPath, JSON.stringify(openClawTaskConfig({ taskId: this.taskId, workspacePath: this.workspacePath, searchPlugin: searchPluginPath(this.sandbox), relay })), { mode: 0o600 });
+    if (grant.socket) await writeFile(join(this.sessionDir, "relay-forward.mjs"), FORWARDER, { mode: 0o600 });
     ensurePrivateDirectorySync(this.homeDir);
     if (this.sandbox) await removeTaskContainers(this.taskId);
     // Each start gets its own container name: runs of one task can share a run id.
     const containerName = `ev-openclaw-${runId.slice(0, 12)}-${randomBytes(3).toString("hex")}`;
     const { command, args } = openClawCommand({
-      containerName, executable: this.executable, sandbox: this.sandbox, workspacePath: this.workspacePath, sessionDir: this.sessionDir, homeDir: this.homeDir, runId, taskId: this.taskId,
+      containerName, executable: this.executable, sandbox: this.sandbox, workspacePath: this.workspacePath, sessionDir: this.sessionDir, homeDir: this.homeDir, runId, taskId: this.taskId, relaySocket: grant.socket,
       args: ["agent", "--local", "--agent", "ev-worker", "--session-id", this.taskId, "--message", prompt, "--json", "--timeout", String(OPENCLAW_TURN_SECONDS)]
     });
     const child = spawn(command, args, {
@@ -262,13 +287,18 @@ export class OpenClawWorkerAdapter {
       live.seq = lastSeq;
       live.events.push(...events);
       accumulateUsage(events, live);
-      if (events.length) { live.progressAt = Date.now(); onProgress?.(); }
+      if (events.length) {
+        live.progressAt = Date.now();
+        onProgress?.();
+        try { onEvents?.(events); } catch { /* the live view never stops the agent */ }
+      }
     };
     run.completion = new Promise((resolve) => {
       let settled = false;
       const finish = async (value) => {
         if (settled) return;
         settled = true;
+        this.relay.revoke(grant.token);
         clearInterval(sessionPoll);
         try { readNew(); } catch {}
         const diagnosticsLog = value.status === "completed" ? null : await writeDiagnosticsLog(this.sessionDir, runId, stderr);

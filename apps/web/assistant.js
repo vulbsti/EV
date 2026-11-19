@@ -224,8 +224,9 @@ function taskLine(task) {
   if (task.status === "completed") return task.result?.summary ?? (isOpenClaw ? report?.outcome === "blocked" ? "The agent could not achieve the requested outcome. The reason is in the details." : report?.outcome === "partial" ? "Useful work is ready, with unfinished parts or concerns listed in the details." : "The requested work is ready." : isR1 ? "Finished with a draft, review receipt, and materially different final." : "Finished and verified.");
   if (task.status === "queued") return "Saved and waiting for its agent.";
   if (task.status === "waiting") { const question = task.history?.findLast((event) => event.type === "input_needed")?.question; return question ? `Paused until you answer: ${question}` : "Paused until you answer the question above."; }
-  if (task.status === "verifying") return task.progress?.message ? `Now: ${task.progress.message}` : "Checking the result against its brief.";
-  return task.progress?.message ? `Now: ${task.progress.message}` : isOpenClaw ? "An agent is working in this task's workspace." : "The reviewed worker is using its task workspace.";
+  if (task.live?.now) return `Now: ${task.live.now}`;
+  if (task.status === "verifying") return "Checking the result against its brief.";
+  return isOpenClaw ? "An agent is working in this task's workspace." : "The reviewed worker is using its task workspace.";
 }
 
 const fileName = (file) => file.title || String(file.relativePath ?? "file").split("/").at(-1);
@@ -527,6 +528,7 @@ function applySnapshot(data) {
   upsertTasks(data.tasks);
   thinking = Boolean(data.thinking);
   earlier = Boolean(data.earlier);
+  takeLook(data.look);
   loaded = true;
   render();
   toBottom();
@@ -538,7 +540,13 @@ function applyChange(data) {
   if (data.threadsChanged) threadsSoon();
   upsertMessages(data.messages);
   upsertTasks(data.tasks);
+  // A piece of work's status record comes whole; it replaces the one the page had.
+  for (const record of data.live ?? []) {
+    const task = tasks.get(record.taskId);
+    if (task) tasks.set(record.taskId, { ...task, live: record });
+  }
   if (typeof data.thinking === "boolean") thinking = data.thinking;
+  if (data.look) takeLook(data.look);
   render();
 }
 
@@ -783,6 +791,16 @@ try {
   for (const [key, choices] of Object.entries(LOOK_CHOICES)) if (choices.includes(saved?.[key])) look[key] = saved[key];
 } catch {}
 
+/** A look saved by KenWise (from this or another device) wins over the one this browser remembered. */
+function takeLook(saved) {
+  if (!saved || typeof saved !== "object") return;
+  let changed = false;
+  for (const [key, choices] of Object.entries(LOOK_CHOICES)) if (choices.includes(saved[key]) && look[key] !== saved[key]) { look[key] = saved[key]; changed = true; }
+  if (!changed) return;
+  try { localStorage.setItem(LOOK_KEY, JSON.stringify(look)); } catch {}
+  applyLook();
+}
+
 function applyLook() {
   for (const [key, choices] of Object.entries(LOOK_CHOICES)) for (const choice of choices) root.classList.toggle(`${key}-${choice}`, look[key] === choice);
   for (const button of document.querySelectorAll("[data-look]")) {
@@ -803,6 +821,7 @@ $("sheet-look").addEventListener("click", (event) => {
   look[key] = value;
   applyLook();
   try { localStorage.setItem(LOOK_KEY, JSON.stringify(look)); } catch {}
+  fetch("/api/assistant/settings/look", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ look }) }).catch(() => {});
 });
 
 // ---------- Threads of work ----------

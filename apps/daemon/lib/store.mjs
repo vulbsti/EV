@@ -27,6 +27,9 @@ PRAGMA busy_timeout = 5000;
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 
+-- The person's own settings that follow them across devices (the page's look).
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, at TEXT NOT NULL);
+
 -- One line per thing that happened, in order. Never edited, except that erase blanks data_json.
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -550,6 +553,18 @@ export function openStore({ path = ":memory:" } = {}) {
     return { eventId, seq: Number(lastInsertRowid), at };
   }
 
+  function setting(key) {
+    return parse(db.prepare("SELECT value_json FROM settings WHERE key = ?").get(key)?.value_json);
+  }
+
+  /** Saves a setting with the event that tells open pages about it. */
+  function saveSetting(key, value) {
+    return tx(() => {
+      db.prepare("INSERT INTO settings (key, value_json, at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, at = excluded.at").run(key, JSON.stringify(value), now());
+      event({ type: "setting", data: { key } });
+    });
+  }
+
   /** Calls `listener` after each committed change; returns a function that stops it. */
   function onChange(listener) {
     listeners.add(listener);
@@ -566,9 +581,11 @@ export function openStore({ path = ":memory:" } = {}) {
     return db.prepare("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?").all(after, limit).map(mapEvent);
   }
 
-  function events({ workId, responsibilityId }) {
+  /** One piece of work's (or responsibility's) events, oldest first, leaving out the types in `except`. */
+  function events({ workId, responsibilityId, except = [] }) {
     const [column, value] = workId ? ["work_id", workId] : ["responsibility_id", responsibilityId];
-    return db.prepare(`SELECT * FROM events WHERE ${column} = ? ORDER BY seq`).all(value).map(mapEvent);
+    const skip = except.length ? ` AND type NOT IN (${except.map(() => "?").join(", ")})` : "";
+    return db.prepare(`SELECT * FROM events WHERE ${column} = ?${skip} ORDER BY seq`).all(value, ...except).map(mapEvent);
   }
 
   function getEvent(eventId) {
@@ -795,7 +812,7 @@ export function openStore({ path = ":memory:" } = {}) {
   }
 
   return {
-    db, path, tx, now, counter, bump, event, events, getEvent, onChange, lastSeq, eventsAfter,
+    db, path, tx, now, counter, bump, event, events, getEvent, onChange, setting, saveSetting, lastSeq, eventsAfter,
     receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messagesByIds, messageWithReplies, listTurns,
     eraseMessage, eraseEvent, eraseOutsideMessage, erased, search,
     close: () => db.close()

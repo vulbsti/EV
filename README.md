@@ -22,7 +22,7 @@ Most AI assistants are an empty chat window and a list of facts about you. KenWi
 
 KenWise is a working daemon you can run today, and an interface that is still being built.
 
-- **Runs today:** the whole loop above, with OpenClaw agents in docker, memory learnt in the background, forget, threads of work (a small model files each message, a stronger one organises the threads every few days or when you ask), search over everything grouped by thread, and import of your Claude Code sessions. The page is the approved interface's shell: one ongoing conversation that updates live, with work cards, the Work sheet, threads of work, look settings, notes and history, search, and a phone layout. `npm run verify` checks 65 behaviours KenWise should have, with a scripted model: 63 hold. The two that don't are about reaching you when the page is closed, which isn't built.
+- **Runs today:** the whole loop above, with OpenClaw agents in docker, memory learnt in the background, forget, threads of work (a small model files each message, a stronger one organises the threads every few days or when you ask), search over everything grouped by thread, and import of your Claude Code sessions. The page is the approved interface's shell: one ongoing conversation that updates live, with work cards, the Work sheet, threads of work, look settings, notes and history, search, and a phone layout. `npm run verify` checks 73 behaviours KenWise should have, with a scripted model: 71 hold. The two that don't are about reaching you when the page is closed, which isn't built.
 - **Real models:** so far KenWise has only been run on two small models, Claude Haiku 5.5 and muse-spark. In the last fully graded run they passed 6 and 5 of 17 hand-graded scenarios. Most failures came from six gaps that have since been fixed, and the re-run after those fixes is not finished. Whether KenWise really "gets you" on a strong model has not been measured yet.
 - **Being built:** the parts of the interface in the pictures above that need new engines (the live feed and pop-out, the portrait of you, models and accounts), signing in with accounts you already have instead of one API key, a router that learns which model suits which work, and reaching you when you're away. See the [roadmap](docs/ROADMAP.md).
 - **Name:** KenWise was called EV while it was being built. The code, the `EV_*` settings and some internal docs still use that name.
@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/vulbsti/KenWise/main/install.sh | b
 
 The script puts KenWise in `~/.kenwise`, installs its one npm dependency, builds the container the agents run in, and links a `kenwise` command into `~/.local/bin`. It never uses sudo. Run it again to update, or run `kenwise update`. To install from a clone instead: `git clone https://github.com/vulbsti/KenWise && cd KenWise && ./install.sh`.
 
-KenWise reaches models through [OpenCode Go](https://opencode.ai) today, so put your key in `~/.kenwise/.env`:
+KenWise reaches models through your own accounts. The quickest start is an [OpenCode Go](https://opencode.ai) key in `~/.kenwise/.env` (other keys and subscription sign-in: [configuration](docs/configuration.md#accounts)):
 
 ```bash
 OPENCODE_API=...
