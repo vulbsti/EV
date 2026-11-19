@@ -115,7 +115,7 @@ body { background: #0a0d13; }
 .ev .fl { display: none; }
 .ev.view-chat.focus-all .fl-all, .ev.view-chat.focus-pricing .fl-pricing, .ev.view-chat.focus-onboard .fl-onboard, .ev.view-first .fl-first { display: inline; }
 .ev .unfocus { display: none; padding: 0; width: 40px; }
-.ev.view-chat:not(.focus-all) .unfocus { display: inline-flex; }
+.ev:not(.focus-all) .unfocus { display: inline-flex; }
 .ev.view-first .hide-first { display: none; }
 
 /* ---------- Conversation ---------- */
@@ -347,7 +347,7 @@ body { background: #0a0d13; }
 .ev .lnk { min-height: 32px; padding: 0 8px; border-radius: 8px; font-size: 12.5px; font-weight: 500; color: var(--ink2); }
 .ev .lnk:hover { color: var(--ink); background: rgb(var(--tint) / var(--ga)); }
 .ev.filter-said .mem:not(.m-said), .ev.filter-guess .mem:not(.m-guess), .ev.filter-relied .mem:not(.m-relied) { display: none; }
-.ev .when { font-size: 12px; color: var(--ink3); width: 76px; flex: none; }
+.ev .when { font-size: 12px; color: var(--ink3); min-width: 76px; flex: none; white-space: nowrap; }
 .ev .mem .card-h { margin-bottom: 2px; }
 .ev .mem p .badge { margin-left: 6px; height: 20px; font-size: 11px; vertical-align: 1px; }
 
@@ -389,6 +389,13 @@ body { background: #0a0d13; }
 .ev .results, .ev.search-yes .browse { display: none; }
 .ev.search-yes .results { display: flex; }
 .ev .results .row-m { gap: 3px; }
+.ev .results-list { display: flex; flex-direction: column; gap: 2px; }
+.ev .organise { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 10px 12px 4px; font-size: 12.5px; color: var(--ink3); }
+.ev .organise .lnk { font-size: 12.5px; }
+.ev .loose { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 14px; }
+.ev .loose .prow { min-height: 44px; padding: 4px 0; flex: 1; }
+.ev .loose .prow:hover { background: none; }
+.ev .loose select { flex: none; max-width: 40%; min-height: 32px; border-radius: 10px; border: 1px solid rgb(var(--edge) / var(--ea)); background: rgb(var(--tint) / calc(var(--ga) * .8)); color: var(--ink2); font: inherit; font-size: 12.5px; padding: 0 6px; }
 .ev mark { background: color-mix(in oklch, var(--accent) 30%, transparent); color: inherit; border-radius: 4px; padding: 0 2px; }
 
 /* ---------- Side rail layout ---------- */
@@ -477,7 +484,7 @@ body { background: #0a0d13; }
 .ev .hist + .hist { border-top: 1px solid rgb(var(--edge) / calc(var(--ea) * .6)); }
 .ev .hist summary { display: flex; gap: 12px; align-items: baseline; padding: 12px 14px; cursor: pointer; list-style: none; }
 .ev .hist summary::-webkit-details-marker { display: none; }
-.ev .hist ul { margin: 0; padding: 0 14px 12px 102px; list-style: none; font-size: 12.5px; color: var(--ink2); display: flex; flex-direction: column; gap: 4px; }
+.ev .hist ul { margin: 0; padding: 0 14px 12px 14px; list-style: none; font-size: 12.5px; color: var(--ink2); display: flex; flex-direction: column; gap: 4px; }
 .ev .find input::-webkit-search-cancel-button { display: none; }
 .ev .hit { cursor: default; }
 .ev button.hit { cursor: pointer; }

@@ -10,15 +10,18 @@
   <link rel="stylesheet" href="assistant.css">
 </head>
 <body>
-<div id="ev" class="ev theme-aurora accent-sky glass-frosted layout-column density-cosy font-sans">
+<div id="ev" class="ev focus-all theme-aurora accent-sky glass-frosted layout-column density-cosy font-sans">
   <div class="bg" aria-hidden="true"></div>
 
   <header class="top">
     <div class="pill glass">
-      <button id="open-find" class="pbtn" type="button" aria-label="Search everything said and done">
+      <button id="open-find" class="pbtn" type="button" aria-label="Threads of work and search">
         <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><circle class="pupil" cx="14.6" cy="9.4" r="2.3"></circle></svg>
-        <span class="title">KenWise</span>
+        <span id="focus-title" class="title">KenWise</span>
         <svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+      </button>
+      <button id="unfocus" class="pbtn unfocus" type="button" aria-label="Back to everything">
+        <svg class="ic sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
       </button>
     </div>
     <nav class="pill glass" aria-label="KenWise">
@@ -38,6 +41,7 @@
 
   <main id="stream" class="stream" aria-label="Conversation with KenWise">
     <div id="col" class="col">
+      <p id="focusnote" class="note focusnote">Only what belongs to this work, gathered across days. It is still the one conversation, so anything you say here reaches me as usual.</p>
       <button id="earlier" class="earlier" type="button" hidden>Earlier</button>
     </div>
   </main>
@@ -63,7 +67,7 @@
 
   <button id="scrim" class="scrim" type="button" aria-label="Close" tabindex="-1"></button>
 
-  <aside id="sheet-find" class="sheet sh-find" aria-label="Search">
+  <aside id="sheet-find" class="sheet sh-find" aria-label="Threads of work and search">
     <div class="find">
       <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-3.8-3.8"></path></svg>
       <input id="find-input" type="search" aria-label="Search everything said and done" placeholder="Search everything said and done" autocomplete="off">
@@ -72,8 +76,11 @@
       </button>
     </div>
     <div class="plist">
-      <p id="find-note" class="lede pad">One conversation, always. Search what was said, the work, and what I remember.</p>
-      <div id="find-results" class="results" style="display:flex"></div>
+      <div id="find-browse" class="browse"></div>
+      <div class="results">
+        <p id="find-note" class="note pad" role="status"></p>
+        <div id="find-results" class="results-list"></div>
+      </div>
     </div>
   </aside>
 

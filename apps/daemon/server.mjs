@@ -19,6 +19,7 @@ import { ModelRelay } from "./lib/model-relay.mjs";
 import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView } from "./lib/ev-memory.mjs";
+import { Threads } from "./lib/threads.mjs";
 import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
 import { StandingResponsibilityStore } from "./lib/standing-responsibility.mjs";
 import { StandingResponsibilityRunner } from "./lib/standing-runner.mjs";
@@ -50,6 +51,15 @@ const assistantOwnerId = "default-person";
 // left unanalysed by a restart.
 const memoryLearner = new MemoryLearner({ memory: assistantMemory, ownerId: assistantOwnerId });
 memoryLearner.kick();
+// Files each new message into the threads of work in the background, and
+// organises the threads every EV_REGROUP_EVERY or when asked. Never awaited by a turn.
+const threadsEngine = new Threads({
+  store,
+  lookups: lookups({ store, supervisor: assistantSupervisor, memory: assistantMemory }),
+  profile: () => memoryView(assistantMemory, assistantOwnerId, { audience: "ev" }).text
+});
+threadsEngine.kick();
+const facts = threadsEngine.facts;
 // Agents reach their model through EV, so no key enters their container.
 const modelRelay = await new ModelRelay({ connections }).start();
 const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait });
@@ -173,8 +183,12 @@ async function publicResponsibility(responsibility) {
  * where it belongs.
  */
 function publicMessage({ intent, ...message }) {
+<<<<<<< HEAD
   // toAgent: typed straight to one piece of work's agent in the pane, not to EV.
   return { ...message, status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", toAgent: Boolean(message.clientMessageId?.startsWith("pane:")) };
+=======
+  return { ...message, status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", threads: facts.messageThreads(message.messageId) };
+>>>>>>> origin/main
 }
 
 /** Whether EV is thinking: something waits in this conversation's inbox. */
@@ -261,8 +275,10 @@ async function streamChange(conversationId, after) {
   }
   const live = [...liveIds].filter((id) => !workIds.has(id)).map((id) => assistantSupervisor.live(id));
   const seq = events.at(-1).seq;
-  if (!messages.size && !tasks.length && !live.length && !steps.length && !look) return { seq, data: null };
-  return { seq, data: { messages: [...messages.values()], tasks, ...(steps.length ? { steps } : {}), ...(live.length ? { live } : {}), thinking: thinkingIn(conversationId), ...(look ? { look: store.setting("look") } : {}) } };
+  // Something was filed or the threads were organised: the page reads the list of threads again.
+  const threadsChanged = events.some((event) => event.type === "filed" || event.type === "regrouped");
+  if (!messages.size && !tasks.length && !live.length && !steps.length && !look && !threadsChanged) return { seq, data: null };
+  return { seq, data: { messages: [...messages.values()], tasks, ...(steps.length ? { steps } : {}), ...(live.length ? { live } : {}), thinking: thinkingIn(conversationId), ...(look ? { look: store.setting("look") } : {}), ...(threadsChanged ? { threadsChanged } : {}) } };
 }
 
 /**
@@ -408,7 +424,8 @@ async function handleItem(item) {
   const work = await workList(conversationId);
   const turn = createTurn({
     store, supervisor: assistantSupervisor, workers: assistantWorkers, memory: assistantMemory, ownerId: assistantOwnerId, item,
-    newWork: (spec) => newWork({ ...spec, conversationId, message })
+    newWork: (spec) => newWork({ ...spec, conversationId, message }),
+    regroup: (note) => { void threadsEngine.regroup({ why: "asked", note }); }
   });
   let closing;
   try {
@@ -477,8 +494,72 @@ async function drainInbox(conversationId) {
         catch (failure) { console.error(`[${new Date().toISOString()}] Inbox for ${conversationId} stopped: ${failure.message}`); return; }
       }
       memoryLearner.kick();
+      threadsEngine.kick();
     }
   } finally { handling.delete(conversationId); }
+}
+
+/** A short line of an item, in the person's own words where it has them. */
+function itemText(row) {
+  const key = row.item.slice(row.item.indexOf(":") + 1);
+  if (row.kind === "message") return { messageId: key, conversationId: row.conversation_id, sequence: store.db.prepare("SELECT seq FROM messages WHERE message_id = ?").get(key)?.seq ?? null, text: store.db.prepare("SELECT content FROM messages WHERE message_id = ?").get(key)?.content.slice(0, 240) ?? "" };
+  if (row.kind === "work") return { workId: key, text: JSON.parse(store.db.prepare("SELECT input_json FROM work WHERE work_id = ?").get(key)?.input_json ?? "{}")?.metadata?.title ?? "Work" };
+  const session = store.db.prepare("SELECT tool, project FROM outside_sessions WHERE session_id = ?").get(key);
+  return { text: `A ${session?.tool === "claude-code" ? "Claude Code" : session?.tool ?? "outside"} session${session?.project ? ` in ${session.project}` : ""}` };
+}
+
+const inThread = "EXISTS (SELECT 1 FROM thread_links t WHERE t.item = x.item AND t.thread_id = ?)";
+
+/** One thread as the list shows it: its card, when things happened in it, and where its work stands. */
+function threadSummary(thread) {
+  const items = facts.items(inThread, [thread.threadId]);
+  const work = items.filter((row) => row.kind === "work").map((row) => {
+    const work = store.db.prepare("SELECT status, input_json FROM work WHERE work_id = ?").get(row.item.slice(5));
+    return { taskId: row.item.slice(5), title: JSON.parse(work.input_json)?.metadata?.title ?? "Work", status: work.status };
+  });
+  const days = [...new Set(items.map((row) => row.at.slice(0, 10)))].sort().reverse().slice(0, 4);
+  return { ...thread, count: items.length, firstAt: items[0]?.at ?? null, lastAt: items.at(-1)?.at ?? null, days, work };
+}
+
+/** The list of threads of work, what is not grouped yet, and the latest organise run. */
+function threadsView() {
+  const threads = facts.liveThreads().map(threadSummary)
+    .sort((a, b) => Number(a.quiet) - Number(b.quiet) || String(b.lastAt).localeCompare(String(a.lastAt)));
+  const loose = facts.items(facts.unlinked).reverse();
+  const last = store.db.prepare("SELECT * FROM regroups ORDER BY at DESC, rowid DESC LIMIT 1").get();
+  const due = threadsEngine.dueAt();
+  return {
+    threads,
+    notGrouped: { count: loose.length, items: loose.slice(0, 50).map((row) => ({ item: row.item, kind: row.kind, at: row.at, gist: row.gist, ...itemText(row) })) },
+    lastRegroup: last ? { regroupId: last.regroup_id, at: last.at, why: last.why, summary: last.summary, undone: Boolean(last.undone_at) } : null,
+    collecting: !last,
+    nextRegroupAt: due ? new Date(due).toISOString() : null
+  };
+}
+
+/** Everything in one thread across days: its messages (with EV's answers and its updates) and its work. */
+async function threadView(threadId) {
+  const id = facts.live(threadId);
+  const thread = id && facts.thread(id);
+  if (!thread) throw Object.assign(new Error("No such thread"), { statusCode: 404, code: "THREAD_NOT_FOUND" });
+  const ids = store.db.prepare(`
+    SELECT m.message_id FROM messages m WHERE
+      m.message_id IN (SELECT substr(item, 9) FROM thread_links WHERE thread_id = ?1 AND item LIKE 'message:%')
+      OR m.reply_to IN (SELECT substr(item, 9) FROM thread_links WHERE thread_id = ?1 AND item LIKE 'message:%')
+      OR (m.role = 'assistant' AND m.reply_to IS NULL AND EXISTS (SELECT 1 FROM message_work mw JOIN thread_links t ON t.item = 'work:' || mw.work_id WHERE mw.message_id = m.message_id AND t.thread_id = ?1))
+    ORDER BY m.at DESC LIMIT 300
+  `).all(id).map((row) => row.message_id);
+  const messages = store.messagesByIds(ids).map(publicMessage);
+  const workIds = new Set([
+    ...facts.items(inThread, [id]).filter((row) => row.kind === "work").map((row) => row.item.slice(5)),
+    ...messages.flatMap((message) => message.work.map((link) => link.taskId))
+  ]);
+  const tasks = [];
+  for (const workId of workIds) {
+    const task = await assistantSupervisor.getTask(workId).catch(() => null);
+    if (task) tasks.push(streamedTask(task));
+  }
+  return { thread: threadSummary(thread), messages, tasks, earlier: ids.length === 300 };
 }
 
 async function readBody(request, limit) {
@@ -558,7 +639,10 @@ async function handleApi(request, response, url) {
     if (url.searchParams.has("before")) {
       const before = Number(url.searchParams.get("before"));
       if (!Number.isInteger(before) || before < 1) throw Object.assign(new Error("before must be a positive integer"), { statusCode: 400 });
-      const messages = store.messagesBefore(conversationId, before, 100);
+      // ?from= loads every message from that position on, so the page can open the conversation at any point without a gap.
+      const from = url.searchParams.has("from") ? Number(url.searchParams.get("from")) : null;
+      if (from !== null && (!Number.isInteger(from) || from < 1 || from >= before)) throw Object.assign(new Error("from must be a positive integer below before"), { statusCode: 400 });
+      const messages = store.messagesBefore(conversationId, before, from === null ? 100 : Math.min(before - from, 5_000));
       const earlier = messages.length ? store.messagesBefore(conversationId, messages[0].sequence, 1).length > 0 : false;
       return json(response, 200, { conversationId, messages: messages.map(publicMessage), earlier });
     }
@@ -719,12 +803,36 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/search") {
     const query = String(url.searchParams.get("q") ?? "").slice(0, 500);
-    return json(response, 200, { query, hits: lookups({ store, supervisor: assistantSupervisor, memory: assistantMemory }).search(query, { limit: 20 }) });
+    const thread = url.searchParams.get("thread");
+    return json(response, 200, { query, hits: lookups({ store, supervisor: assistantSupervisor, memory: assistantMemory }).search(query, { limit: 30, mark: true, thread }) });
+  }
+  if (request.method === "GET" && url.pathname === "/api/assistant/threads") {
+    return json(response, 200, threadsView());
+  }
+  if (request.method === "GET" && url.pathname.startsWith("/api/assistant/threads/")) {
+    return json(response, 200, await threadView(decodeURIComponent(url.pathname.slice("/api/assistant/threads/".length))));
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/threads/move") {
+    const body = await readJson(request);
+    const item = String(body.item ?? "");
+    if (!/^(message|work|import):[A-Za-z0-9._:-]{1,128}$/.test(item)) throw Object.assign(new Error("item must be message:…, work:… or import:…"), { statusCode: 400 });
+    return json(response, 200, threadsEngine.move(item, body.to === null || body.to === undefined ? null : String(body.to)));
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/threads/regroup") {
+    const body = await readJson(request);
+    void threadsEngine.regroup({ why: "asked", note: String(body.note ?? "").slice(0, 1_000) });
+    return json(response, 202, { started: true });
+  }
+  if (request.method === "POST" && url.pathname === "/api/assistant/threads/undo") {
+    const body = await readJson(request);
+    return json(response, 200, threadsEngine.undo(String(body.regroupId ?? "")));
   }
   if (request.method === "POST" && url.pathname === "/api/assistant/import") {
     // Reads the path on this machine, the one EV runs on.
     const body = await readJson(request);
-    return json(response, 200, importSessions(store, { source: body?.source, path: body?.path }));
+    const imported = importSessions(store, { source: body?.source, path: body?.path });
+    threadsEngine.kick();
+    return json(response, 200, imported);
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/memory") {
     const scope = url.searchParams.get("scope") ?? "global";
@@ -779,6 +887,7 @@ async function handleApi(request, response, url) {
     }
     if (action === "erase") {
       const tombstone = assistantMemory.erase({ ownerId: assistantOwnerId, targetType: "claim", targetId: claimId, scope: body.scope ?? null });
+      threadsEngine.kick(); // a thread that held what was erased is renamed soon
       return json(response, 200, { tombstone });
     }
     throw Object.assign(new Error("action must be remember, correct, stop_use, or erase"), { statusCode: 400 });
@@ -876,6 +985,9 @@ const server = createServer(async (request, response) => {
       UNSUPPORTED_TASK_COMMAND: 400,
       ARTIFACT_NOT_FOUND: 404,
       TASK_REVISION_CONFLICT: 409,
+      ITEM_NOT_FOUND: 404,
+      THREAD_NOT_FOUND: 404,
+      REGROUP_NOT_UNDOABLE: 409,
       COMMAND_ID_CONFLICT: 409,
       CAPABILITY_NOT_ALLOWED: 400,
       INVALID_ARTIFACT_ID: 400,
@@ -910,6 +1022,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     if (stopping) return;
     stopping = true;
     standingScheduler.stop();
+    threadsEngine.stop();
     for (const stream of streams) stream.end();
     await assistantWorkers.shutdown().catch((error) => console.error(`Worker shutdown failed: ${error.message}`));
     store.close();
