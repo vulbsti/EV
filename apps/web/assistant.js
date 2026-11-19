@@ -181,6 +181,17 @@ function dayLabel(iso) {
   const sameYear = date.getFullYear() === new Date().getFullYear();
   return date.toLocaleDateString(undefined, { day: "numeric", month: "long", ...(sameYear ? {} : { year: "numeric" }) });
 }
+// A time to come, written as the daemon writes it in the conversation: "12:55 AM", "tomorrow 12:55 AM", "Sat 22 Nov 12:55 AM".
+const HOUR12 = Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions().hour12 === true;
+function untilLabel(iso) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "";
+  const time = HOUR12 ? date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  const days = Math.round((startOfDay(date) - startOfDay(new Date())) / 86_400_000);
+  if (days <= 0) return time;
+  if (days === 1) return `tomorrow ${time}`;
+  return `${date.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })} ${time}`;
+}
 function shortWhen(iso) {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return "";
@@ -877,6 +888,7 @@ function applySnapshot(data) {
   thinking = Boolean(data.thinking);
   earlier = Boolean(data.earlier);
   takeLook(data.look);
+  takeHeld(data.held ?? null);
   loaded = true;
   render();
   toBottom();
@@ -896,6 +908,7 @@ function applyChange(data) {
   takeSteps(data.steps ?? []);
   if (typeof data.thinking === "boolean") thinking = data.thinking;
   if (data.look) takeLook(data.look);
+  if ("held" in data) takeHeld(data.held);
   render();
 }
 
@@ -1848,7 +1861,7 @@ $("limit-allow").addEventListener("click", () => void accountsAct(() => setupCal
 // The person's time zone, so every time KenWise tells them is in their own time.
 try {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (timeZone) void fetch("/api/assistant/setup/time-zone", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeZone }) }).catch(() => {});
+  if (timeZone) void fetch("/api/assistant/setup/time-zone", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeZone, hour12: HOUR12 }) }).catch(() => {});
 } catch {}
 
 // ---------- Settings: accounts ----------
@@ -1872,12 +1885,15 @@ function accountLine(connection) {
   const several = setup.connections.filter((other) => other.provider === connection.provider).length > 1;
   const inUse = several ? (connection.active ? ". In use" : "") : "";
   let state;
-  if (connection.status === "needs-sign-in") {
+  const covered = setup.connections.some((other) => other.provider === connection.provider && other.id !== connection.id && usableNow(other));
+  if (connection.status === "needs-sign-in" && covered) {
+    state = `<span class="state"><span class="dot"></span>Not used</span>`;
+  } else if (connection.status === "needs-sign-in") {
     state = connection.method === "oauth"
       ? `<button class="btn" type="button" data-resign="${escapeHtml(connection.provider)}">Sign in again</button>`
       : `<button class="btn" type="button" data-rekey="${escapeHtml(connection.provider)}">Paste a new key</button>`;
   } else if (!usableNow(connection)) {
-    state = `<span class="state st-you"><span class="dot"></span>Limited until ${escapeHtml(shortWhen(connection.until))}</span>`;
+    state = `<span class="state st-you"><span class="dot"></span>Limited until ${escapeHtml(untilLabel(connection.until))}</span>`;
   } else state = `<span class="state st-done"><span class="dot"></span>Ready</span>`;
   const why = connection.status === "needs-sign-in" ? (connection.method === "oauth" ? ". The sign-in ran out" : ". The key is no longer accepted") : "";
   const stored = !connection.source && connection.method !== "env";
@@ -1905,21 +1921,29 @@ function renderAccounts() {
   renderResting();
 }
 
-/** The bar under the conversation when no account can be used: when it carries on, and a way to the accounts. */
+// What the daemon says a held message waits for (null when nothing is held). It comes with the conversation's stream.
+let heldNow = null;
+function takeHeld(value) { heldNow = value && value.reason ? value : null; renderResting(); }
+
+/** The bar under the conversation while a message is held: what it waits for, and the say-so when paying could carry on. */
 function renderResting() {
-  const list = setup.connections;
-  root.classList.toggle("view-first", loadedSetup && !list.length);
-  const resting = list.length > 0 && !list.some(usableNow);
-  root.classList.toggle("model-waiting", resting);
-  if (!resting) return;
-  const resets = list.filter((connection) => connection.status === "limited" && connection.until).map((connection) => connection.until).sort();
-  $("restbar-text").textContent = resets.length
-    ? `Every account is resting. I'll carry on at ${shortWhen(resets[0])}, and your messages are kept.`
-    : "Every account needs a new sign-in or key. Your messages are kept until then.";
+  root.classList.toggle("view-first", loadedSetup && !setup.connections.length);
+  root.classList.toggle("model-waiting", Boolean(heldNow));
+  if (!heldNow) return;
+  const { reason, account, until, paid, capUsd } = heldNow;
+  $("restbar-text").textContent = reason === "cap"
+    ? `I'm holding your message: answering would go past your monthly cap of $${capUsd}.`
+    : reason === "limited"
+      ? `I'm holding your message until ${until ? untilLabel(until) : `your ${account} account is back`}.${paid ? ` Your ${paid} account could carry on now, paid per token.` : ""}`
+      : reason === "needs-sign-in"
+        ? `I'm holding your message until ${account} is signed in again.${paid ? ` Your ${paid} account could carry on now, paid per token.` : ""}`
+        : "I'm holding your message until an account is added.";
+  const allow = $("restbar-allow");
+  allow.hidden = !(paid || reason === "cap");
+  allow.textContent = reason === "cap" ? "Go past the cap" : `Use ${paid}`;
 }
 
 let loadedSetup = false;
-let setupTimer = null;
 async function loadAccounts() {
   try {
     setup = await setupCall("");
@@ -1929,10 +1953,6 @@ async function loadAccounts() {
     renderLimit(limit);
     $("accounts-status").textContent = "";
   } catch (error) { $("accounts-status").textContent = `Could not load your accounts: ${error.message}`; }
-  // Looked at again when the earliest limit should have passed, and once a minute meanwhile.
-  clearTimeout(setupTimer);
-  const next = setup.connections.filter((connection) => connection.status === "limited" && connection.until).map((connection) => Date.parse(connection.until) - Date.now() + 1_000).filter((ms) => ms > 0);
-  setupTimer = setTimeout(() => void loadAccounts(), Math.min(60_000, ...next));
 }
 
 async function accountsAct(run) {
@@ -2062,6 +2082,11 @@ for (const button of document.querySelectorAll("[data-first]")) button.addEventL
   openSheet("sheet-settings", event.currentTarget);
   settingsTab("accounts");
   addMode(button.dataset.first);
+});
+// The person's say-so: paid routes may carry on until the accounts out of use now are back (past the cap too).
+$("restbar-allow").addEventListener("click", (event) => {
+  event.currentTarget.disabled = true;
+  void setupCall("/limit/allow", { method: "POST", body: {} }).catch((error) => showStatus(error.message)).finally(() => { $("restbar-allow").disabled = false; });
 });
 $("restbar-open").addEventListener("click", (event) => { openSheet("sheet-settings", event.currentTarget); settingsTab("accounts"); });
 void loadAccounts();

@@ -29,9 +29,9 @@ The same model is often served by several of your accounts: Haiku 5.5 through Op
 | `POST /api/assistant/setup/guide/undo` `{change}` | Undoes one change |
 | `POST /api/assistant/setup/guide/run` | Runs the analysis now |
 | `POST /api/assistant/setup/guide/off` `{model, off}` | Switches a model off, or back on |
-| `POST /api/assistant/setup/time-zone` `{timeZone}` | The page reports the browser's time zone (an IANA name); every time KenWise tells you, and the time in its own prompt, is in it. Until a page reports one, times are in UTC and say so |
+| `POST /api/assistant/setup/time-zone` `{timeZone, hour12?}` | The page reports the browser's time zone (an IANA name) and clock style; every time KenWise tells you, and the time in its own prompt, is in them. Until a page reports one, times are in UTC and say so |
 
-The page shows the guide under Settings, Models, and the accounts, sign-ins and the limit setting under Settings, Accounts. With no account at all, the page opens on a first-run screen; when every account is out of use, a bar under the conversation says when KenWise carries on.
+The page shows the guide under Settings, Models, and the accounts, sign-ins and the limit setting under Settings, Accounts. With no account at all, the page opens on a first-run screen. While a message is held for an account, a bar under the conversation says what it waits for (the conversation's stream carries this as `held`), and offers the paid route when one could carry on.
 
 An account that hits its usage limit is marked limited until its reset time, and one whose key stops being accepted is marked as needing a new sign-in. Neither is called until it is usable again. A message that needs a model meanwhile waits in its inbox and KenWise says so once; it is answered at the reset, or as soon as an account is added. Work in progress and the reviewer wait the same way without counting it as a failure.
 
