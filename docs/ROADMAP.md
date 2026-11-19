@@ -14,6 +14,7 @@ Where EV is going next, in rough order. The [status section](../README.md#status
 - **Reach you when you're away**, through one channel you choose. This also replaces the old GitHub pull-request watcher.
 - **All your sessions.** Pick up Claude Code sessions automatically, then Claude on the web, Codex and other tools, each as one small reader into the same store.
 - **A reviewer that can use a browser**, to check web work the way you would.
+- **A desktop app.** EV runs in your browser for now; the plan is a desktop app (Electron) around the same daemon.
 - **Windows**, after macOS and Linux are solid.
 
 Ideas and pull requests for any of these are welcome. Open an issue first for anything large, so we can agree on the shape.

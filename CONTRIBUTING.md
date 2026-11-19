@@ -24,7 +24,7 @@ npm test          # invariants, no model calls, a few seconds
 npm run verify    # the behaviours EV aims for, with a scripted model
 ```
 
-Run both before you open a pull request. CI runs them on Linux. `npm run verify` fails only when a behaviour that held before stops holding (`verify/baseline.json`), so a change may leave unbuilt behaviours open, but it may not break one that works. `npm run qa` and `npm run qa:arc` use a real model and cost money; you don't need them for most changes. If you change how EV understands, asks or reviews, say in the pull request what you ran and what it showed.
+Run both before you open a pull request. CI runs them, plus the installer, in one Linux job. `npm run verify` fails only when a behaviour that held before stops holding (`verify/baseline.json`), so a change may leave unbuilt behaviours open, but it may not break one that works. `npm run qa` and `npm run qa:arc` use a real model and cost money; you don't need them for most changes. If you change how EV understands, asks or reviews, say in the pull request what you ran and what it showed.
 
 ## How we decide what goes in
 

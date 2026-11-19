@@ -1,8 +1,7 @@
 name: CI
 
+# Kept to one small Linux job while EV is a prototype, to save Actions minutes.
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -15,43 +14,20 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.os }}, node ${{ matrix.node }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        node: ["22.19", "24"]
-        include:
-          - os: macos-latest
-            node: "24"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm test
-      - run: npm run verify
-
-  install:
-    name: install script (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
-      - run: bash -n install.sh bin/ev
-      - name: Install from this checkout
-        run: EV_REPO="$PWD" EV_HOME="$RUNNER_TEMP/ev" ./install.sh --no-image
-      - name: Start, check and stop the daemon
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run verify
+      - name: Installer and ev command
         run: |
+          EV_REPO="$PWD" EV_HOME="$RUNNER_TEMP/ev" ./install.sh --no-image
           ev="$HOME/.local/bin/ev"
           "$ev" start
           curl -fsS -o /dev/null "$("$ev" status | grep -o 'http://[^ ]*')"
