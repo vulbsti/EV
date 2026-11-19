@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ev: start, stop and open the EV daemon. Installed by install.sh as ~/.local/bin/ev.
+# kenwise: start, stop and open the Kenwise daemon. Installed by install.sh as ~/.local/bin/kenwise.
 set -euo pipefail
 
 self=$0
@@ -7,21 +7,21 @@ while [ -L "$self" ]; do
   target=$(readlink "$self")
   case $target in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
 done
-EV_HOME=$(cd "$(dirname "$self")/.." && pwd)
+KENWISE_HOME=$(cd "$(dirname "$self")/.." && pwd)
 
-# The daemon reads .env itself; ev only needs to know where it keeps its files and port.
+# The daemon reads .env itself; kenwise only needs to know where it keeps its files and port.
 setting() {
   local value=${!1:-}
-  if [ -z "$value" ] && [ -f "$EV_HOME/.env" ]; then
-    value=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$EV_HOME/.env" | tail -n 1 | tr -d "\"'")
+  if [ -z "$value" ] && [ -f "$KENWISE_HOME/.env" ]; then
+    value=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$KENWISE_HOME/.env" | tail -n 1 | tr -d "\"'")
   fi
   printf '%s' "${value:-$2}"
 }
-DATA=$(setting EV_DATA_DIR "$EV_HOME/data")
-case $DATA in /*) ;; *) DATA=$EV_HOME/$DATA ;; esac
+DATA=$(setting EV_DATA_DIR "$KENWISE_HOME/data")
+case $DATA in /*) ;; *) DATA=$KENWISE_HOME/$DATA ;; esac
 PORT=$(setting EV_PORT 4317)
-PID_FILE=$DATA/ev.pid
-LOG_FILE=$DATA/ev.log
+PID_FILE=$DATA/kenwise.pid
+LOG_FILE=$DATA/kenwise.log
 
 running_pid() {
   [ -f "$PID_FILE" ] || return 1
@@ -43,21 +43,21 @@ open_url() {
 }
 
 start() {
-  if pid=$(running_pid); then echo "EV is already running (pid $pid): $(url)"; return; fi
+  if pid=$(running_pid); then echo "Kenwise is already running (pid $pid): $(url)"; return; fi
   mkdir -p "$DATA"
   touch "$LOG_FILE"
   local from=$(( $(wc -l <"$LOG_FILE") + 1 ))
-  (cd "$EV_HOME" || exit 1; nohup node apps/daemon/server.mjs >>"$LOG_FILE" 2>&1 & echo $! >"$PID_FILE")
+  (cd "$KENWISE_HOME" || exit 1; nohup node apps/daemon/server.mjs >>"$LOG_FILE" 2>&1 & echo $! >"$PID_FILE")
   for _ in $(seq 1 50); do
     if tail -n "+$from" "$LOG_FILE" | grep -q "^EV: http"; then
-      echo "EV is running: $(url)"
-      echo "Logs: ev logs    Stop: ev stop"
+      echo "Kenwise is running: $(url)"
+      echo "Logs: kenwise logs    Stop: kenwise stop"
       return
     fi
     running_pid >/dev/null || break
     sleep 0.2
   done
-  echo "EV did not start. What it said ($LOG_FILE):" >&2
+  echo "Kenwise did not start. What it said ($LOG_FILE):" >&2
   tail -n "+$from" "$LOG_FILE" | tail -n 20 >&2
   exit 1
 }
@@ -66,9 +66,9 @@ stop() {
   if pid=$(running_pid); then
     kill "$pid"
     for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
-    echo "EV stopped."
+    echo "Kenwise stopped."
   else
-    echo "EV is not running."
+    echo "Kenwise is not running."
   fi
   rm -f "$PID_FILE"
 }
@@ -76,9 +76,9 @@ stop() {
 update() {
   local was_running=""
   running_pid >/dev/null && was_running=yes
-  git -C "$EV_HOME" pull --ff-only
-  (cd "$EV_HOME" && npm ci --omit=dev --no-audit --no-fund)
-  if docker info >/dev/null 2>&1; then (cd "$EV_HOME" && npm run --silent openclaw:image); fi
+  git -C "$KENWISE_HOME" pull --ff-only
+  (cd "$KENWISE_HOME" && npm ci --omit=dev --no-audit --no-fund)
+  if docker info >/dev/null 2>&1; then (cd "$KENWISE_HOME" && npm run --silent openclaw:image); fi
   if [ -n "$was_running" ]; then stop; start; fi
 }
 
@@ -86,27 +86,27 @@ case ${1:-help} in
   start) start ;;
   stop) stop ;;
   restart) stop; start ;;
-  status) if pid=$(running_pid); then echo "EV is running (pid $pid): $(url)"; else echo "EV is not running."; exit 1; fi ;;
+  status) if pid=$(running_pid); then echo "Kenwise is running (pid $pid): $(url)"; else echo "Kenwise is not running."; exit 1; fi ;;
   open) running_pid >/dev/null || start; open_url "$(url)" ;;
   logs) exec tail -n 50 -f "$LOG_FILE" ;;
-  run) cd "$EV_HOME" && exec node apps/daemon/server.mjs ;;
+  run) cd "$KENWISE_HOME" && exec node apps/daemon/server.mjs ;;
   update) update ;;
-  config) echo "$EV_HOME/.env" ;;
+  config) echo "$KENWISE_HOME/.env" ;;
   *)
     cat <<EOF
-Usage: ev <command>
+Usage: kenwise <command>
 
   start     start the daemon in the background and print its link
-  open      start it if needed and open EV in your browser
+  open      start it if needed and open Kenwise in your browser
   stop      stop the daemon (work in progress is kept and picked up on the next start)
   restart   stop, then start
   status    say whether it is running
   logs      follow the daemon's log
   run       run the daemon in this terminal instead
-  update    pull the latest EV, reinstall, rebuild the agent image, restart if it was running
+  update    pull the latest Kenwise, reinstall, rebuild the agent image, restart if it was running
   config    print the path of the settings file
 
-EV lives in $EV_HOME. Its data is in $DATA.
+Kenwise lives in $KENWISE_HOME. Its data is in $DATA.
 EOF
     ;;
 esac

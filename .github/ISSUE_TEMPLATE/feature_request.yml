@@ -1,5 +1,5 @@
 name: Idea
-description: Suggest something EV should do or do differently.
+description: Suggest something Kenwise should do or do differently.
 labels: [enhancement]
 body:
   - type: textarea

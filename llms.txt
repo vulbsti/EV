@@ -1,0 +1,18 @@
+# Kenwise
+
+> Kenwise is an open-source personal AI assistant that understands what you mean before it acts. One model reads every message with what it knows about you (memory, a dated history, the work under way), asks only what it can't settle while stating its assumptions, then hands the job to OpenClaw agents running in docker. A reviewer checks each result against what you meant and sends it back until it is right. Everything is stored locally in one SQLite file with full-text search. It runs as a local daemon on macOS and Linux with Node.js 22.19+. It was called EV during development; code and settings (`EV_*`) still use that name.
+
+## Docs
+
+- [README](README.md): what it is, status, install, how it works
+- [Configuration](docs/configuration.md): every setting, what it keeps and where, importing Claude Code sessions
+- [How a message becomes work](docs/assistant/OPENCLAW_POC.md): the inbox, tools, work states, review loop
+- [Memory](docs/assistant/MEMORY_TYPES.md): memory kinds, said versus guessed, history, forgetting
+- [Behaviours](verify/BEHAVIOURS.md): what it is meant to do, checked by `npm run verify`
+- [Roadmap](docs/ROADMAP.md)
+
+## Contributing
+
+- [AGENTS.md](AGENTS.md): rules and invariants for coding agents working on this repo
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [SECURITY.md](SECURITY.md)

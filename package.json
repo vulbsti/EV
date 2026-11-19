@@ -1,9 +1,9 @@
 {
-  "name": "ev",
+  "name": "kenwise",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "EV: an assistant that understands the person first, then coordinates agents that work for them",
+  "description": "Kenwise: a personal AI assistant that understands what you mean first, then coordinates agents that work for you",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -22,5 +22,15 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "1.5.2"
-  }
+  },
+  "keywords": [
+    "personal-assistant",
+    "ai-assistant",
+    "ai-agents",
+    "multi-agent",
+    "theory-of-mind",
+    "long-term-memory",
+    "local-first",
+    "openclaw"
+  ]
 }

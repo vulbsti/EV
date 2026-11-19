@@ -1,5 +1,5 @@
 name: Bug report
-description: EV crashed, lost something, or the install or a command failed.
+description: Kenwise crashed, lost something, or the install or a command failed.
 labels: [bug]
 body:
   - type: markdown
@@ -9,8 +9,8 @@ body:
   - type: input
     id: commit
     attributes:
-      label: EV commit
-      description: Output of `git -C ~/.ev rev-parse --short HEAD`.
+      label: Kenwise commit
+      description: Output of `git -C ~/.kenwise rev-parse --short HEAD`.
     validations:
       required: true
   - type: input
@@ -36,5 +36,5 @@ body:
     id: logs
     attributes:
       label: Log
-      description: The relevant part of `ev logs` (or `~/.ev/data/ev.log`).
+      description: The relevant part of `kenwise logs` (or `~/.kenwise/data/kenwise.log`).
       render: text

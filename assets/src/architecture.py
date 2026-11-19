@@ -22,14 +22,14 @@ def svg(t):
             o.append(f'<text x="{lx}" y="{ly}" font-size="12" fill="{t["muted"]}" text-anchor="{anchor}">{label}</text>')
 
     box(20, 40, 150, 100, "You", ["say it roughly,", "in one conversation"], t["box"], t["stroke"])
-    box(250, 20, 300, 160, "EV", ["reads every message with what it", "knows about you and the work", "under way, looks up anything else,", "then acts through tools: reply, ask,", "start work, tell or hold work, remember"], t["ev"], t["evs"])
+    box(250, 20, 300, 160, "Kenwise", ["reads every message with what it", "knows about you and the work", "under way, looks up anything else,", "then acts through tools: reply, ask,", "start work, tell or hold work, remember"], t["ev"], t["evs"])
     box(630, 20, 230, 160, "Work", ["OpenClaw agents, each in", "its own container and folder,", "keeping session and files", "", "reviewer opens the result and", ""], t["work"], t["works"])
     o.append(f'<text x="646" y="172" font-size="13" fill="{t["muted"]}">sends it back until it is right</text>')
     box(250, 250, 300, 100, "Learner", ["turns what happened into memory:", "said vs guessed, with evidence,", "and a dated history"], t["mem"], t["mems"])
     box(20, 250, 150, 100, "Importers", ["your Claude Code", "sessions"], t["box"], t["stroke"])
     o.append(f'<rect x="20" y="390" width="840" height="60" rx="12" fill="{t["box"]}" stroke="{t["stroke"]}" stroke-width="1.5"/>')
     o.append(f'<text x="440" y="416" font-size="15" font-weight="600" fill="{t["fg"]}" text-anchor="middle">One store on your machine</text>')
-    o.append(f'<text x="440" y="436" font-size="13" fill="{t["muted"]}" text-anchor="middle">SQLite, files and one full-text index that EV, agents and the reviewer all search; forget removes from all of it</text>')
+    o.append(f'<text x="440" y="436" font-size="13" fill="{t["muted"]}" text-anchor="middle">SQLite, files and one full-text index that Kenwise, agents and the reviewer all search; forget removes from all of it</text>')
 
     arrow(170, 75, 248, 75, "message", 209, 68)
     arrow(248, 115, 172, 115, "reply, ask", 209, 132)
