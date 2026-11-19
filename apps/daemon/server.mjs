@@ -16,6 +16,7 @@ import { currentRoutes, sessionHeader, tryKey, useConnections } from "./lib/ev-m
 import { Connections } from "./lib/connections.mjs";
 import { SignIns } from "./lib/sign-in.mjs";
 import { ModelRelay } from "./lib/model-relay.mjs";
+import { ModelGuide } from "./lib/model-guide.mjs";
 import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView, rightNow } from "./lib/ev-memory.mjs";
@@ -77,7 +78,9 @@ const modelRelay = await new ModelRelay({
     store.tx(() => store.event({ type: "step", workId: taskId, data: { id: `route:${at}`, kind: "route", label, route: to, startedAt: at, endedAt: at } }));
   }
 }).start();
-const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait });
+// What EV reads to choose each piece of work's model, and how work and its reviewer get theirs.
+const modelGuide = new ModelGuide({ routes: currentRoutes(), store });
+const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait, models: modelGuide });
 await assistantWorkers.start();
 const standingStore = StandingResponsibilityStore.open({ store });
 const githubStandingConnector = new GitHubPullRequestConnector();
@@ -132,6 +135,8 @@ function publicTask(task) {
     brief: task.input?.metadata?.brief ?? null,
     request: task.input?.metadata?.sourceRequest ?? null,
     parentTaskId: task.input?.metadata?.parentTaskId ?? null,
+    // EV's choice of model, with its reasons; live.model says what it runs on now.
+    model: task.input?.metadata?.model ?? null,
     live: assistantSupervisor.live(task.taskId),
     reviews: task.history.filter((event) => event.type === "review").map(({ round, verdict, summary, missing }) => ({ round, verdict, summary, missing })),
     history: task.history
@@ -382,7 +387,7 @@ function postTaskUpdate(task) {
  * what the agent needs to know about the person and the conversation.
  * Nothing is stored until the turn commits.
  */
-function newWork({ taskId, conversationId, message, title, request, notes = [] }) {
+function newWork({ taskId, conversationId, message, title, request, notes = [], model = null }) {
   // Only what EV named for this work, never the portrait or the whole profile.
   const known = memoryView(assistantMemory, assistantOwnerId, { audience: "agents", notes });
   const forReview = memoryView(assistantMemory, assistantOwnerId, { audience: "reviewer", notes });
@@ -410,7 +415,7 @@ function newWork({ taskId, conversationId, message, title, request, notes = [] }
     "# EV's brief",
     request
   ].join("\n\n");
-  const metadata = { conversationId, title, sourceRequest: request, literalAsk, contextManifestId: manifest.manifestId, reviewerMemory: forReview.text, briefed: true };
+  const metadata = { conversationId, title, sourceRequest: request, literalAsk, contextManifestId: manifest.manifestId, reviewerMemory: forReview.text, briefed: true, ...(model ? { model } : {}) };
   return assistantWorkers.newTask({
     taskId, capability: "openclaw-general-v1", layout: "shared", context, metadata,
     prompt: executionPrompt({ request, brief: workBrief(metadata) })
@@ -438,12 +443,13 @@ async function handleItem(item) {
   const turn = createTurn({
     store, supervisor: assistantSupervisor, workers: assistantWorkers, memory: assistantMemory, ownerId: assistantOwnerId, item,
     newWork: (spec) => newWork({ ...spec, conversationId, message }),
+    models: modelGuide,
     regroup: (note) => { void threadsEngine.regroup({ why: "asked", note }); }
   });
   let closing;
   try {
     ({ text: closing } = await takeTurn({
-      prompt: turnPrompt({ portrait: portraitView(store), profile: memoryView(assistantMemory, assistantOwnerId, { audience: "ev" }).text, history: historyView(assistantMemory), recent: recentConversation(conversationId, message.sequence), work, message: message.content }),
+      prompt: turnPrompt({ portrait: portraitView(store), profile: memoryView(assistantMemory, assistantOwnerId, { audience: "ev" }).text, history: historyView(assistantMemory), recent: recentConversation(conversationId, message.sequence), work, models: modelGuide.text(), message: message.content }),
       run: turn.run,
       session: sessionHeader(`ev:${message.messageId}`)
     }));

@@ -216,9 +216,12 @@ export class AssistantWorkerService {
     openClawSandbox = process.env.EV_OPENCLAW_SANDBOX === "host" ? null : { image: process.env.EV_OPENCLAW_IMAGE || "ev-openclaw" },
     // How agents reach their model without a key (model-relay.mjs).
     relay = null,
-    // What the agents' model account waits for, or null when it is usable
-    // (the daemon passes workerAccountWait).
-    accountWait = () => null
+    // What an agent's model waits for, or null when it is usable (the
+    // daemon passes workerAccountWait).
+    accountWait = () => null,
+    // The model a piece of work runs on, and the one its reviewer uses
+    // (model-guide.mjs: EV's choice for the work). Null means the defaults.
+    models = null
   }) {
     if (!supervisor) throw codedError("INVALID_SERVICE", "supervisor is required");
     if (typeof workerRoot !== "string" || !workerRoot) throw codedError("INVALID_SERVICE", "workerRoot is required");
@@ -239,6 +242,7 @@ export class AssistantWorkerService {
     this.openClawSandbox = openClawSandbox;
     this.relay = relay;
     this.accountWait = accountWait;
+    this.models = models;
     this.activeRuns = new Map();
     this.reviewer = reviewer;
     this.maxConcurrentWorkers = Math.max(1, Math.min(8, Number(maxConcurrentWorkers) || 3));
@@ -251,6 +255,7 @@ export class AssistantWorkerService {
     this.adapterFactory = adapterFactory ?? (({ profile, task, workspacePath, sessionDir, contextPath }) => profile.capability === "openclaw-general-v1"
       ? new OpenClawWorkerAdapter({
         taskId: task.taskId, workspacePath, sessionDir, stallMs: this.stallMs, homeDir: this._home(task.taskId), relay: this.relay,
+        ...(this.models ? { model: this.models.forWork(task) } : {}),
         sandbox: this.openClawSandbox && { ...this.openClawSandbox, mountRoot: task.input.sharedWorkspace ? resolve(this.workspaceRoot, dirname(task.input.sharedWorkspace)) : workspacePath }
       })
       : new PiWorkerAdapter({
@@ -649,7 +654,7 @@ export class AssistantWorkerService {
       if (active.stopRequested || active.shutdownRequested) break;
       // The agent stopped because its model account is limited or signed
       // out: the work waits for the account, and that is not a restart.
-      const wait = this.accountWait();
+      const wait = this.accountWait(active.adapter?.model);
       if (wait) {
         await this._holdForAccount(active, wait, "the agent");
         restart--;
@@ -995,6 +1000,8 @@ export class AssistantWorkerService {
       try {
         review = await this.reviewer({
           taskId: task.taskId, request, brief, report, round, previousReviews: active.reviews, hostNotes, personal: task.input.metadata?.reviewerMemory ?? "",
+          // A second opinion: a model other than the one that did the work, where EV named one.
+          ...(this.models ? { spec: this.models.forReview(task, active.adapter?.model) } : {}),
           // Work reopened after delivery: what the person already has, so the change can be checked against it.
           delivered: task.result?.report?.answer ?? task.result?.text ?? null,
           localRoots: this._reviewRoots(task, workspacePath), sessionEvents, workspacePath

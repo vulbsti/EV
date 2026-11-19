@@ -335,7 +335,7 @@ export function normalizeReview(value) {
  */
 export async function reviewOpenClawReport({
   taskId, request, report, brief = null, round = 1, previousReviews = [], hostNotes = [], personal = "", delivered = null,
-  apiKey, fetchImpl = fetch, localRoots = [], sessionEvents = [], workspacePath = null
+  apiKey, fetchImpl = fetch, localRoots = [], sessionEvents = [], workspacePath = null, spec = null
 }) {
   const evidence = Array.isArray(report.evidence) ? report.evidence : [];
   const selected = [...evidence.filter((source) => source.url.startsWith("file:")).slice(0, 20), ...evidence.filter((source) => !source.url.startsWith("file:")).slice(0, 3)];
@@ -388,7 +388,7 @@ export async function reviewOpenClawReport({
     if (step >= MAX_REVIEW_STEPS) throw Object.assign(new Error(`Quality review did not end after ${MAX_REVIEW_STEPS} model calls`), { code: "QUALITY_REVIEW_UNAVAILABLE" });
     const turn = await modelTurn({
       context, session: sessionHeader(`review:${taskId}`), code: "QUALITY_REVIEW_UNAVAILABLE", label: "quality-gate",
-      apiKey, fetchImpl,
+      apiKey, fetchImpl, spec, workId: taskId,
       parse: (raw, message) => message.content.some((part) => part.type === "toolCall") ? undefined : parseModelJson(raw, "Quality review returned invalid JSON")
     });
     context.messages.push(turn.message);
