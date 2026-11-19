@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Installs EV on macOS or Linux:
+# Installs KenWise on macOS or Linux:
 #
-#   curl -fsSL https://raw.githubusercontent.com/vulbsti/EV/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/vulbsti/KenWise/main/install.sh | bash
 #
-# It puts EV in ~/.ev (EV_HOME), installs its one npm dependency, builds the
-# container its agents run in (if docker is running), and links the `ev`
-# command into ~/.local/bin (EV_BIN_DIR). It never uses sudo and installs
+# It puts KenWise in ~/.kenwise (KENWISE_HOME), installs its one npm dependency, builds the
+# container its agents run in (if docker is running), and links the `kenwise`
+# command into ~/.local/bin (KENWISE_BIN_DIR). It never uses sudo and installs
 # nothing system-wide. Run it again to update. Options (after `bash -s --`):
 #   --no-image   skip building the agent container
 set -euo pipefail
 
 main() {
-  local repo=${EV_REPO:-https://github.com/vulbsti/EV}
-  local home=${EV_HOME:-$HOME/.ev}
-  local bin_dir=${EV_BIN_DIR:-$HOME/.local/bin}
+  local repo=${KENWISE_REPO:-https://github.com/vulbsti/KenWise}
+  local home=${KENWISE_HOME:-$HOME/.kenwise}
+  local bin_dir=${KENWISE_BIN_DIR:-$HOME/.local/bin}
   local need_node=22.19.0 build_image=yes
   for arg in "$@"; do
     case $arg in
@@ -25,15 +25,15 @@ main() {
   case $(uname -s) in
     Darwin) os=macos ;;
     Linux) os=linux ;;
-    *) fail "EV supports macOS and Linux for now. On Windows, use WSL2." ;;
+    *) fail "KenWise supports macOS and Linux for now. On Windows, use WSL2." ;;
   esac
 
-  say "Checking what EV needs"
+  say "Checking what KenWise needs"
   command -v git >/dev/null 2>&1 || fail "git is missing. $(hint git)"
   command -v node >/dev/null 2>&1 || fail "Node.js $need_node or newer is missing. $(hint node)"
   local have_node
   have_node=$(node -p 'process.versions.node')
-  version_ge "$have_node" "$need_node" || fail "EV needs Node.js $need_node or newer; you have $have_node. $(hint node)"
+  version_ge "$have_node" "$need_node" || fail "KenWise needs Node.js $need_node or newer; you have $have_node. $(hint node)"
   ok "Node.js $have_node"
   local docker_ok=""
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -41,20 +41,20 @@ main() {
   else
     local why="docker is not installed"
     command -v docker >/dev/null 2>&1 && why="docker is installed but not running (or your user cannot use it)"
-    warn "$why. EV's agents run in a container, so EV can talk but not do work until docker runs. $(hint docker)"
+    warn "$why. KenWise's agents run in a container, so KenWise can talk but not do work until docker runs. $(hint docker)"
   fi
 
   if [ -d "$home/.git" ]; then
-    say "Updating EV in $home"
+    say "Updating KenWise in $home"
     git -C "$home" pull --ff-only --quiet || fail "Could not update $home (local changes?). Fix it there, or move it away and run this again."
   elif [ -e "$home" ]; then
-    fail "$home exists but is not an EV checkout. Move it away, or set EV_HOME to another folder."
+    fail "$home exists but is not an KenWise checkout. Move it away, or set KENWISE_HOME to another folder."
   else
-    say "Downloading EV to $home"
+    say "Downloading KenWise to $home"
     git clone --quiet --depth 1 "$repo" "$home"
   fi
 
-  say "Installing EV's dependencies"
+  say "Installing KenWise's dependencies"
   (cd "$home" && npm ci --omit=dev --no-audit --no-fund --loglevel=error)
 
   if [ ! -f "$home/.env" ]; then
@@ -70,14 +70,14 @@ main() {
   fi
 
   mkdir -p "$bin_dir"
-  ln -sf "$home/bin/ev" "$bin_dir/ev"
-  ok "Linked the ev command into $bin_dir"
+  ln -sf "$home/bin/kenwise" "$bin_dir/kenwise"
+  ok "Linked the kenwise command into $bin_dir"
 
   echo
-  echo "EV is installed. Next:"
+  echo "KenWise is installed. Next:"
   if grep -q '^OPENCODE_API=$' "$home/.env"; then echo "  Put your model key in $home/.env (OPENCODE_API=...)."; fi
-  echo "  Run: ev open"
-  if [ -z "$docker_ok" ]; then echo "  Then start docker and run: ev update   (builds the agent container)"; fi
+  echo "  Run: kenwise open"
+  if [ -z "$docker_ok" ]; then echo "  Then start docker and run: kenwise update   (builds the agent container)"; fi
   case ":$PATH:" in
     *":$bin_dir:"*) ;;
     *) echo; echo "$bin_dir is not on your PATH. Add this line to your shell profile, then open a new terminal:"

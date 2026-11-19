@@ -1,6 +1,6 @@
 name: CI
 
-# Kept to one small Linux job while EV is a prototype, to save Actions minutes.
+# Kept to one small Linux job while Kenwise is a prototype, to save Actions minutes.
 on:
   pull_request:
   workflow_dispatch:
@@ -25,10 +25,10 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run verify
-      - name: Installer and ev command
+      - name: Installer and kenwise command
         run: |
-          EV_REPO="$PWD" EV_HOME="$RUNNER_TEMP/ev" ./install.sh --no-image
-          ev="$HOME/.local/bin/ev"
+          KENWISE_REPO="$PWD" KENWISE_HOME="$RUNNER_TEMP/ev" ./install.sh --no-image
+          ev="$HOME/.local/bin/kenwise"
           "$ev" start
           curl -fsS -o /dev/null "$("$ev" status | grep -o 'http://[^ ]*')"
           "$ev" stop

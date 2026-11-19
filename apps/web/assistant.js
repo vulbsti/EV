@@ -47,10 +47,10 @@ let statusNote = "";
 function showStatus(note) {
   if (note !== undefined) statusNote = note;
   const failed = [...pending.values()].some((item) => item.failed);
-  const text = authMissing ? "Open EV from the link the daemon printed when it started."
+  const text = authMissing ? "Open KenWise from the link the daemon printed when it started."
     : statusNote ? statusNote
-      : connection === "lost" ? "I can't reach EV right now. I'll keep trying, and anything you send waits here."
-        : failed ? "Not sent yet. I'll send it as soon as I can reach EV."
+      : connection === "lost" ? "I can't reach KenWise right now. I'll keep trying, and anything you send waits here."
+        : failed ? "Not sent yet. I'll send it as soon as I can reach KenWise."
           : "";
   elements.statusbar.textContent = text;
   elements.statusbar.hidden = !text;
@@ -256,7 +256,7 @@ function taskDetails(task) {
     if (report.checks?.length) parts.push(`<section><h3>Agent checks</h3><ul>${report.checks.map((check) => `<li>${escapeHtml(check)}</li>`).join("")}</ul></section>`);
     if (task.artifacts?.length) parts.push(`<section><h3>Files</h3><ul class="files">${task.artifacts.map((file) => `<li>${downloadLink(file)}</li>`).join("")}</ul></section>`);
     const gate = report.verification?.qualityGate;
-    parts.push(`<p class="note">${gate?.unavailable ? "Separate review unavailable." : gate?.skipped ? "Agent outcome and file checks recorded." : "EV reviewed the result against its brief."} ${report.verification?.deliverables?.filter((item) => item.verified).length ?? 0} files checked.${reviewSummary(report.verification)}</p>`);
+    parts.push(`<p class="note">${gate?.unavailable ? "Separate review unavailable." : gate?.skipped ? "Agent outcome and file checks recorded." : "KenWise reviewed the result against its brief."} ${report.verification?.deliverables?.filter((item) => item.verified).length ?? 0} files checked.${reviewSummary(report.verification)}</p>`);
   } else if (task.status === "completed") {
     if (task.result?.summary) parts.push(`<section><h3>Result</h3><p class="answer">${renderAnswer(task.result.summary)}</p></section>`);
     const artifact = task.artifacts?.[0];
@@ -324,7 +324,7 @@ function messageNode(message) {
     setText(bubble.firstChild, message.content);
     const note = node.querySelector(".sending");
     note.classList.toggle("failed", Boolean(message.failed));
-    setText(note, message.pending ? message.failed ? "Not sent yet. Retrying when EV is reachable." : "Sending" : "");
+    setText(note, message.pending ? message.failed ? "Not sent yet. Retrying when KenWise is reachable." : "Sending" : "");
     note.hidden = !message.pending;
   } else {
     setHtml(node.querySelector(".answer"), renderAnswer(message.content));
@@ -410,7 +410,7 @@ function render() {
   const busy = thinking || Boolean(awaiting) || [...pending.values()].some((item) => !item.failed);
   if (busy) {
     if (!typing) {
-      typing = make("div", "said typing", { role: "status", "aria-busy": "true", "aria-label": "EV is thinking" });
+      typing = make("div", "said typing", { role: "status", "aria-busy": "true", "aria-label": "KenWise is thinking" });
       typing.innerHTML = "<i></i><i></i><i></i>";
     }
     order.push(typing);
@@ -817,7 +817,7 @@ let memoryClaims = [];
 let historyLines = [];
 let editingClaimId = null;
 let memoryFilter = "all";
-const KIND_LABELS = { fact: "About you", preference: "Preference", goal: "Goal", agreement: "How EV works with you", state: "Right now", lesson: "Lesson from earlier work" };
+const KIND_LABELS = { fact: "About you", preference: "Preference", goal: "Goal", agreement: "How KenWise works with you", state: "Right now", lesson: "Lesson from earlier work" };
 const claimText = (claim) => typeof claim.current.value === "string" ? claim.current.value : claim.current.value?.text ?? "";
 // Heard (your words), a guess, or a guess EV came to rely on by its own judgement.
 function claimStanding(claim) {
