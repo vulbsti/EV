@@ -335,7 +335,7 @@ export class OpenClawWorkerAdapter {
       sessionPoll.unref?.();
       child.on("error", () => finish({ status: "failed", code: "OPENCLAW_PROCESS_START", message: "OpenClaw could not start" }));
       child.on("close", async (code) => {
-        if (run.stopped) return finish({ status: "stopped", code: "OPENCLAW_STOPPED", message: "The agent was stopped" });
+        if (run.stopped) return finish(run.steered ? { status: "steered", code: "OPENCLAW_STEERED", message: "The agent was stopped so a message could reach it" } : { status: "stopped", code: "OPENCLAW_STOPPED", message: "The agent was stopped" });
         let sessionResult = null;
         try { readNew(); sessionResult = completedResult(live.events); } catch {}
         if (sessionResult) return finish(sessionResult);
@@ -347,8 +347,10 @@ export class OpenClawWorkerAdapter {
     return run;
   }
 
-  async stop(run) {
+  /** Stops the run. With steer, it ends as "steered": the same session is resumed at once with what the person said. */
+  async stop(run, { steer = false } = {}) {
     run.stopped = true;
+    run.steered = steer;
     terminate(run);
     setTimeout(() => terminate(run, "SIGKILL"), 2_000).unref?.();
   }

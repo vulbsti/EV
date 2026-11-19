@@ -15,7 +15,7 @@ const RESTING = Object.freeze(["held", "completed"]);
 const LIVE = Object.freeze(["step", "now"]);
 // Events that move work from one state to another; a "now" line written
 // before the latest of them no longer describes the work.
-const STATE_CHANGES = Object.freeze(["created", "leased", "started", "verifying", "revision_requested", "input_needed", "held", "completed", "recovered", "interrupted", "instruction"]);
+const STATE_CHANGES = Object.freeze(["created", "leased", "started", "verifying", "revision_requested", "input_needed", "held", "completed", "recovered", "interrupted", "instruction", "carried_on"]);
 
 async function verifyReceipt(artifactRoot, receipt) {
   let handle;
@@ -231,7 +231,10 @@ export class AssistantSupervisor {
     const fresh = now && (!changed || now.seq > changed.seq) ? parse(now.data_json, {}) : null;
     const round = this.db.prepare("SELECT MAX(CAST(json_extract(data_json, '$.round') AS INTEGER)) AS round FROM events WHERE work_id = ? AND type IN ('verifying', 'revision_requested')").get(taskId).round ?? 1;
     const model = this.db.prepare("SELECT json_extract(data_json, '$.model') AS model FROM events WHERE work_id = ? AND type = 'now' AND json_extract(data_json, '$.model') IS NOT NULL ORDER BY seq DESC LIMIT 1").get(taskId)?.model ?? null;
-    return { taskId, state: row.status, since: changed?.at ?? row.created_at, round, now: fresh?.text ?? null, nowAt: fresh ? now.at : null, step: fresh?.step ?? null, model };
+    // What the person said that its agent has not been given yet, by the message it came from.
+    const through = this.db.prepare("SELECT CAST(json_extract(data_json, '$.through') AS INTEGER) AS through FROM events WHERE work_id = ? AND type = 'instructions_applied' ORDER BY seq DESC LIMIT 1").get(taskId)?.through ?? 0;
+    const queued = this.db.prepare("SELECT json_extract(data_json, '$.source') AS source FROM events WHERE work_id = ? AND type = 'instruction' AND seq > ? ORDER BY seq").all(taskId, through).map((event) => event.source).filter(Boolean);
+    return { taskId, state: row.status, since: changed?.at ?? row.created_at, round, now: fresh?.text ?? null, nowAt: fresh ? now.at : null, step: fresh?.step ?? null, model, queued };
   }
 
   /**
@@ -308,10 +311,24 @@ export class AssistantSupervisor {
     });
   }
 
-  /** A hold the page sent, replay-safe by its command id. */
+  /**
+   * held -> queued: the person asked work on hold to carry on, with nothing
+   * new to say. The same agent picks it up in its own session. Returns false
+   * when the work was not on hold.
+   */
+  carryOn(taskId, data = {}) {
+    return this.store.tx(() => {
+      const row = this._requireRow(taskId);
+      if (row.status !== "held") return false;
+      this._change(taskId, "carried_on", data, { status: "queued" });
+      return true;
+    });
+  }
+
+  /** A hold or a carry on the page sent, replay-safe by its command id. */
   async commandTask({ taskId, commandId, type, expectedRevision = null, reason = null }) {
     if (typeof commandId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(commandId)) throw codedError("INVALID_COMMAND_ID", "A safe commandId is required");
-    if (type !== "hold") throw codedError("UNSUPPORTED_TASK_COMMAND", `Unsupported task command: ${type}`);
+    if (type !== "hold" && type !== "carry_on") throw codedError("UNSUPPORTED_TASK_COMMAND", `Unsupported task command: ${type}`);
     const replayed = this.store.tx(() => {
       const earlier = this.db.prepare("SELECT work_id FROM events WHERE type = 'command' AND json_extract(data_json, '$.commandId') = ?").get(commandId);
       if (earlier) {
@@ -323,7 +340,8 @@ export class AssistantSupervisor {
         throw codedError("TASK_REVISION_CONFLICT", `Expected task revision ${expectedRevision}, found ${row.revision}`);
       }
       this.store.event({ type: "command", workId: taskId, data: { commandId, type, expectedRevision, reason } });
-      this.hold(taskId, { reason, commandId });
+      if (type === "hold") this.hold(taskId, { reason, commandId });
+      else this.carryOn(taskId, { commandId });
       return false;
     });
     return { replayed, task: this._task(taskId) };

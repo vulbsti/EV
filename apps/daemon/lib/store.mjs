@@ -576,6 +576,24 @@ export function openStore({ path = ":memory:" } = {}) {
     });
   }
 
+  /**
+   * What the person typed straight to one piece of work's agent (the pane
+   * beside the chat). It is kept in the conversation and tied to that work,
+   * so EV sees what was said, but it does not go to EV's inbox: EV is not the
+   * one being asked. Its client id is kept as "pane:<id>", which marks it.
+   * Call it inside the transaction that passes it to the work.
+   */
+  function toAgent({ conversationId, clientMessageId, text, workId }) {
+    return tx(() => {
+      const id = `pane:${clientMessageId}`;
+      const existing = db.prepare("SELECT * FROM messages WHERE client_message_id = ?").get(id);
+      if (existing) return { message: message(existing), replayed: true };
+      const messageId = insertMessage({ conversationId, role: "user", content: text, clientMessageId: id, work: [{ workId, how: "told" }] });
+      event({ type: "to_agent", conversationId, workId, messageId });
+      return { message: messageById(messageId), replayed: false };
+    });
+  }
+
   /** The oldest item in this conversation's inbox that EV has not handled. */
   function nextItem(conversationId) {
     return mapItem(db.prepare("SELECT * FROM inbox WHERE conversation_id = ? AND handled_at IS NULL ORDER BY seq LIMIT 1").get(conversationId));
@@ -718,7 +736,7 @@ export function openStore({ path = ":memory:" } = {}) {
 
   return {
     db, path, tx, now, counter, bump, event, events, getEvent, onChange, setting, saveSetting, lastSeq, eventsAfter,
-    receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messageWithReplies, listTurns,
+    receive, toAgent, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messageWithReplies, listTurns,
     eraseMessage, eraseEvent, eraseOutsideMessage, erased, search,
     close: () => db.close()
   };

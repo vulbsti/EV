@@ -65,10 +65,11 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 ## Task 12: Live work
 
-The person can watch an agent work, step by step, and come back to it later. Under that view are two guarantees that hold whatever EV or its agents decide: the steps reach a page that lost its connection with nothing missing and nothing twice, and work on hold shows nothing new from an agent it has stopped. Everything else about the live view (labels, the "now" line, the pane) was walked through once against its state chart (design/build/verification/live-work.md), not checked on every push.
+The person can watch an agent work, step by step, and come back to it later. Under that view are two guarantees that hold whatever EV or its agents decide: the steps reach a page that lost its connection with nothing missing and nothing twice, work on hold shows nothing new from an agent it has stopped, and the drafts the page can open are only the agent's own unreviewed files, never anything outside its folder or anything that may hold a secret. Everything else about the live view (labels, the "now" line, the pane) was walked through once against its state chart (design/build/verification/live-work.md), not checked on every push.
 
 - ✓ **L-01** A page that loses its connection while an agent works catches up on exactly the steps it missed: none lost, none twice.
 - ✓ **L-02** Once work is on hold, nothing more from its agent shows up in it, even while that agent is slow to stop.
+- ✓ **L-03** Drafts show only what the agent made in its own folder, marked as not reviewed: never a file outside it, never one that may hold a secret.
 
 ## Task 3: One store with real ids
 

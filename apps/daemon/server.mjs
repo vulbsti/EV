@@ -173,7 +173,8 @@ async function publicResponsibility(responsibility) {
  * where it belongs.
  */
 function publicMessage({ intent, ...message }) {
-  return { ...message, status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update" };
+  // toAgent: typed straight to one piece of work's agent in the pane, not to EV.
+  return { ...message, status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", toAgent: Boolean(message.clientMessageId?.startsWith("pane:")) };
 }
 
 /** Whether EV is thinking: something waits in this conversation's inbox. */
@@ -321,6 +322,7 @@ const time = (iso) => `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
  */
 function recentConversation(conversationId, before, limit = 12) {
   return store.listMessages(conversationId).filter((message) => message.sequence < before).slice(-limit).map((message) => {
+    if (message.role === "user" && message.clientMessageId?.startsWith("pane:")) return `[${time(message.createdAt)}] Person, straight to the agent of work:${message.taskId}: ${message.content.slice(0, 1_500)}`;
     if (message.role === "user") return `[${time(message.createdAt)}] Person: ${message.content.slice(0, 1_500)}`;
     if (message.replyTo) return `[${time(message.createdAt)}] EV: ${message.content.slice(0, 1_500)}`;
     return `[${time(message.createdAt)}] EV told them about ${message.taskId ? `work:${message.taskId}` : "some work"} on its own (its result or its question; read the work to see what it says)`;
@@ -677,6 +679,44 @@ async function handleApi(request, response, url) {
     if (before !== undefined && (!Number.isInteger(before) || before < 1)) throw Object.assign(new Error("before must be a positive integer"), { statusCode: 400 });
     return json(response, 200, { ...assistantSupervisor.steps(taskId, { before }), live: assistantSupervisor.live(taskId) });
   }
+  if (request.method === "POST" && /^\/api\/assistant\/tasks\/[^/]+\/messages$/.test(url.pathname)) {
+    // The pane beside the chat: the person talks straight to this work's agent.
+    // mode: "next" (default) once its current step finishes, "interrupt" now,
+    // "after" when its turn ends. EV sees it in the conversation.
+    const taskId = decodeURIComponent(url.pathname.slice("/api/assistant/tasks/".length, -"/messages".length));
+    const body = await readJson(request);
+    const clientMessageId = String(body.clientMessageId ?? "");
+    const text = String(body.text ?? "").trim();
+    const mode = body.mode ?? "next";
+    if (!/^[A-Za-z0-9._:-]{1,120}$/.test(clientMessageId)) throw Object.assign(new Error("A safe clientMessageId is required"), { statusCode: 400 });
+    if (!text || text.length > 4000) throw Object.assign(new Error("text must be 1-4000 characters"), { statusCode: 400 });
+    if (!["next", "interrupt", "after"].includes(mode)) throw Object.assign(new Error("mode must be next, interrupt or after"), { statusCode: 400 });
+    const task = await assistantSupervisor.getTask(taskId);
+    const conversationId = task.input?.metadata?.conversationId;
+    if (!conversationId || task.input?.capability !== "openclaw-general-v1") throw Object.assign(new Error("Only work in a conversation can be told something"), { statusCode: 400 });
+    let status = null;
+    const { message, replayed } = store.tx(() => {
+      const saved = store.toAgent({ conversationId, clientMessageId, text, workId: taskId });
+      if (!saved.replayed) status = assistantSupervisor.instruct({ taskId, text, source: saved.message.messageId });
+      return saved;
+    });
+    if (message.content !== text) throw Object.assign(new Error("clientMessageId belongs to different message text"), { statusCode: 409 });
+    if (status === "queued") assistantWorkers.dispatch(taskId);
+    else if (status) assistantWorkers.steer(taskId, { mode });
+    return json(response, replayed ? 200 : 202, { replayed, message: publicMessage(message), live: assistantSupervisor.live(taskId) });
+  }
+  if (request.method === "GET" && /^\/api\/assistant\/tasks\/[^/]+\/steps\/[^/]+\/output$/.test(url.pathname)) {
+    // One step's output, read from the agent's transcript on request.
+    const [taskId, stepId] = url.pathname.slice("/api/assistant/tasks/".length, -"/output".length).split("/steps/").map(decodeURIComponent);
+    await assistantSupervisor.getTask(taskId);
+    return json(response, 200, { output: assistantWorkers.stepOutput(taskId, stepId) });
+  }
+  if (request.method === "GET" && /^\/api\/assistant\/tasks\/[^/]+\/drafts$/.test(url.pathname)) {
+    // What the agent has made so far: not reviewed, read-only. ?path= gives one file's text.
+    const taskId = decodeURIComponent(url.pathname.slice("/api/assistant/tasks/".length, -"/drafts".length));
+    if (url.searchParams.has("path")) return json(response, 200, { draft: await assistantWorkers.draft(taskId, url.searchParams.get("path")) });
+    return json(response, 200, { files: await assistantWorkers.drafts(taskId), reviewed: false });
+  }
   if (request.method === "GET" && url.pathname === "/api/assistant/search") {
     const query = String(url.searchParams.get("q") ?? "").slice(0, 500);
     return json(response, 200, { query, hits: lookups({ store, supervisor: assistantSupervisor, memory: assistantMemory }).search(query, { limit: 20 }) });
@@ -748,10 +788,12 @@ async function handleApi(request, response, url) {
     const body = await readJson(request);
     const commandId = String(body.commandId ?? "");
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(commandId)) throw Object.assign(new Error("A safe commandId is required"), { statusCode: 400 });
-    if (body.type !== "hold") throw Object.assign(new Error("Only the hold command is supported"), { statusCode: 400 });
+    if (body.type !== "hold" && body.type !== "carry_on") throw Object.assign(new Error("type must be hold or carry_on"), { statusCode: 400 });
     const expectedRevision = body.expectedRevision;
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw Object.assign(new Error("expectedRevision must be a non-negative integer"), { statusCode: 400 });
-    const result = await assistantWorkers.holdTask({ taskId, commandId, expectedRevision, reason: "user-requested" });
+    const result = body.type === "hold"
+      ? await assistantWorkers.holdTask({ taskId, commandId, expectedRevision, reason: "user-requested" })
+      : await assistantWorkers.carryOnTask({ taskId, commandId, expectedRevision });
     const snapshot = await assistantWorkers.snapshot();
     return json(response, 200, { replayed: result.replayed, revision: snapshot.revision, task: publicTask(result.task) });
   }
@@ -773,7 +815,7 @@ async function handleApi(request, response, url) {
     const clientMessageId = String(body.clientMessageId ?? "");
     const conversationId = String(body.conversationId ?? "default");
     const text = String(body.text ?? "").trim();
-    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(clientMessageId) || clientMessageId.startsWith("update:")) throw Object.assign(new Error("A safe clientMessageId is required"), { statusCode: 400 });
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(clientMessageId) || /^(update|pane):/.test(clientMessageId)) throw Object.assign(new Error("A safe clientMessageId is required"), { statusCode: 400 });
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversationId)) throw Object.assign(new Error("A safe conversationId is required"), { statusCode: 400 });
     if (!text) throw Object.assign(new Error("text is required"), { statusCode: 400 });
     if (text.length > 8000) throw Object.assign(new Error("text must not exceed 8000 characters"), { statusCode: 400 });
@@ -829,6 +871,9 @@ const server = createServer(async (request, response) => {
     console.error(`[${new Date().toISOString()}] ${request.method} ${url?.pathname ?? request.url}: ${error.message}`);
     const codedStatus = {
       TASK_NOT_FOUND: 404,
+      DRAFT_NOT_FOUND: 404,
+      PATH_ESCAPE: 400,
+      UNSUPPORTED_TASK_COMMAND: 400,
       ARTIFACT_NOT_FOUND: 404,
       TASK_REVISION_CONFLICT: 409,
       COMMAND_ID_CONFLICT: 409,
