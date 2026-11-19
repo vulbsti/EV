@@ -23,7 +23,9 @@ import { ModelRoutes } from "./model-routes.mjs";
  * The token is worthless anywhere else: it only works here, for that task's
  * model, while the task runs. What the provider answers is seen here too, so
  * an agent's usage limit or refused key marks the account just as EV's own
- * calls do, and the agent's next request goes out on the next route. Every
+ * calls do. A task keeps its route while that account is usable; when it
+ * stops being usable, the refused request goes out once more on the next
+ * route before the agent sees anything, and the task stays there. Every
  * request leaves a row in the record of model calls, and a change of route
  * mid-task is told to `onRouteChange`, so the work's steps show it.
  *
@@ -96,6 +98,7 @@ export class ModelRelay {
     const grant = this.grants.get(token);
     if (!grant) return;
     this.grants.delete(token);
+    this.routes.unstick(token);
     if (grant.listener) { grant.listener.close(); grant.listener.closeAllConnections?.(); rmSync(grant.socket, { force: true }); }
   }
 
@@ -116,32 +119,17 @@ export class ModelRelay {
     const presented = String(request.headers.authorization ?? "").replace(/^Bearer\s+/i, "") || String(request.headers["x-api-key"] ?? "");
     const grant = [...this.grants.values()].find((candidate) => same(candidate.token, presented));
     if (!grant) return this._error(response, 401, "This task token is not valid (the task ended, or it was never EV's)");
-    let route;
-    try { route = this.routes.pick(grant.model, "AGENT_MODEL_UNAVAILABLE", { sameApi: true }); }
-    catch (error) {
-      const wait = error.wait ?? {};
-      const seconds = wait.until ? Math.max(1, Math.ceil((Date.parse(wait.until) - Date.now()) / 1_000)) : 60;
-      return this._error(response, wait.reason === "limited" ? 429 : 503, error.message, { "Retry-After": String(seconds) });
+    // Kept whole, so a request refused before any byte reached the agent can go out again on the next route.
+    const body = ["GET", "HEAD"].includes(request.method) ? undefined : await bodyOf(request);
+    let sent = await this._send(grant, request, url, body);
+    if (sent.error) return this._error(response, ...sent.error);
+    if (sent.answer.status === 429 || sent.answer.status === 401 || sent.answer.status === 403) {
+      // The account was just marked as out of use: the agent never sees the limit when another route can take it.
+      const now = this.connections.connectionsOf(sent.account.provider).find((connection) => connection.id === sent.account.id);
+      const again = now && this.connections.usable(now) ? null : await this._send(grant, request, url, body);
+      if (again && !again.error) { await sent.answer.body?.cancel().catch(() => {}); sent.record(); sent = again; }
     }
-    const { model, connection: account } = route;
-    this._noticeRoute(grant, route);
-    let resolved;
-    try { resolved = await this.connections.models.getAuth(model); }
-    catch (error) { this.connections.needsSignIn(account, error.message); return this._error(response, 401, `The ${model.provider} account needs a new sign-in`); }
-    if (!resolved) return this._error(response, 503, `No account is connected for ${model.provider}`);
-    const { apiKey, headers = {}, baseUrl } = resolved.auth;
-    const upstream = `${(baseUrl ?? model.baseUrl).replace(/\/$/, "")}${url.pathname.slice("/relay".length)}${url.search}`;
-    const forward = Object.fromEntries(Object.entries(request.headers).filter(([name]) => !DROPPED.has(name)));
-    if (apiKey) Object.assign(forward, model.api === "anthropic-messages" && account.method !== "oauth" ? { "x-api-key": apiKey } : { authorization: `Bearer ${apiKey}` });
-    Object.assign(forward, headers);
-    let body = ["GET", "HEAD"].includes(request.method) ? undefined : Readable.toWeb(request);
-    // Another provider may know the same model by another id ("openai/gpt-6-luna"): the one thing the relay rewrites.
-    if (body && model.id !== grant.model.id) body = await renamed(request, model.id);
-    const started = Date.now();
-    const answer = await this.fetch(upstream, { method: request.method, headers: forward, body, duplex: "half" });
-    const firstByteMs = Date.now() - started;
-    this._observe(account, answer);
-    const record = () => this.routes.record({ role: "agent", workId: grant.taskId, model, connectionId: account.id, outcome: answer.ok ? "ok" : answer.status === 429 ? "limited" : "rejected", status: answer.status, ms: Date.now() - started, firstByteMs });
+    const { answer, record } = sent;
     // fetch has already undone any compression, so its length no longer applies.
     const back = Object.fromEntries([...answer.headers].filter(([name]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(name)));
     response.writeHead(answer.status, back);
@@ -153,13 +141,52 @@ export class ModelRelay {
     stream.pipe(response);
   }
 
+  /**
+   * Sends one request of a task on its route: { answer, account, record } or
+   * { error: [status, message, headers] }. The task keeps its route while
+   * that account stays usable (model-routes.mjs, `stick`), so a provider's
+   * prompt cache is not thrown away mid-task.
+   */
+  async _send(grant, request, url, body) {
+    let route;
+    try { route = this.routes.pick(grant.model, "AGENT_MODEL_UNAVAILABLE", { sameApi: true, stick: grant.token }); }
+    catch (error) {
+      const wait = error.wait ?? {};
+      const seconds = wait.until ? Math.max(1, Math.ceil((Date.parse(wait.until) - Date.now()) / 1_000)) : 60;
+      return { error: [wait.reason === "limited" ? 429 : 503, error.message, { "Retry-After": String(seconds) }] };
+    }
+    const { model, connection: account } = route;
+    this._noticeRoute(grant, route);
+    let resolved;
+    try { resolved = await this.connections.models.getAuth(model); }
+    catch (error) { this.connections.needsSignIn(account, error.message); return { error: [401, `The ${model.provider} account needs a new sign-in`] }; }
+    if (!resolved) return { error: [503, `No account is connected for ${model.provider}`] };
+    const { apiKey, headers = {}, baseUrl } = resolved.auth;
+    const upstream = `${(baseUrl ?? model.baseUrl).replace(/\/$/, "")}${url.pathname.slice("/relay".length)}${url.search}`;
+    const forward = Object.fromEntries(Object.entries(request.headers).filter(([name]) => !DROPPED.has(name)));
+    if (apiKey) Object.assign(forward, model.api === "anthropic-messages" && account.method !== "oauth" ? { "x-api-key": apiKey } : { authorization: `Bearer ${apiKey}` });
+    Object.assign(forward, headers);
+    const started = Date.now();
+    // Another provider may know the same model by another id ("openai/gpt-6-luna"): the one thing the relay rewrites.
+    const answer = await this.fetch(upstream, { method: request.method, headers: forward, body: body && model.id !== grant.model.id ? renamed(body, model.id) : body });
+    const firstByteMs = Date.now() - started;
+    this._observe(account, answer);
+    let recorded = false;
+    const record = () => {
+      if (recorded) return;
+      recorded = true;
+      this.routes.record({ role: "agent", workId: grant.taskId, model, connectionId: account.id, outcome: answer.ok ? "ok" : answer.status === 429 ? "limited" : "rejected", status: answer.status, ms: Date.now() - started, firstByteMs });
+    };
+    return { answer, account, record };
+  }
+
   /** Tells onRouteChange when this task's requests start going out on another route. */
   _noticeRoute(grant, route) {
     const key = `${route.model.provider}/${route.model.id}/${route.connection.id}`;
     const from = grant.route;
     grant.route = { key, provider: route.model.provider, model: route.model.id, connectionId: route.connection.id };
     if (!from || from.key === key) return;
-    try { this.onRouteChange?.({ taskId: grant.taskId, from, to: grant.route, why: this.connections.connectionsOf(from.provider).find((connection) => connection.id === from.connectionId) ?? null }); } catch { /* telling never stops the agent */ }
+    try { this.onRouteChange?.({ taskId: grant.taskId, from, to: grant.route, why: this.connections.connectionsOf(from.provider).find((connection) => connection.id === from.connectionId) ?? { status: "removed" } }); } catch { /* telling never stops the agent */ }
   }
 
   /** What the provider's answer says about the account. */
@@ -176,11 +203,14 @@ export class ModelRelay {
   }
 }
 
-/** A JSON request body with its model field set to `id`. Bodies that are not JSON pass as they were. */
-async function renamed(request, id) {
+async function bodyOf(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
-  const raw = Buffer.concat(chunks);
+  return Buffer.concat(chunks);
+}
+
+/** A JSON request body with its model field set to `id`. Bodies that are not JSON pass as they were. */
+function renamed(raw, id) {
   try {
     const value = JSON.parse(raw.toString("utf8"));
     if (value && typeof value === "object" && "model" in value) return JSON.stringify({ ...value, model: id });

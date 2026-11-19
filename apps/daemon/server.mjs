@@ -72,7 +72,7 @@ const modelRelay = await new ModelRelay({
   connections, routes: currentRoutes(),
   onRouteChange: ({ taskId, from, to, why }) => {
     const at = new Date().toISOString();
-    const reason = why?.status === "limited" ? "hit its usage limit" : why?.status === "needs-sign-in" ? "needs a new sign-in" : "was slower for the price";
+    const reason = why?.status === "limited" ? "hit its usage limit" : why?.status === "needs-sign-in" ? "needs a new sign-in" : why?.status === "removed" ? "was removed" : "could no longer be used";
     const label = `Switched to ${connections.providerName(to.provider)}${to.model !== from.model ? ` (${to.model})` : ""}: ${connections.providerName(from.provider)} ${reason}`;
     store.tx(() => store.event({ type: "step", workId: taskId, data: { id: `route:${at}`, kind: "route", label, route: to, startedAt: at, endedAt: at } }));
   }

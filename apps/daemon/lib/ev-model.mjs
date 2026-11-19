@@ -153,7 +153,8 @@ export async function modelTurn({ context, session, code, label, role = label, a
   await connections.scanned;
   // Each pass marks one account limited or signed out, so this ends: on a reply, or when no route is left.
   for (;;) {
-    const { model, connection } = routes.pick(asked, code);
+    // One turn of EV's stays on one route while it can (the provider's prompt cache).
+    const { model, connection } = routes.pick(asked, code, { stick: session ? `${label}:${session}` : null });
     try { return await turnOn({ ...rest, context, session, code, label, workId, model, account: connection }); }
     catch (error) { if (!error.reroute) throw error; }
   }

@@ -20,6 +20,12 @@
  *      is neither favoured nor shut out.
  *   4. Ties keep the provider that was asked for, then the catalogue's order.
  *
+ * The ranking chooses a route when a piece of work (or one turn of EV's)
+ * starts, and that route is kept while its account stays usable: moving a
+ * task to another provider because a measured median shifted would throw
+ * away the provider's prompt cache. Speed for the price decides the next
+ * task's route, not the next request's.
+ *
  * When the subscription that would have served is limited, moving to a
  * route that is paid per token is not taken here: whether to spend money or
  * wait for the reset is the limit decision (GitHub issue 21), so until that
@@ -60,6 +66,8 @@ export const PLAN_PROVIDERS = new Set([
   "qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual", "qwen-token-plan-individual-cn",
   "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp"
 ]);
+// How many tasks and turns keep their route at once; the oldest is let go first.
+const STICKY_MAX = 1_000;
 // How many recent calls of a route its speed is measured over.
 const SPEED_WINDOW = 30;
 // Output tokens weigh this much less than input in the price: agents' calls are mostly prompt.
@@ -74,6 +82,7 @@ const median = (values) => {
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 };
+const routeKey = (route) => `${route.model.provider}/${route.model.id}/${route.connection.id}`;
 const price = (model) => (model.cost?.input ?? 0) * INPUT_SHARE + (model.cost?.output ?? 0) * (1 - INPUT_SHARE);
 
 export class ModelRoutes {
@@ -81,6 +90,7 @@ export class ModelRoutes {
     this.connections = connections;
     this.store = connections.store;
     this.memoryCalls = []; // without a store
+    this.sticky = new Map(); // task or turn -> the route key it is on
     if (this.store) this.store.db.exec(SCHEMA);
   }
 
@@ -160,10 +170,28 @@ export class ModelRoutes {
   /**
    * The route a call to `model` goes through now, or the error the caller
    * throws, with `wait` saying what it waits for (the account that frees up
-   * soonest).
+   * soonest). With `stick` (a task's or a turn's id), the route chosen the
+   * first time is kept for as long as its account is usable.
    */
-  pick(model, code, options = {}) {
+  pick(model, code, { stick = null, ...options } = {}) {
     this.connections.ensureProvider(model.provider);
+    if (stick && this.sticky.has(stick)) {
+      const kept = this.routes(model, options).find((route) => routeKey(route) === this.sticky.get(stick));
+      if (kept && this.connections.usable(kept.connection)) return kept;
+    }
+    const chosen = this._choose(model, code, options);
+    if (stick) {
+      this.sticky.delete(stick);
+      this.sticky.set(stick, routeKey(chosen));
+      if (this.sticky.size > STICKY_MAX) this.sticky.delete(this.sticky.keys().next().value);
+    }
+    return chosen;
+  }
+
+  /** Lets a finished task's route go. */
+  unstick(stick) { this.sticky.delete(stick); }
+
+  _choose(model, code, options) {
     const ranked = this.ranked(model, options);
     const best = ranked[0];
     const paidInstead = best && !best.subscription && ranked.some((route) => route.subscription && !route.usable);

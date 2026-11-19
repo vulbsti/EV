@@ -20,7 +20,7 @@ async function provider(limitedKey) {
   return { seen, url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
 }
 
-test("an agent whose account runs out mid-task carries on through the person's other account, and the switch is told", async () => {
+test("an agent whose account runs out mid-task never sees the limit: it carries on through the person's other account, and the switch is told", async () => {
   const upstream = await provider("first-key");
   const connections = await Connections.open({ env: {} });
   connections.save({ provider: "opencode-go", method: "key", credential: { type: "api_key", key: "second-key" } });
@@ -31,10 +31,12 @@ test("an agent whose account runs out mid-task carries on through the person's o
     const model = { ...connections.models.getModel("opencode-go", "claude-haiku-5-5"), baseUrl: upstream.url };
     const grant = await relay.grant({ taskId: "t1", model });
     const call = () => fetch(`${grant.baseUrl}/v1/messages`, { method: "POST", headers: { "x-api-key": grant.token, "Content-Type": "application/json" }, body: JSON.stringify({ model: model.id }) });
-    assert.equal((await call()).status, 429);
-    assert.equal(connections.list().find((connection) => connection.id === first.id).status, "limited");
+    // The agent never sees the limit: the refused request goes out again on the other account.
     assert.equal((await call()).status, 200);
-    assert.deepEqual(upstream.seen, ["first-key", "second-key"]);
+    assert.equal(connections.list().find((connection) => connection.id === first.id).status, "limited");
+    // And the task stays there.
+    assert.equal((await call()).status, 200);
+    assert.deepEqual(upstream.seen, ["first-key", "second-key", "second-key"]);
     assert.equal(changes.length, 1);
     assert.equal(changes[0].taskId, "t1");
   } finally { await relay.stop(); upstream.close(); }
