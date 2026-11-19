@@ -333,6 +333,25 @@ function strandNode(key, threadId) {
   return node;
 }
 
+function strandEnd(key) {
+  const nodeKey = `e:${key}`;
+  let node = nodes.get(nodeKey);
+  if (!node) { node = make("div", "strand-end", { "aria-hidden": "true" }); nodes.set(nodeKey, node); }
+  return node;
+}
+
+/** In a focused thread, each thing said in it can be taken out ("Not this thread") or put in another thread. */
+function placeControls(node, message) {
+  let row = node.querySelector(".place");
+  const show = focus && message.role === "user" && !message.pending && (message.threads ?? []).includes(focus.threadId);
+  if (!show) { row?.remove(); return; }
+  const others = (threadList?.threads ?? []).filter((thread) => thread.threadId !== focus.threadId);
+  const item = `message:${message.messageId}`;
+  const html = `<button type="button" class="btn quiet" data-unplace="${escapeHtml(item)}">Not this thread</button>${others.length ? `<select data-move="${escapeHtml(item)}" aria-label="Put in another thread"><option value="">Put in…</option>${others.map((thread) => `<option value="${escapeHtml(thread.threadId)}">${escapeHtml(thread.name)}</option>`).join("")}</select>` : ""}`;
+  if (!row) { row = make("div", "place"); node.insertBefore(row, node.querySelector(".cards")); }
+  if (row.dataset.html !== html) { row.innerHTML = html; row.dataset.html = html; }
+}
+
 function messageNode(message) {
   const key = keyOf(message);
   let node = nodes.get(key);
@@ -432,8 +451,15 @@ function render() {
       const strand = strandNode(keyOf(message), message.threads[0]);
       if (strand) { order.push(strand); used.add(`s:${keyOf(message)}`); }
     }
+    // A message in no thread quietly ends the marker's run above it, so it does not read as part of that work.
+    if (!focus && message.role === "user" && !message.pending && !message.threads?.length && lastThread) {
+      const end = strandEnd(keyOf(message));
+      order.push(end); used.add(`e:${keyOf(message)}`);
+      lastThread = null;
+    }
     if (message.role === "user" && message.threads?.length) lastThread = message.threads[0];
     const node = messageNode(message);
+    placeControls(node, message);
     used.add(keyOf(message));
     // Cards in the order the message names them.
     const ids = byMessage.get(keyOf(message)) ?? [];
@@ -713,7 +739,19 @@ async function holdTask(taskId, retryOnConflict = true) {
 
 // ---------- Clicks in the conversation ----------
 
+elements.col.addEventListener("change", (event) => {
+  const select = event.target.closest("select[data-move]");
+  if (select?.value) void placeItem(select.dataset.move, select.value);
+});
+
+/** Moves one item out of the focused thread (to null, or into another), then shows the thread as it now is. */
+async function placeItem(item, to) {
+  if (await threadCommand("move", { item, to })) await loadFocus();
+}
+
 elements.col.addEventListener("click", (event) => {
+  const unplace = event.target.closest("[data-unplace]");
+  if (unplace) { unplace.disabled = true; void placeItem(unplace.dataset.unplace, null); return; }
   if (event.target.closest("#earlier")) { void loadEarlier(); return; }
   const strand = event.target.closest(".strand");
   if (strand) { void focusThread(strand.dataset.thread); return; }

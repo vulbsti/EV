@@ -139,8 +139,14 @@ body { background: #0a0d13; }
 .ev .strand::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--accent); flex: none; }
 .ev .strand::after { content: ""; flex: 1; height: 1px; background: rgb(var(--edge) / calc(var(--ea) * .8)); }
 .ev .strand:hover { color: var(--ink); }
+.ev .strand-end { width: 100%; height: 1px; margin: 4px 0; background: rgb(var(--edge) / calc(var(--ea) * .5)); }
+.ev .place { align-self: flex-end; display: flex; align-items: center; gap: 8px; margin-top: -6px; }
+.ev .place { opacity: .55; transition: opacity .15s; } .ev .msg:hover .place, .ev .place:focus-within { opacity: 1; }
+@media (hover: none) { .ev .place { opacity: 1; } }
+.ev .place .btn { min-height: 32px; font-size: 12.5px; }
+.ev .place select { max-width: 180px; min-height: 32px; border-radius: 10px; border: 1px solid rgb(var(--edge) / var(--ea)); background: rgb(var(--tint) / calc(var(--ga) * .8)); color: var(--ink2); font: inherit; font-size: 12.5px; padding: 0 6px; }
 .ev .focusnote { display: none; align-self: center; text-align: center; max-width: 52ch; }
-.ev.earlier-no.focus-all .old, .ev.earlier-yes .earlier, .ev:not(.focus-all) .earlier, .ev:not(.focus-all) .strand { display: none; }
+.ev.earlier-no.focus-all .old, .ev.earlier-yes .earlier, .ev:not(.focus-all) .earlier, .ev:not(.focus-all) .strand, .ev:not(.focus-all) .strand-end { display: none; }
 .ev.focus-pricing .col > :not(.th-pricing), .ev.focus-onboard .col > :not(.th-onboard) { display: none; }
 .ev:not(.focus-all) .focusnote { display: block; }
 
