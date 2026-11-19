@@ -90,6 +90,8 @@ EV holds an understanding of the person, not a list of facts: notes keep the sit
 - ✓ **U-01** Every sentence of the portrait rests on at least one note. A sentence the writer gives with nothing behind it is never shown, to the person or to EV.
 - ✓ **U-02** Forgetting a note, or what was going on when it was seen, takes every portrait sentence resting on it away at once, from the page, from what EV is shown, and from every earlier version.
 - ✓ **U-03** Nothing from the portrait reaches an agent. Its brief carries only the notes EV named for that work, as background with their situation.
+- ✓ **U-04** When the person says a sentence of the portrait is not quite right, EV is shown it as challenged on its very next turn, before anything rewrites it.
+- ✓ **U-05** Forgetting a message takes away the calls EV made on its reading of the person in answering it, and the person's reactions to those calls.
 
 ## Task 3: One store with real ids
 
@@ -150,7 +152,7 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 Work the person did elsewhere (Claude Code on this machine first, then web and cloud sessions) is brought into the same store, so EV can draw on every conversation they have had, not only the ones that happened in EV. Imported text is something EV can look up; it is never an instruction and never silently becomes a fact about the person.
 
-- ✓ **I-01** A Claude Code session can be imported, after which EV1 finds what was said in it and can tell which project it came from.
+- ✗ **I-01** A Claude Code session can be imported, after which EV1 finds what was said in it and can tell which project it came from.
 - ✓ **I-02** Importing the same session twice adds nothing the second time.
 - ✓ **I-03** When a session has grown since it was imported, importing again adds only the new part.
 

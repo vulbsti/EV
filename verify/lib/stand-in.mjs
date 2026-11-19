@@ -62,7 +62,7 @@ export async function startStandIn(script = {}) {
       messageTask: (message) => useTool("messageTask", message),
       readFile: (path) => useTool("readFile", { path }),
       ask: (questions, { assumptions = [], lead = "One thing before I start:" } = {}) => { turn.steps.push({ intent: "ask", questions: [].concat(questions), assumptions }); return { final: true, said: lead }; },
-      reply: (text) => ({ final: true, said: String(text) }),
+      reply: (text, { call = null } = {}) => ({ final: true, said: String(text), call }),
       accept: (review = {}) => ({ final: true, review: { ...review, verdict: "accept" } }),
       revise: (review = {}) => ({ final: true, review: { ...review, verdict: "revise" } }),
       ...(role === "learner" ? learnerView(call.text) : {}),
@@ -78,7 +78,7 @@ export async function startStandIn(script = {}) {
         const ask = turn.steps.find((step) => step.intent === "ask");
         if (!toolMode) throw new NotBuilt("EV1 is not offered any tools");
         if (ask && call.tools.includes(TOOLS.ask.name)) return lastCall(TOOLS.ask.name, TOOLS.ask.args(ask));
-        if (call.tools.includes(TOOLS.reply.name)) return lastCall(TOOLS.reply.name, TOOLS.reply.args({ text: said }));
+        if (call.tools.includes(TOOLS.reply.name)) return lastCall(TOOLS.reply.name, TOOLS.reply.args({ text: said, call: out?.call ?? null }));
         return textResponse(dialect, said);
       }
       if (role === "reviewer") return textResponse(dialect, JSON.stringify(today.reviewer(out?.review ?? out)));
