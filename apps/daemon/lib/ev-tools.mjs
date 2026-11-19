@@ -402,12 +402,9 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       });
       for (const { taskId } of started) workers.dispatch(taskId);
       for (const taskId of queued) workers.dispatch(taskId);
-<<<<<<< HEAD
       // Running work gets what it was told at its next step, not when its turn ends.
       for (const { taskId } of told) if (!queued.includes(taskId)) workers.steer?.(taskId, { mode: "next" });
-=======
       for (const note of regroups) regroup(note);
->>>>>>> origin/main
       for (const { taskId } of stopped) workers.stopRun(taskId).catch((error) => log(`[${new Date().toISOString()}] Could not stop the agent of work:${taskId}: ${error.message}`));
     }
   };

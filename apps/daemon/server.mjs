@@ -183,12 +183,8 @@ async function publicResponsibility(responsibility) {
  * where it belongs.
  */
 function publicMessage({ intent, ...message }) {
-<<<<<<< HEAD
   // toAgent: typed straight to one piece of work's agent in the pane, not to EV.
-  return { ...message, status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", toAgent: Boolean(message.clientMessageId?.startsWith("pane:")) };
-=======
-  return { ...message, status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", threads: facts.messageThreads(message.messageId) };
->>>>>>> origin/main
+  return { ...message, status: message.role === "user" ? "received" : message.replyTo ? "answered" : "update", toAgent: Boolean(message.clientMessageId?.startsWith("pane:")), threads: facts.messageThreads(message.messageId) };
 }
 
 /** Whether EV is thinking: something waits in this conversation's inbox. */

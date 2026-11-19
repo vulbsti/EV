@@ -847,11 +847,7 @@ export function openStore({ path = ":memory:" } = {}) {
 
   return {
     db, path, tx, now, counter, bump, event, events, getEvent, onChange, setting, saveSetting, lastSeq, eventsAfter,
-<<<<<<< HEAD
-    receive, toAgent, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messageWithReplies, listTurns,
-=======
-    receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messagesByIds, messageWithReplies, listTurns,
->>>>>>> origin/main
+    receive, toAgent, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messagesByIds, messageWithReplies, listTurns,
     eraseMessage, eraseEvent, eraseOutsideMessage, erased, search,
     close: () => db.close()
   };
