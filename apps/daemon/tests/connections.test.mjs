@@ -58,7 +58,7 @@ test("subscription sign-in is offered where providers allow it, and never for a 
   const { connections, close } = await open({});
   try {
     const offered = Object.fromEntries(connections.providers().filter((provider) => provider.signIn).map((provider) => [provider.id, provider.signIn]));
-    for (const id of ["openai", "github-copilot", "xai", "openrouter"]) assert.ok(offered[id], id);
+    for (const id of ["openai", "github-copilot", "xai", "openrouter", "opencode", "opencode-go"]) assert.ok(offered[id], id);
     assert.equal(offered.anthropic, undefined);
     assert.equal(connections.deviceId(), connections.deviceId());
   } finally { await close(); }

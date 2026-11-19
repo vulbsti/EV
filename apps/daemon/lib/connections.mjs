@@ -7,6 +7,7 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { opencodeConsoleOAuth } from "./opencode-console.mjs";
 import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permissions.mjs";
 
 /**
@@ -117,6 +118,11 @@ export class Connections {
       fileExists: async (path) => existsSync(path.startsWith("~") ? join(homedir(), path.slice(1)) : path)
     };
     this.models = builtinModels({ credentials: this.credentials, authContext: this.authContext });
+    // pi-ai has no OpenCode sign-in; an OpenCode account reaches Zen and Go.
+    for (const id of ["opencode", "opencode-go"]) {
+      const provider = this.models.getProvider(id);
+      if (provider) this.models.setProvider({ ...provider, auth: { ...provider.auth, oauth: opencodeConsoleOAuth } });
+    }
     this.envSources = new Map();
     /** Settles once the environment has been looked through for keys. */
     this.scanned = this._scan();
