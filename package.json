@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "description": "EV: an assistant that understands the person first, then coordinates agents that work for them",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vulbsti/EV.git"
+  },
   "scripts": {
     "test": "node --test apps/daemon/tests/*.test.mjs",
     "start": "node apps/daemon/server.mjs",
