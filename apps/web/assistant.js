@@ -1135,7 +1135,7 @@ function closeSheets({ restore = true } = {}) {
 $("open-find").addEventListener("click", (event) => openSheet("sheet-find", event.currentTarget));
 $("open-work").addEventListener("click", (event) => openSheet("sheet-work", event.currentTarget));
 $("open-you").addEventListener("click", (event) => { openSheet("sheet-you", event.currentTarget); void showUnderstanding(); });
-$("open-look").addEventListener("click", (event) => openSheet("sheet-settings", event.currentTarget));
+$("open-look").addEventListener("click", (event) => { openSheet("sheet-settings", event.currentTarget); if (root.classList.contains("stab-models")) void loadModels(); });
 $("scrim").addEventListener("click", () => closeSheets());
 for (const button of document.querySelectorAll("[data-close]")) button.addEventListener("click", () => closeSheets());
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSheets(); });
@@ -1717,3 +1717,120 @@ render();
 connect();
 elements.input.focus({ preventScroll: true });
 window.addEventListener("online", () => { if (connection !== "live") connect(); void retryPending(); });
+
+// ---------- Settings: models ----------
+
+// What EV has learnt about models, from the atlas kept in the repository and
+// from this person's own work. Facts only: the choosing is EV's.
+const PERSONAL_BADGE = { said: ["You said", "b-said"], seen: ["Seen", "b-said"], relied_on: ["Relied on", ""] };
+const ATLAS_BADGE = { reported: ["Reported", "b-guess"], tested: ["Tested", ""] };
+const LIMIT_EXPLAIN = {
+  decide: "I weigh it each time: whether you are waiting, how far off the reset is, and what paying would cost. I say why.",
+  wait: "I wait for the subscription to come back. One that needs you to sign in again is not waited on.",
+  switch: "I carry on through a route paid per token straight away, within your cap, and tell you once.",
+  ask: "Nothing is paid for until you say so with the button below."
+};
+let modelsView = null;
+
+async function setupCall(path, { method = "GET", body } = {}) {
+  const response = await fetch(`/api/assistant/setup${path}`, { method, cache: "no-store", ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }) });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `HTTP ${response.status}`);
+  return response.json();
+}
+
+function claimLine(claim, personal) {
+  const [label, tone] = (personal ? PERSONAL_BADGE : ATLAS_BADGE)[claim.state] ?? [];
+  if (!label) return "";
+  const source = !personal && claim.source ? `<span class="src">${escapeHtml(claim.source)}</span>` : "";
+  const why = personal && claim.why ? `<span class="why">${escapeHtml(claim.why)}</span>` : "";
+  const forget = personal && claim.id ? `<button class="lnk" type="button" data-forget-claim="${escapeHtml(claim.id)}">Forget</button>` : "";
+  return `<p>${escapeHtml(claim.text)} <span class="badge ${tone}">${label}</span></p>${why || source || forget ? `<div class="links">${why}${source}${forget}</div>` : ""}`;
+}
+
+function renderModels(view) {
+  modelsView = view;
+  const cards = view.models.map((model) => {
+    const lines = [...model.personal.map((claim) => claimLine(claim, true)), ...model.atlas.map((claim) => claimLine(claim, false))].filter(Boolean).join("");
+    return `<div class="tile mem"><div class="card-h"><span class="card-t">${escapeHtml(model.name)}</span><span class="row-x">${escapeHtml(model.via.join(", "))}</span></div>`
+      + `${lines || `<p class="why">Nothing known yet. I learn it from the work it does for you.</p>`}`
+      + `<div class="links"><button class="lnk" type="button" data-model-off="${escapeHtml(model.key)}">Don't use this model</button></div></div>`;
+  });
+  const off = view.off.map((key) => `<div class="tile mem off"><div class="card-h"><span class="card-t">${escapeHtml(key)}</span><span class="row-x">Not used</span></div><div class="links"><button class="lnk" type="button" data-model-on="${escapeHtml(key)}">Use it again</button></div></div>`);
+  $("models-list").innerHTML = [...cards, ...off].join("") || `<p class="note">No models are reachable yet. Connect an account to start.</p>`;
+  const unknown = $("models-unknown");
+  unknown.hidden = !view.unknown.length;
+  unknown.textContent = view.unknown.length ? `Also within your subscriptions, with nothing known yet: ${view.unknown.map((model) => model.name).join(", ")}.` : "";
+  const ran = view.lastRun?.at ?? view.lastRun;
+  $("models-runs").textContent = [ran ? `Last looked at your work ${shortWhen(ran)}.` : "I haven't looked at your work yet.", view.nextRun ? `Next look ${shortWhen(view.nextRun)}.` : ""].filter(Boolean).join(" ");
+  $("models-changes").innerHTML = view.changes.map((change) => `<div class="row"><div class="row-m"><span class="row-s">${escapeHtml(shortWhen(change.at))}${change.kind === "atlas" ? ", from the shared research" : change.kind === "note" ? ", from you" : ""}</span><span>${escapeHtml(change.summary)}</span></div>${change.canUndo ? `<button class="btn quiet" type="button" data-undo-change="${escapeHtml(change.id)}">Undo</button>` : change.undone ? `<span class="undone">Undone</span>` : ""}</div>`).join("")
+    || `<div class="row"><div class="row-m"><span class="row-s">Nothing has changed in the last month.</span></div></div>`;
+  $("model-notes").innerHTML = view.general.map((claim) => `<div class="tile mem">${claimLine(claim, true)}</div>`).join("");
+}
+
+function renderLimit(limit) {
+  for (const button of $("limit-choice").querySelectorAll("[data-limit]")) button.setAttribute("aria-pressed", String(button.dataset.limit === limit.choice));
+  $("limit-explain").textContent = LIMIT_EXPLAIN[limit.choice] ?? "";
+  if (document.activeElement !== $("limit-cap")) $("limit-cap").value = limit.monthlyCapUsd ?? "";
+  const spent = `$${Number(limit.spentThisMonthUsd ?? 0).toFixed(2)}`;
+  $("limit-spent").textContent = `${spent} spent on paid routes this month${limit.monthlyCapUsd ? ` of your $${limit.monthlyCapUsd} cap` : ""}. The cap is never crossed without your say-so.`;
+  // The say-so is offered only while an account is out of use and nothing already allows paying.
+  $("limit-allow").hidden = !limit.outNow?.length || limit.allowedNow;
+  $("limit-allow").textContent = `Use paid routes until ${limit.outNow?.join(", ") || "my subscriptions"} ${limit.outNow?.length === 1 ? "is" : "are"} back`;
+}
+
+async function loadModels() {
+  $("models-status").textContent = modelsView ? "" : "Loading what I've learnt…";
+  try {
+    const [view, limit] = await Promise.all([setupCall("/guide"), setupCall("/limit")]);
+    renderModels(view);
+    renderLimit(limit);
+    $("models-status").textContent = "";
+  } catch (error) { $("models-status").textContent = `Could not load this: ${error.message}`; }
+}
+
+async function modelsAct(run) {
+  $("models-status").textContent = "";
+  try { await run(); await loadModels(); } catch (error) { $("models-status").textContent = error.message; }
+}
+
+$("settings-tabs").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-stab]");
+  if (!button) return;
+  root.classList.remove("stab-models", "stab-look");
+  root.classList.add(`stab-${button.dataset.stab}`);
+  for (const tab of $("settings-tabs").querySelectorAll("[data-stab]")) tab.setAttribute("aria-pressed", String(tab === button));
+  if (button.dataset.stab === "models") void loadModels();
+});
+$("sheet-look").addEventListener("click", (event) => {
+  const target = event.target.closest("[data-undo-change], [data-forget-claim], [data-model-off], [data-model-on], [data-limit]");
+  if (!target) return;
+  target.disabled = true;
+  const { undoChange, forgetClaim, modelOff, modelOn, limit } = target.dataset;
+  if (undoChange) void modelsAct(() => setupCall("/guide/undo", { method: "POST", body: { change: undoChange } }));
+  else if (forgetClaim) void modelsAct(() => setupCall(`/guide/note/${encodeURIComponent(forgetClaim)}`, { method: "DELETE" }));
+  else if (modelOff || modelOn) void modelsAct(() => setupCall("/guide/off", { method: "POST", body: { model: modelOff || modelOn, off: Boolean(modelOff) } }));
+  else if (limit) void modelsAct(() => setupCall("/limit", { method: "POST", body: { choice: limit } })).finally(() => { target.disabled = false; });
+});
+$("models-run").addEventListener("click", (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  $("models-status").textContent = "Looking at your recent work…";
+  void modelsAct(() => setupCall("/guide/run", { method: "POST", body: {} })).finally(() => { button.disabled = false; });
+});
+$("model-note-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = $("model-note").value.trim();
+  if (!text) return;
+  void modelsAct(async () => { await setupCall("/guide/note", { method: "POST", body: { text } }); $("model-note").value = ""; });
+});
+$("limit-cap").addEventListener("change", (event) => {
+  const value = event.target.value.trim();
+  void modelsAct(() => setupCall("/limit", { method: "POST", body: { monthlyCapUsd: value === "" ? null : Number(value) } }));
+});
+$("limit-allow").addEventListener("click", () => void modelsAct(() => setupCall("/limit/allow", { method: "POST", body: {} })));
+
+// The person's time zone, so every time KenWise tells them is in their own time.
+try {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (timeZone) void fetch("/api/assistant/setup/time-zone", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeZone }) }).catch(() => {});
+} catch {}

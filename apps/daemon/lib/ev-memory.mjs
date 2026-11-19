@@ -1,3 +1,4 @@
+import { dayEdge, localDate } from "./local-time.mjs";
 import { memoryText, period } from "./assistant-memory.mjs";
 import { callModel, parseModelJson, sessionHeader } from "./ev-model.mjs";
 
@@ -175,23 +176,23 @@ function learnedValue(kind, op, base = {}) {
   return value;
 }
 
-/** The end of the day a passing state was said to end on, as an instant; null if none was given or it is not a date. */
+/** The end of the day (the person's day) a passing state was said to end on, as an instant; null if none was given or it is not a date. */
 function endOf(until) {
   if (typeof until !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(until)) return null;
-  const at = Date.parse(until.length === 10 ? `${until}T23:59:59.000Z` : until);
+  const at = until.length === 10 ? Date.parse(dayEdge(until, { end: true }) ?? "") : Date.parse(until);
   return Number.isNaN(at) ? null : new Date(at).toISOString();
 }
 
 function timing(kind, op, now, value) {
   const reviewDays = kind === "lesson" ? (value.cause === "environment" ? 30 : 90) : REVIEW_AFTER_DAYS[kind];
   const hours = Math.min(168, Math.max(1, Number(op.expiresInHours) || 24));
-  const validFrom = /^\d{4}-\d{2}-\d{2}$/.test(op.validFrom ?? "") ? `${op.validFrom}T00:00:00.000Z` : null;
+  const validFrom = /^\d{4}-\d{2}-\d{2}$/.test(op.validFrom ?? "") ? dayEdge(op.validFrom) : null;
   // A passing state ends on the date they gave (within a year), else after a few hours or days.
   const until = kind === "state" ? endOf(op.until) ?? endOf(value.until) : null;
   const used = until && Date.parse(until) > now && Date.parse(until) < now + 366 * DAY;
   const ends = used ? until : new Date(now + hours * 3_600_000).toISOString();
   // The note shows the end date only when it is the one that counts.
-  if (kind === "state") { if (used) value.until = until.slice(0, 10); else delete value.until; }
+  if (kind === "state") { if (used) value.until = localDate(until); else delete value.until; }
   return {
     validFrom,
     expiresAt: kind === "state" ? ends : null,

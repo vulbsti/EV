@@ -1,3 +1,4 @@
+import { clock } from "./local-time.mjs";
 import { constants } from "node:fs";
 import { access, open, readFile, realpath, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -979,7 +980,7 @@ export class AssistantWorkerService {
    * account). Says so once on the work. Throws if the work is stopped.
    */
   async _holdForAccount(active, wait, who) {
-    const message = wait.reason === "cap" ? `Waiting for ${who}'s model: paying for ${wait.providerName} would go past the monthly cap.` : wait.until ? `Waiting for ${who}'s model: the ${wait.providerName} account is limited until ${wait.until}.` : `Waiting for ${who}'s model: the ${wait.providerName} account ${wait.reason === "none" ? "is not connected" : "needs a new sign-in"}.`;
+    const message = wait.reason === "cap" ? `Waiting for ${who}'s model: paying for ${wait.providerName} would go past the monthly cap.` : wait.until ? `Waiting for ${who}'s model: the ${wait.providerName} account is limited until ${clock(wait.until)}.` : `Waiting for ${who}'s model: the ${wait.providerName} account ${wait.reason === "none" ? "is not connected" : "needs a new sign-in"}.`;
     if (message !== active.holding) await this._phase(active, message.replace(/\.$/, ""));
     active.holding = message;
     active.controller = new AbortController();
