@@ -782,7 +782,7 @@ async function handleApi(request, response, url) {
     });
     if (message.content !== text) throw Object.assign(new Error("clientMessageId belongs to different message text"), { statusCode: 409 });
     if (status === "queued") assistantWorkers.dispatch(taskId);
-    else if (status) assistantWorkers.steer(taskId, { mode });
+    else if (status && mode !== "after") assistantWorkers.steer(taskId, { mode });
     return json(response, replayed ? 200 : 202, { replayed, message: publicMessage(message), live: assistantSupervisor.live(taskId) });
   }
   if (request.method === "GET" && /^\/api\/assistant\/tasks\/[^/]+\/steps\/[^/]+\/output$/.test(url.pathname)) {

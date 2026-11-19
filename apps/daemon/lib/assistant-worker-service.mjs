@@ -1009,7 +1009,7 @@ export class AssistantWorkerService {
         // minute, without counting towards giving up.
         if (error.wait) {
           attempt--;
-          await this._holdForAccount(active, error.wait, "EV's quality check");
+          await this._holdForAccount(active, error.wait, "the review");
           continue;
         }
         if (attempt >= this.reviewHoldMs.length) {
@@ -1215,7 +1215,7 @@ export class AssistantWorkerService {
       const question = this._stuckQuestion(active, review, unresolved);
       if (question) throw codedError("NEEDS_INPUT", question, { question, answerSoFar: report.answer });
       await this._sendBack(active, task);
-      const revised = await this._runWorker(active, revisionPrompt({ request, brief: active.brief, review: review ?? { missing: hostNotes }, round: active.round - 1, sharedPath }), { reuseCompleted: false, phase: "Revising its work from EV's review" });
+      const revised = await this._runWorker(active, revisionPrompt({ request, brief: active.brief, review: review ?? { missing: hostNotes }, round: active.round - 1, sharedPath }), { reuseCompleted: false, phase: "Revising its work from the review" });
       if (active.shutdownRequested || active.stopRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
       if (revised.status === "budget_exceeded" && revised.text) { stopReason = "budget"; result = revised; continue; }
       if (revised.status !== "completed") {
