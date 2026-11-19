@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Kenwise: a personal AI assistant that understands what you mean first, then coordinates agents that work for you",
+  "description": "Kenwise: a personal AI assistant that understands you, keeps everything organised in one place, has context across everything without bloat, and remembers like a person, not a list of facts",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -28,9 +28,14 @@
     "ai-assistant",
     "ai-agents",
     "multi-agent",
+    "agent-orchestration",
     "theory-of-mind",
+    "intent",
     "long-term-memory",
+    "personal-memory",
+    "context-engineering",
     "local-first",
+    "self-hosted",
     "openclaw"
   ]
 }

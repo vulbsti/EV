@@ -3,16 +3,18 @@
 
 # Kenwise
 
-**The assistant that gets you before it gets to work.**
+**One assistant that understands you, and keeps everything in order so you don't have to.**
 
-You say it roughly. Kenwise reads your message with what it knows about you and the work already under way, works out what you mean, and asks only what it can't settle, saying what it will assume in the meantime. Then it hands the job to agents, checks their result against what you meant, sends it back until it is right, and only then tells you.
+Most AI assistants are an empty chat window and a list of facts about you. Kenwise is meant to work like a good human assistant who has been with you for months: it knows how you talk, what you are in the middle of, and what "the usual" means. You say things roughly, in one ongoing conversation, and get what you meant. Agents do the work in the background, and you only hear about it when it is right.
 
-- **Understanding comes first.** One model reads every message with your profile, a dated history and the open work, and can search everything else. Nothing in front of it routes on keywords, and no fixed flow decides what "stop" or "the usual" means.
-- **Few questions, out-loud guesses.** When something is unclear, Kenwise drafts on a stated assumption instead of interrogating you.
-- **No half-done work.** A reviewer opens the real output and sends it back with no round limit. Only accepted work reaches you.
-- **Work that lasts.** Every piece of work keeps its agent session and files, so you can steer it, hold it, pick it up later or reopen it after delivery. Work is never lost.
-- **Memory you can see and erase.** Kenwise keeps what you said apart from what it guessed, shows the evidence for each guess, and keeps a dated history. "Forget that" removes it from memory, history and search.
-- **Yours, on your machine.** One SQLite store, a page that only answers on localhost with a per-start token, and agents that run in containers which see only their own work folder.
+### What makes it different
+
+- **It understands what you mean.** Every message is read with who you are, what you're in the middle of and what came before. When something is unclear, Kenwise drafts on a guess it states out loud instead of quizzing you. No keyword rules decide what "stop" or "the usual" means: a model judges each time.
+- **One place, organised for you.** You never sort chats, folders or tabs. Talk in one conversation and Kenwise keeps the threads of work apart: a remark today and a decision next week about the same project land together, and you can hold or reopen any of it. *(Grouping by work and watching work live are being built; today all of it lives in one store with one search.)*
+- **Context across everything, without the bloat.** Kenwise can reach every conversation, every result, its memory and your imported Claude Code sessions, but it doesn't stuff them into the prompt. It carries a short picture of you and what's under way, and looks up the rest only when it needs it, the way a coding agent reads a codebase.
+- **Memory that grows like a person's, not a list of facts.** Kenwise forms an understanding of who you are and how you like work done, and judges each case from it rather than turning one remark into a rule. It keeps what you said apart from what it guessed, with the reason for each guess, lets old beliefs become history when you change, and keeps a dated story of what happened. You can see why it thinks anything, correct it, or make it forget.
+- **Work comes back done.** Agents carry the work out; a reviewer opens the real result and sends it back until it matches what you meant. Work is never lost: it can be steered, held, picked up later or reopened.
+- **Yours, on your machine.** Everything is in one local store. The page only answers on localhost, and agents run in containers that see only their own work folder.
 
 <p align="center"><img src="assets/demo.gif" alt="Walkthrough of the interface design: a work card opens into a live feed of what the agent is doing, pops out beside the chat with the draft so far, then 'How I understand you' shows four sentences about the person, and tapping one shows why Kenwise thinks it" width="880"></p>
 
