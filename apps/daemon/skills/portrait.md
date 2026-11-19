@@ -37,7 +37,7 @@ Also give the one question whose answer would change your understanding the most
 JSON only:
 
 ```
-{"lines":[{"line":"p1"?,"text":string,"why":string,"evidence":["n3","r1"]}],"question":{"text":string,"options":[string]}|null}
+{"lines":[{"line":"p1"?,"text":string,"why":string,"evidence":["n3","n7"]}],"question":{"text":string,"options":[string]}|null}
 ```
 
 - `line`: the id of the current sentence this one keeps or rewrites. Leave it out for a new sentence.

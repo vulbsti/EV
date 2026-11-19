@@ -20,7 +20,7 @@ import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView, rightNow } from "./lib/ev-memory.mjs";
 import { Threads } from "./lib/threads.mjs";
-import { Portrait, callsLog, latestPortrait, portraitHistory, portraitView, react } from "./lib/portrait.mjs";
+import { Portrait, callReactions, callsLog, latestPortrait, portraitHistory, portraitView, react } from "./lib/portrait.mjs";
 import { GitHubPullRequestConnector } from "./lib/github-pull-request-connector.mjs";
 import { StandingResponsibilityStore } from "./lib/standing-responsibility.mjs";
 import { StandingResponsibilityRunner } from "./lib/standing-runner.mjs";
@@ -343,7 +343,7 @@ function recentConversation(conversationId, before, limit = 12) {
   return store.listMessages(conversationId).filter((message) => message.sequence < before).slice(-limit).map((message) => {
     if (message.role === "user" && message.clientMessageId?.startsWith("pane:")) return `[${time(message.createdAt)}] Person, straight to the agent of work:${message.taskId}: ${message.content.slice(0, 1_500)}`;
     if (message.role === "user") return `[${time(message.createdAt)}] Person: ${message.content.slice(0, 1_500)}`;
-    if (message.replyTo) return `[${time(message.createdAt)}] EV: ${message.content.slice(0, 1_500)}`;
+    if (message.replyTo) return [`[${time(message.createdAt)}] EV: ${message.content.slice(0, 1_500)}`, ...callReactions(store, message.replyTo)].join("\n");
     return `[${time(message.createdAt)}] EV told them about ${message.taskId ? `work:${message.taskId}` : "some work"} on its own (its result or its question; read the work to see what it says)`;
   }).join("\n");
 }

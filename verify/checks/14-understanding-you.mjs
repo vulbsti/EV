@@ -158,6 +158,24 @@ export default {
         const after = JSON.stringify(await understanding(ev)) + JSON.stringify(await ev.memory());
         assert.ok(!after.includes("PLATFORM-6"), "A call EV made, or the person's reaction to it, survives forgetting the message it answered");
       }
+    },
+    {
+      id: "U-06",
+      expect: "When the person reacts to a call EV made, EV is shown that reaction, with their words, beside the reply it was on from its very next turn, before the learner has made anything of it.",
+      async run({ start, assert }) {
+        const ev = await start({ script: {
+          ev: (turn) => turn.reply("Two lines: on track.", { call: { made: "Kept it to two lines", why: "You asked while boarding.", other: "Wanted more" } }),
+          learner: () => []
+        } });
+        await ev.say("where does the comparison stand?");
+        const made = ((await understanding(ev)).calls ?? []).find((call) => call.made === "Kept it to two lines");
+        assert.ok(made, "The call EV made was not recorded with its reply");
+        await ev.api("/api/assistant/understanding/react", { on: `call:${made.callId}`, verdict: "other", words: "I had to decide, needed the reasons CONDOR-5" });
+        await ev.say("so?");
+        const shown = ev.standIn.calls("ev").at(-1).text;
+        const after = shown.slice(shown.indexOf("Two lines: on track."));
+        assert.ok(shown.includes("Two lines: on track.") && /Wanted more/.test(after) && after.includes("CONDOR-5"), "EV is not shown the person's reaction to its call beside that reply");
+      }
     }
   ]
 };

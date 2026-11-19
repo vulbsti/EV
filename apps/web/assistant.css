@@ -129,7 +129,7 @@ body { background: #0a0d13; }
 .ev .chip:hover { color: var(--ink); border-color: rgb(var(--edge) / calc(var(--ea) * 2)); }
 .ev .chip[aria-pressed="true"] { text-decoration: line-through; color: var(--ink3); border-style: dashed; background: transparent; }
 .ev .fix { display: none; font-size: 13px; color: var(--warm); }
-.ev.fix-yes .fix { display: block; }
+.ev .fix.on { display: block; }
 
 /* one conversation: days, and a marker where the work changes */
 .ev .day, .ev .earlier { align-self: center; font-size: 12px; font-weight: 500; color: var(--ink3); min-height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid rgb(var(--edge) / calc(var(--ea) * .7)); display: inline-flex; align-items: center; }
@@ -376,11 +376,14 @@ body { background: #0a0d13; }
 .ev .portrait > button { display: block; width: calc(100% + 24px); margin: 0 -12px; padding: 10px 12px; border-radius: 14px; font: 400 19px/1.38 var(--display); letter-spacing: -.015em; color: var(--ink); text-wrap: pretty; }
 .ev .portrait > button:hover { background: rgb(var(--tint) / var(--ga)); }
 .ev .portrait > button[aria-pressed="true"] { background: color-mix(in oklch, var(--accent) 13%, transparent); }
-.ev:not(.why-none) .portrait > button[aria-pressed="false"] { color: var(--ink3); }
+.ev .portrait.opened > button[aria-pressed="false"] { color: var(--ink3); }
+.ev .portrait > button .firm { margin-left: 8px; vertical-align: 3px; color: var(--warm); border-color: color-mix(in oklch, var(--warm) 45%, transparent); font-family: var(--sans, inherit); letter-spacing: 0; }
+.ev .portrait > button.challenged { color: var(--ink2); }
 .ev .whybox { display: none; flex-direction: column; gap: 12px; padding: 4px 0 14px 14px; margin-left: 2px; border-left: 2px solid var(--accent); font-size: .94em; color: var(--ink2); animation: ev-rise .22s ease-out; }
-.ev.why-s1 .wb-s1, .ev.why-s2 .wb-s2, .ev.why-s3 .wb-s3, .ev.why-s4 .wb-s4 { display: flex; }
+.ev .whybox.open { display: flex; }
+.ev .whybox .said-off { color: var(--warm); }
 .ev .whybox .in { flex: 1; min-width: 180px; height: 34px; border-radius: 999px; font-size: 13px; }
-.ev:not(.why-none) .tap { display: none; }
+.ev .portrait.opened ~ .tap { display: none; }
 .ev .mini { min-height: 34px; padding: 0 12px; border-radius: 999px; border: 1px solid rgb(var(--edge) / calc(var(--ea) * 1.2)); font-size: 12.5px; font-weight: 500; color: var(--ink2); white-space: nowrap; }
 .ev .mini:hover { color: var(--ink); border-color: rgb(var(--edge) / calc(var(--ea) * 2.4)); }
 .ev .mini[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); background: color-mix(in oklch, var(--accent) 18%, transparent); }
@@ -388,10 +391,8 @@ body { background: #0a0d13; }
 .ev .call { padding: 14px; display: flex; flex-direction: column; gap: 6px; }
 .ev .call b { font-weight: 600; }
 .ev .call .acts { margin-top: 6px; }
+.ev .q-done { color: var(--ink2); }
 .ev .firm { height: 22px; padding: 0 9px; border-radius: 999px; display: inline-flex; align-items: center; font-size: 11.5px; font-weight: 600; color: var(--ink2); border: 1px solid rgb(var(--edge) / calc(var(--ea) * 1.3)); white-space: nowrap; flex: none; }
-.ev .q-done { display: none; }
-.ev:not(.q1-none) .q-done { display: block; }
-.ev:not(.q1-none) .q-open { display: none; }
 
 /* ---------- Search and threads of work ---------- */
 .ev .find { display: flex; align-items: center; gap: 12px; padding: 6px 12px 6px 20px; border-bottom: 1px solid rgb(var(--edge) / calc(var(--ea) * .7)); color: var(--ink3); }
