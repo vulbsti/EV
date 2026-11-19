@@ -8,6 +8,7 @@ const elements = {
   stream: $("stream"),
   col: $("col"),
   earlier: $("earlier"),
+  focusnote: $("focusnote"),
   empty: $("empty"),
   statusbar: $("statusbar"),
   composer: $("composer"),
@@ -18,6 +19,8 @@ const elements = {
   workBody: $("work-body"),
   railWork: $("rail-work"),
   findInput: $("find-input"),
+  findBrowse: $("find-browse"),
+  focusTitle: $("focus-title"),
   findNote: $("find-note"),
   findResults: $("find-results"),
   memoryFilter: $("memory-filter"),
@@ -69,6 +72,9 @@ let awaiting = null;
 let earlier = false;
 let loadingEarlier = false;
 let loaded = false;
+// Threads of work: the list (from /threads), and the one in focus with what it holds.
+let threadList = null;
+let focus = null; // { threadId, name, messages: Map, sent: Set of clientMessageIds said while focused }
 // Follow new messages unless the person has scrolled up to read.
 let following = true;
 
@@ -285,10 +291,24 @@ const linksOf = (message) => {
   return ids;
 };
 
+/** In focus: what the thread holds, what was said into it on this page, and EV's answers to those. */
+function focusedMessages() {
+  const shown = new Map(focus.messages);
+  const said = new Set();
+  for (const message of messages.values()) {
+    if (message.clientMessageId && focus.sent.has(message.clientMessageId)) said.add(message.messageId);
+  }
+  for (const message of messages.values()) {
+    if ((message.threads ?? []).includes(focus.threadId) || said.has(message.messageId) || said.has(message.replyTo)) shown.set(message.messageId, message);
+    else if (shown.has(message.messageId)) shown.set(message.messageId, message);
+  }
+  return [...shown.values()].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)) || a.sequence - b.sequence);
+}
+
 function visibleMessages() {
-  const list = [...messages.values()].sort((a, b) => a.sequence - b.sequence);
+  const list = focus ? focusedMessages() : [...messages.values()].sort((a, b) => a.sequence - b.sequence);
   const confirmed = new Set(list.map((message) => message.clientMessageId).filter(Boolean));
-  const waiting = [...pending.values()].filter((item) => !confirmed.has(item.clientMessageId)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const waiting = [...pending.values()].filter((item) => !confirmed.has(item.clientMessageId) && (!focus || focus.sent.has(item.clientMessageId))).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const item of waiting) list.push({ messageId: item.clientMessageId, clientMessageId: item.clientMessageId, role: "user", content: item.text, createdAt: item.createdAt, pending: true, failed: item.failed });
   return list;
 }
@@ -298,6 +318,17 @@ function dayNode(key, iso) {
   let node = nodes.get(nodeKey);
   if (!node) { node = make("div", "day"); nodes.set(nodeKey, node); }
   setText(node, dayLabel(iso));
+  return node;
+}
+
+function strandNode(key, threadId) {
+  const thread = threadList?.threads.find((item) => item.threadId === threadId);
+  if (!thread) return null;
+  const nodeKey = `s:${key}`;
+  let node = nodes.get(nodeKey);
+  if (!node) { node = make("button", "strand", { type: "button" }); nodes.set(nodeKey, node); }
+  node.dataset.thread = threadId;
+  setText(node, thread.name);
   return node;
 }
 
@@ -388,12 +419,19 @@ function render() {
   const byMessage = new Map();
   for (const [taskId, key] of home) byMessage.set(key, [...(byMessage.get(key) ?? []), taskId]);
 
-  const order = [];
+  const order = [elements.focusnote];
   const used = new Set();
   let lastDay = null;
+  let lastThread = null;
   for (const message of list) {
     const day = dayKey(message.createdAt);
     if (day !== lastDay) { const divider = dayNode(day, message.createdAt); order.push(divider); used.add(`d:${day}`); lastDay = day; }
+    // Where the work changes, a marker names the thread it moved to; it opens that thread.
+    if (!focus && message.role === "user" && message.threads?.length && message.threads[0] !== lastThread) {
+      const strand = strandNode(keyOf(message), message.threads[0]);
+      if (strand) { order.push(strand); used.add(`s:${keyOf(message)}`); }
+    }
+    if (message.role === "user" && message.threads?.length) lastThread = message.threads[0];
     const node = messageNode(message);
     used.add(keyOf(message));
     // Cards in the order the message names them.
@@ -417,7 +455,7 @@ function render() {
   } else typing = null;
 
   arrange(elements.col, order, elements.earlier);
-  elements.earlier.hidden = !earlier;
+  elements.earlier.hidden = !earlier || Boolean(focus);
   elements.empty.hidden = !loaded || list.length > 0 || earlier;
   renderWork();
   if (following) toBottom();
@@ -492,9 +530,12 @@ function applySnapshot(data) {
   loaded = true;
   render();
   toBottom();
+  void loadThreads();
 }
 
 function applyChange(data) {
+  if (focus) for (const message of data.messages ?? []) if (focus.messages.has(message.messageId)) focus.messages.set(message.messageId, message);
+  if (data.threadsChanged) threadsSoon();
   upsertMessages(data.messages);
   upsertTasks(data.tasks);
   if (typeof data.thinking === "boolean") thinking = data.thinking;
@@ -619,7 +660,9 @@ elements.composer.addEventListener("submit", (event) => {
   saveDraft();
   resizeInput();
   following = true;
-  void sendPending({ clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString(), failed: false });
+  const clientMessageId = crypto.randomUUID();
+  focus?.sent.add(clientMessageId);
+  void sendPending({ clientMessageId, text, createdAt: new Date().toISOString(), failed: false });
 });
 elements.input.addEventListener("input", () => { resizeInput(); saveDraft(); });
 elements.input.addEventListener("keydown", (event) => {
@@ -664,6 +707,8 @@ async function holdTask(taskId, retryOnConflict = true) {
 
 elements.col.addEventListener("click", (event) => {
   if (event.target.closest("#earlier")) { void loadEarlier(); return; }
+  const strand = event.target.closest(".strand");
+  if (strand) { void focusThread(strand.dataset.thread); return; }
   const card = event.target.closest("[data-task-id]");
   if (!card) return;
   const taskId = card.dataset.taskId;
@@ -698,6 +743,7 @@ function openSheet(name, opener) {
   sheetOpener = opener ?? document.activeElement;
   root.classList.add(name);
   if (name === "sheet-work") renderWork();
+  if (name === "sheet-find") { renderBrowse(); elements.findInput.placeholder = focus ? `Search in ${focus.name}` : "Search everything said and done"; void loadThreads(); }
   const sheet = { "sheet-find": "sheet-find", "sheet-work": "sheet-work", "sheet-you": "sheet-you", "sheet-settings": "sheet-look" }[name];
   const focusable = name === "sheet-find" ? elements.findInput : $(sheet).querySelector("button, input");
   requestAnimationFrame(() => focusable?.focus());
@@ -759,6 +805,149 @@ $("sheet-look").addEventListener("click", (event) => {
   try { localStorage.setItem(LOOK_KEY, JSON.stringify(look)); } catch {}
 });
 
+// ---------- Threads of work ----------
+
+const NUMBER = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+const count = (n, word, plural = `${word}s`) => `${NUMBER[n] ?? n} ${n === 1 ? word : plural}`;
+const capital = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** "Today and last Friday. One piece of work under way, one question for you" */
+function threadLine(thread) {
+  // "Today and last Friday": only the first day keeps its capital.
+  const days = (thread.days ?? []).slice(0, 2).map((day, index) => { const label = dayLabel(`${day}T12:00:00`); return index && /^(Today|Yesterday|Last )/.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label; });
+  const when = days.join(" and ") || "";
+  const by = (statuses) => thread.work.filter((work) => statuses.includes(work.status)).length;
+  const under = by(["queued", "leased", "running", "verifying"]);
+  const asking = by(["waiting"]);
+  const held = by(["held"]);
+  const delivered = by(["completed"]);
+  const work = [
+    under && `${count(under, "piece")} of work under way`,
+    asking && `${count(asking, "question")} for you`,
+    held && `${count(held, "piece")} on hold`,
+    delivered && !under && !asking && `delivered${delivered > 1 ? ` ${count(delivered, "time")}` : ""}`
+  ].filter(Boolean).join(", ") || "Mentioned, nothing started";
+  const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+  return [thread.quiet ? "Quiet" : "", when, sentence(work)].filter(Boolean).join(". ");
+}
+
+let threadsTimer = null;
+function threadsSoon() {
+  clearTimeout(threadsTimer);
+  threadsTimer = setTimeout(() => { void loadThreads(); if (focus) void loadFocus(); }, 250);
+}
+
+async function loadThreads() {
+  try {
+    const response = await fetch("/api/assistant/threads", { cache: "no-store" });
+    if (!response.ok) return;
+    threadList = await response.json();
+  } catch { return; }
+  if (focus) {
+    const now = threadList.threads.find((thread) => thread.threadId === focus.threadId);
+    if (now) { focus.name = now.name; setText(elements.focusTitle, now.name); }
+  }
+  renderBrowse();
+  render();
+}
+
+function renderBrowse() {
+  if (!threadList) { setHtml(elements.findBrowse, `<p class="lede pad">One conversation, always.</p>`); return; }
+  const { threads, notGrouped, lastRegroup, collecting } = threadList;
+  const row = (thread) => `<button class="prow" type="button" data-thread="${escapeHtml(thread.threadId)}" aria-pressed="${focus?.threadId === thread.threadId}"><span class="row-m"><span class="row-t">${escapeHtml(thread.name)}</span><span class="row-s">${escapeHtml(threadLine(thread))}</span></span></button>`;
+  const options = threads.filter((thread) => !thread.quiet).map((thread) => `<option value="${escapeHtml(thread.threadId)}">${escapeHtml(thread.name)}</option>`).join("");
+  const loose = (item) => {
+    const target = item.messageId ? ` data-message="${escapeHtml(item.messageId)}" data-sequence="${escapeHtml(item.sequence ?? "")}" data-conversation="${escapeHtml(item.conversationId ?? "")}"` : item.workId ? ` data-work="${escapeHtml(item.workId)}"` : "";
+    return `<div class="loose"><button class="prow hit" type="button"${target}><span class="row-m"><span class="row-s">${escapeHtml(dayLabel(item.at))}${item.kind === "work" ? ", work" : item.kind === "import" ? ", imported" : ""}</span><span>${escapeHtml(item.text)}</span></span></button>${options ? `<select data-move="${escapeHtml(item.item)}" aria-label="Put in a thread"><option value="">Put in…</option>${options}</select>` : ""}</div>`;
+  };
+  const organised = lastRegroup
+    ? `<span>Last organised ${escapeHtml(shortWhen(lastRegroup.at))}: ${escapeHtml(lastRegroup.undone ? "undone" : lastRegroup.summary)}.</span>${lastRegroup.undone || lastRegroup.summary === "Nothing changed" ? "" : `<button class="lnk" type="button" data-undo="${escapeHtml(lastRegroup.regroupId)}">Undo</button>`}`
+    : "";
+  setHtml(elements.findBrowse, [
+    `<p class="lede pad">One conversation, always. I gather what belongs to the same work, whenever it was said, so you can pull it out.</p>`,
+    `<button class="prow" type="button" data-thread="" aria-pressed="${!focus}"><span class="row-m"><span class="row-t">Everything</span><span class="row-s">The whole conversation, in order</span></span></button>`,
+    threads.length ? `<h3>Threads of work</h3>${threads.map(row).join("")}` : "",
+    collecting && !threads.length ? `<p class="note pad">I'm collecting for now. Once I've seen a few days of your work, I'll group it into threads. You can also ask me to organise it now.</p>` : "",
+    notGrouped.count ? `<h3>Not grouped yet</h3><p class="note pad">${notGrouped.count === 1 ? "One new thing waits" : `${capital(count(notGrouped.count, "new thing"))} wait`} here until I next organise your work. Nothing here is lost.</p>${notGrouped.items.slice(0, 8).map(loose).join("")}${notGrouped.count > 8 ? `<p class="note pad">And ${notGrouped.count - 8} more.</p>` : ""}` : "",
+    `<div class="organise">${organised}<button class="lnk" type="button" data-organise>Organise now</button></div>`
+  ].join(""));
+}
+
+/** Shows only one thread of work (null: everything). */
+async function focusThread(threadId) {
+  closeSheets({ restore: false });
+  if (!threadId) {
+    focus = null;
+    root.classList.add("focus-all");
+    setText(elements.focusTitle, "KenWise");
+    following = true;
+    render();
+    toBottom();
+    return;
+  }
+  const name = threadList?.threads.find((thread) => thread.threadId === threadId)?.name ?? "Thread";
+  focus = { threadId, name, messages: new Map(), sent: new Set() };
+  root.classList.remove("focus-all");
+  setText(elements.focusTitle, name);
+  await loadFocus();
+  following = true;
+  toBottom();
+}
+
+async function loadFocus() {
+  const threadId = focus?.threadId;
+  if (!threadId) return;
+  try {
+    const response = await fetch(`/api/assistant/threads/${encodeURIComponent(threadId)}`, { cache: "no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+    if (focus?.threadId !== threadId) return;
+    // A thread merged into another opens as what it became.
+    if (body.thread.threadId !== threadId) { focus.threadId = body.thread.threadId; }
+    focus.name = body.thread.name;
+    setText(elements.focusTitle, body.thread.name);
+    focus.messages = new Map(body.messages.map((message) => [message.messageId, message]));
+    upsertTasks(body.tasks);
+    render();
+  } catch (error) {
+    showStatus(`Could not open that thread: ${error.message}`);
+    setTimeout(() => showStatus(""), 4_000);
+  }
+}
+
+$("unfocus").addEventListener("click", () => void focusThread(null));
+
+elements.findBrowse.addEventListener("click", (event) => {
+  const thread = event.target.closest("[data-thread]");
+  if (thread) { void focusThread(thread.dataset.thread || null); return; }
+  const hit = event.target.closest("button.hit");
+  if (hit) { void openHit(hit.dataset); return; }
+  const undo = event.target.closest("[data-undo]");
+  if (undo) { undo.disabled = true; void threadCommand("undo", { regroupId: undo.dataset.undo }); return; }
+  if (event.target.closest("[data-organise]")) {
+    void threadCommand("regroup", {}).then((ok) => { if (ok) { const line = elements.findBrowse.querySelector(".organise"); if (line) line.innerHTML = "<span>Organising your work. This takes a minute or two; this list updates when it is done.</span>"; } });
+  }
+});
+
+elements.findBrowse.addEventListener("change", (event) => {
+  const select = event.target.closest("select[data-move]");
+  if (select?.value) void threadCommand("move", { item: select.dataset.move, to: select.value });
+});
+
+async function threadCommand(name, body) {
+  try {
+    const response = await fetch(`/api/assistant/threads/${name}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const reply = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(reply.error ?? `HTTP ${response.status}`);
+    await loadThreads();
+    return true;
+  } catch (error) {
+    showStatus(error.message);
+    setTimeout(() => showStatus(""), 5_000);
+    return false;
+  }
+}
+
 // ---------- Search ----------
 
 let searchTimer = null;
@@ -768,47 +957,118 @@ elements.findInput.addEventListener("input", () => {
   searchTimer = setTimeout(runSearch, 220);
 });
 
+const [MARK_OPEN, MARK_CLOSE] = ["\u0002", "\u0003"];
+/** An excerpt with the matched words marked; everything else is plain text. */
+function marked(excerpt) {
+  return String(excerpt ?? "").split(MARK_OPEN).map((part, index) => {
+    if (!index) return escapeHtml(part);
+    const [hit, rest = ""] = part.split(MARK_CLOSE);
+    return `<mark>${escapeHtml(hit)}</mark>${escapeHtml(rest)}`;
+  }).join("");
+}
+
+/** Where a hit was said, in words: "3 November, you said", "Tuesday, in the delivered result". */
+function hitWhere(hit) {
+  const day = hit.atIso ? dayLabel(hit.atIso) : "";
+  const what = hit.kind === "message" ? (hit.from === "person" ? "you said" : "")
+    : hit.kind === "work" ? `the work “${hit.title ?? "untitled"}”`
+      : hit.kind === "result" ? "in the delivered result"
+        : hit.kind === "memory" ? `noted about you${hit.status === "earlier version" ? ", earlier" : ""}`
+          : hit.kind === "history" ? "in what has happened"
+            : hit.kind === "session" ? `in a ${hit.tool ?? "outside"} session${hit.project ? ` (${hit.project})` : ""}` : hit.kind;
+  return [day, what].filter(Boolean).join(", ");
+}
+
+let lastQuery = "";
 async function runSearch() {
   const query = elements.findInput.value.trim();
+  lastQuery = query;
   const seq = ++searchSeq;
-  if (!query) {
-    elements.findNote.textContent = "One conversation, always. Search what was said, the work, and what I remember.";
-    elements.findResults.innerHTML = "";
-    return;
-  }
+  root.classList.toggle("search-yes", Boolean(query));
+  if (!query) { elements.findResults.innerHTML = ""; return; }
+  const scoped = focus ? `&thread=${encodeURIComponent(focus.threadId)}` : "";
   try {
-    const response = await fetch(`/api/assistant/search?q=${encodeURIComponent(query)}`, { cache: "no-store" });
+    const response = await fetch(`/api/assistant/search?q=${encodeURIComponent(query)}${scoped}`, { cache: "no-store" });
     const body = await response.json().catch(() => ({}));
     if (seq !== searchSeq) return;
     if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
     const hits = body.hits ?? [];
-    elements.findNote.textContent = hits.length ? `${hits.length === 1 ? "One place" : `${hits.length} places`} mention it.` : "Nothing found.";
-    elements.findResults.innerHTML = hits.map((hit) => {
-      const kind = { message: hit.from === "person" ? "you said" : "I said", work: "work", result: "a result", memory: "memory", session: hit.outside ?? "elsewhere", history: "history" }[hit.kind] ?? hit.kind;
-      const meta = [hit.at, kind, hit.title, hit.status, hit.period].filter(Boolean).join(" · ");
-      const messageId = hit.kind === "message" ? hit.id.slice("message:".length) : null;
-      const workId = hit.work?.startsWith("work:") ? hit.work.slice(5) : null;
-      const target = messageId && messages.has(messageId) ? ` data-message="${escapeHtml(messageId)}"` : workId && tasks.has(workId) ? ` data-work="${escapeHtml(workId)}"` : "";
-      const tag = target ? "button" : "div";
-      return `<${tag} class="prow hit"${target ? ` type="button"${target}` : ""}><span class="row-m"><span class="row-s">${escapeHtml(meta)}</span><span>${escapeHtml(hit.excerpt ?? "")}</span></span></${tag}>`;
-    }).join("");
+    // Grouped by the work they belong to, in the order the best match of each group was found.
+    const groups = new Map();
+    for (const hit of hits) {
+      const label = hit.threads?.[0]?.name ?? (["memory", "history"].includes(hit.kind) ? "What I know about you" : "Not grouped yet");
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(hit);
+    }
+    const threadCount = hits.length ? new Set(hits.map((hit) => hit.threads?.[0]?.id).filter(Boolean)).size : 0;
+    const scope = focus ? ` <button class="lnk" type="button" data-everywhere>Search everything</button>` : "";
+    setHtml(elements.findNote, hits.length
+      ? `${escapeHtml(capital(count(hits.length, "place")))}${focus ? ` in ${escapeHtml(focus.name)}` : threadCount ? `, in ${escapeHtml(count(threadCount, "thread"))} of work` : ""}.${scope}`
+      : `Nothing found by those words${focus ? ` in ${escapeHtml(focus.name)}` : ""}.${scope} <button class="lnk" type="button" data-ask>Ask KenWise to find it</button>`);
+    elements.findResults.innerHTML = [...groups].map(([label, list]) => `<h3>${escapeHtml(label)}</h3>${list.map((hit) => {
+      const messageId = hit.kind === "message" ? hit.id.slice("message:".length) : "";
+      const workId = hit.work?.startsWith("work:") ? hit.work.slice(5) : "";
+      const data = [
+        messageId && `data-message="${escapeHtml(messageId)}" data-sequence="${escapeHtml(hit.sequence ?? "")}" data-conversation="${escapeHtml(hit.conversation ?? "")}"`,
+        workId && `data-work="${escapeHtml(workId)}"`,
+        hit.threads?.[0] && `data-in-thread="${escapeHtml(hit.threads[0].id.slice(7))}"`,
+        ["memory", "history"].includes(hit.kind) && `data-you="1"`
+      ].filter(Boolean).join(" ");
+      return `<button class="prow hit" type="button" ${data}><span class="row-m"><span class="row-s">${escapeHtml(hitWhere(hit))}</span><span>${marked(hit.excerpt)}</span></span></button>`;
+    }).join("")}`).join("");
   } catch (error) {
     if (seq === searchSeq) elements.findNote.textContent = `Search failed: ${error.message}`;
   }
 }
 
-elements.findResults.addEventListener("click", (event) => {
-  const hit = event.target.closest("button.hit");
-  if (!hit) return;
-  if (hit.dataset.work) { showTask(hit.dataset.work, { open: true }); return; }
-  closeSheets();
-  const node = [...elements.col.querySelectorAll("[data-message-id]")].find((item) => item.dataset.messageId === hit.dataset.message);
-  if (!node) return;
+elements.findNote.addEventListener("click", (event) => {
+  if (event.target.closest("[data-everywhere]")) { focus = null; root.classList.add("focus-all"); setText(elements.focusTitle, "KenWise"); render(); void runSearch(); return; }
+  if (event.target.closest("[data-ask]") && lastQuery) {
+    // Plain words found nothing: EV searches the way an agent does, trying other words and reading what it finds.
+    closeSheets();
+    const clientMessageId = crypto.randomUUID();
+    focus?.sent.add(clientMessageId);
+    following = true;
+    void sendPending({ clientMessageId, text: `Can you find where we talked about ${lastQuery}?`, createdAt: new Date().toISOString(), failed: false });
+  }
+});
+
+/** Opens the conversation at a message, loading everything between it and what is already shown. */
+async function jumpToMessage(messageId, sequence) {
+  if (focus && !focusedMessages().some((message) => message.messageId === messageId)) await focusThread(null);
+  if (!messages.has(messageId) && Number.isInteger(sequence) && !focus) {
+    const first = Math.min(...[...messages.values()].map((message) => message.sequence));
+    if (Number.isFinite(first) && sequence < first) {
+      try {
+        const response = await fetch(`/api/assistant/conversation?conversationId=${encodeURIComponent(conversationId)}&before=${first}&from=${Math.max(1, sequence - 10)}`, { cache: "no-store" });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+        for (const message of body.messages ?? []) if (!messages.has(message.messageId)) messages.set(message.messageId, message);
+        earlier = Boolean(body.earlier);
+      } catch (error) { showStatus(`Could not open that point: ${error.message}`); setTimeout(() => showStatus(""), 4_000); return; }
+    }
+  }
   following = false;
+  render();
+  const node = [...elements.col.querySelectorAll("[data-message-id]")].find((item) => item.dataset.messageId === messageId);
+  if (!node) return;
   node.scrollIntoView({ block: "center", behavior: "smooth" });
   node.classList.remove("flash");
   void node.offsetWidth;
   node.classList.add("flash");
+}
+
+async function openHit(data) {
+  closeSheets();
+  if (data.message && (!data.conversation || data.conversation === conversationId)) { await jumpToMessage(data.message, Number(data.sequence) || null); return; }
+  if (data.work && tasks.has(data.work)) { showTask(data.work, { open: true }); return; }
+  if (data.inThread) { await focusThread(data.inThread); return; }
+  if (data.you) { openSheet("sheet-you"); void showUnderstanding(); }
+}
+
+elements.findResults.addEventListener("click", (event) => {
+  const hit = event.target.closest("button.hit");
+  if (hit) void openHit(hit.dataset);
 });
 
 // ---------- Understanding you: notes and history ----------

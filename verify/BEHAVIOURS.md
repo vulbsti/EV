@@ -48,6 +48,17 @@ EV is one conversation that never ends, and the page is a live view of it. These
 - ✓ **P-03** When one message asks for two pieces of work, both are tied to that message, and the page shows both under it.
 - ✓ **P-04** Forgetting something takes it off an open page at once, without a reload.
 
+## Task 11: Threads of work
+
+The one conversation is grouped by the work it is about. A small model files each new message into a thread that exists, or leaves it under "not grouped yet"; a stronger model, following the grouping skill, creates and reshapes threads every few days or when asked. Which thread something belongs in is the models' judgement and was walked through once (design/build/verification/threads-of-work.md). What is checked here holds whatever they decide: nothing goes missing, the person's own moves stand, a regroup lands whole and can be undone, a thread's id lasts, filing never delays a reply, and forgetting reaches the threads.
+
+- ✓ **G-01** Whatever the models decide, every message the person sent is either in a thread or listed under "not grouped yet". Nothing drops out of sight.
+- ✓ **G-02** When the person puts a message in a thread themselves, no model moves it again: not the filer, not a later organise run.
+- ✓ **G-03** An organise run changes the threads all at once or not at all, and undoing it puts back exactly what was there before.
+- ✓ **G-04** A thread keeps its id when it is renamed or merged into another, so a link to it still opens the work it became.
+- ✓ **G-05** Filing never holds up a reply: while the filer is still working on one message, the person's next message is answered.
+- ✓ **G-06** Forgetting a message takes its words out of the threads too: the filer's gist of it, and any thread card that may repeat it.
+
 ## Task 3: One store with real ids
 
 Everything EV holds lives in one place and is linked: a message to the work it started, the work to its result, a memory to where it came from. Because of that, forgetting reaches every copy, a restart loses nothing, and a result can never be too large to keep.

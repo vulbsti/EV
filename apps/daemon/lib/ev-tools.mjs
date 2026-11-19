@@ -3,6 +3,7 @@ import { memoryText } from "./assistant-memory.mjs";
 import { evidenceText, isQuoteOf } from "./ev-memory.mjs";
 import { ERASED_TEXT, codedError } from "./store.mjs";
 import { toolName } from "./outside-sessions.mjs";
+import { threadFacts } from "./threads.mjs";
 
 /**
  * What EV's tools do, for one turn over one inbox item. Lookups (search,
@@ -45,10 +46,10 @@ export function workState(task) {
   }
 }
 
-/** The ids EV uses: "work:<id>", "message:<id>", "result:<id>", "memory:<revision id>", "history:<line id>", "session:<imported message id>". */
+/** The ids EV uses: "work:<id>", "message:<id>", "result:<id>", "memory:<revision id>", "history:<line id>", "session:<imported message id>", "thread:<id>". */
 function parseRef(store, id) {
   const value = required(id, "id");
-  const match = /^(work|message|result|memory|history|session):(.+)$/.exec(value);
+  const match = /^(work|message|result|memory|history|session|thread):(.+)$/.exec(value);
   if (match) return { kind: match[1], key: match[2] };
   const has = (sql) => store.db.prepare(sql).get(value);
   if (has("SELECT 1 FROM work WHERE work_id = ?")) return { kind: "work", key: value };
@@ -69,12 +70,28 @@ export function lookups({ store, supervisor, memory }) {
   const workRow = (workId) => store.db.prepare("SELECT work_id, status, input_json FROM work WHERE work_id = ?").get(workId);
   const outsideRow = (messageId) => store.db.prepare("SELECT m.session_id, m.seq, m.role, s.tool, s.project, s.path, s.source_session_id, s.imported_at FROM outside_messages m JOIN outside_sessions s ON s.session_id = m.session_id WHERE m.message_id = ?").get(messageId);
   const titleOf = (row) => { try { return JSON.parse(row.input_json)?.metadata?.title ?? null; } catch { return null; } };
+  const threads = threadFacts(store);
 
-  function search(query, { exclude = [], limit = 8 } = {}) {
-    return store.search(query, { exclude, limit }).map(({ ref, conversationId, at, excerpt }) => {
+  /**
+   * Full-text hits, each with the threads of work it is in. `thread` keeps
+   * only hits in that thread; `mark` marks the matched words in the excerpt
+   * (for the page).
+   */
+  function search(query, { exclude = [], limit = 8, thread = null, mark = false } = {}) {
+    const inThread = thread ? threads.live(String(thread).replace(/^thread:/, "")) : null;
+    if (thread && !inThread) return [];
+    const found = store.search(query, { exclude, limit: inThread ? limit * 20 : limit, mark })
+      .map((row) => ({ ...row, threadIds: threads.refThreads(row.ref) }))
+      .filter((row) => !inThread || row.threadIds.includes(inThread)).slice(0, limit);
+    return found.map(({ ref, conversationId, at, excerpt, threadIds }) => {
       const [kind, key] = [ref.slice(0, ref.indexOf(":")), ref.slice(ref.indexOf(":") + 1)];
-      const hit = { id: ref, kind, ...(conversationId ? { conversation: conversationId } : {}), at: when(at) };
-      if (kind === "message") hit.from = store.db.prepare("SELECT role FROM messages WHERE message_id = ?").get(key)?.role === "user" ? "person" : "EV";
+      const hit = { id: ref, kind, ...(conversationId ? { conversation: conversationId } : {}), at: when(at), ...(mark ? { atIso: at } : {}) };
+      if (threadIds.length) hit.threads = threadIds.map((id) => ({ id: `thread:${id}`, name: threads.thread(id)?.name }));
+      if (kind === "message") {
+        const row = store.db.prepare("SELECT role, seq FROM messages WHERE message_id = ?").get(key);
+        hit.from = row?.role === "user" ? "person" : "EV";
+        hit.sequence = row?.seq ?? null;
+      }
       if (kind === "work" || kind === "result") {
         const row = workRow(kind === "work" ? key : store.db.prepare("SELECT work_id FROM results WHERE result_id = ?").get(key)?.work_id);
         if (row) Object.assign(hit, { work: `work:${row.work_id}`, title: titleOf(row) });
@@ -180,8 +197,22 @@ export function lookups({ store, supervisor, memory }) {
     ].join("\n");
   }
 
+  function readThread(threadId) {
+    const id = threads.live(threadId);
+    const thread = id && threads.thread(id);
+    if (!thread) throw codedError("NOT_FOUND", `No thread thread:${threadId}`);
+    const items = threads.items("EXISTS (SELECT 1 FROM thread_links t WHERE t.item = x.item AND t.thread_id = ?)", [id]);
+    return [
+      `Thread thread:${id}: "${thread.name}"${thread.quiet ? " (quiet)" : ""}${id !== threadId ? ` (thread:${threadId} was merged into it)` : ""}. A view over the one conversation, grouping what belongs to this work across days.`,
+      `Card: ${thread.card ?? "(none yet)"}`,
+      `Its ${items.length} item(s), oldest first (open any with read; message:… opens the message with the ones around it):`,
+      ...items.map(threads.itemLine)
+    ].join("\n");
+  }
+
   async function read(id) {
     const { kind, key } = parseRef(store, id);
+    if (kind === "thread") return readThread(key);
     if (kind === "message") return readMessage(key);
     if (kind === "work") return readWork(key);
     if (kind === "result") return readResult(key);
@@ -198,7 +229,7 @@ export function lookups({ store, supervisor, memory }) {
  * a new piece of work without storing it. Call `run` for each tool call, then
  * `commit` once with what EV said.
  */
-export function createTurn({ store, supervisor, workers, memory, ownerId, item, newWork, log = console.error }) {
+export function createTurn({ store, supervisor, workers, memory, ownerId, item, newWork, regroup = null, log = console.error }) {
   const { message, conversationId } = item;
   const { search, read } = lookups({ store, supervisor, memory });
   const said = [];
@@ -207,6 +238,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
   const stopped = [];
   const remembered = [];
   const forgotten = [];
+  const regroups = [];
   const done = [];
 
   async function findWork(id) {
@@ -261,6 +293,12 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       return answer("passed on", task.status === "waiting"
         ? "It was waiting for the person; it carries on with this in the same session when this turn ends."
         : "The same agent gets it at its next step, in the same session, and it is taken into account before the result is reviewed.");
+    },
+    regroup({ note = "" }) {
+      if (!regroup) throw codedError("NOT_AVAILABLE", "Threads of work cannot be organised here");
+      regroups.push(typeof note === "string" ? note.trim().slice(0, 1_000) : "");
+      done.push("asked for the threads of work to be organised");
+      return "The threads of work are organised again in the background once this turn ends, which takes a minute or two. The person sees what changed where the threads are listed, and can undo it there.";
     },
     remember({ text, quote, kind = "fact" }) {
       const statement = required(text, "text").slice(0, 600);
@@ -362,6 +400,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       });
       for (const { taskId } of started) workers.dispatch(taskId);
       for (const taskId of queued) workers.dispatch(taskId);
+      for (const note of regroups) regroup(note);
       for (const { taskId } of stopped) workers.stopRun(taskId).catch((error) => log(`[${new Date().toISOString()}] Could not stop the agent of work:${taskId}: ${error.message}`));
     }
   };
