@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 
 /**
@@ -15,6 +16,33 @@ import { randomUUID } from "node:crypto";
 const LIFETIME_MS = 10 * 60_000;
 const ENDED = new Set(["saved", "failed", "expired", "cancelled"]);
 const coded = (code, message, statusCode) => Object.assign(new Error(message), { code, statusCode });
+
+/**
+ * Who signed in. Some flows (ChatGPT) are handed an OpenID ID token that
+ * names the account, then drop it; their access token says nothing about who
+ * it is. So while a sign-in runs, a token answer it receives is read for the
+ * ID token's email, for the account's hint only. Calls outside a sign-in pass
+ * through untouched.
+ */
+const signingIn = new AsyncLocalStorage();
+let watching = false;
+function watchTokenAnswers() {
+  if (watching) return;
+  watching = true;
+  const original = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    const answer = await original(...args);
+    const attempt = signingIn.getStore();
+    if (attempt && answer.ok && /json/.test(answer.headers.get("content-type") ?? "")) {
+      try {
+        const value = await answer.clone().json();
+        const claims = JSON.parse(Buffer.from(String(value?.id_token).split(".")[1], "base64url").toString());
+        if (typeof claims.email === "string") attempt.email = claims.email;
+      } catch {}
+    }
+    return answer;
+  };
+}
 
 export class SignIns {
   constructor({ connections, lifetimeMs = LIFETIME_MS }) {
@@ -67,10 +95,12 @@ export class SignIns {
         else if (attempt.state === "started") attempt.state = "waiting";
       }
     };
-    oauth.login(interaction, { getDeviceId: () => this.connections.deviceId(), agentName: "EV" })
+    watchTokenAnswers();
+    signingIn.run(attempt, () => oauth.login(interaction, { getDeviceId: () => this.connections.deviceId(), agentName: "EV" }))
       .then((credential) => {
         if (ENDED.has(attempt.state)) return;
-        attempt.connectionId = this.connections.save({ provider, method: "oauth", credential, label }).id;
+        const email = credential.email ?? attempt.email;
+        attempt.connectionId = this.connections.save({ provider, method: "oauth", credential: email ? { ...credential, email } : credential, label }).id;
         end("saved");
       })
       .catch((error) => end("failed", String(error?.message ?? error).slice(0, 500)));
@@ -101,7 +131,7 @@ export class SignIns {
   }
 
   view(attempt) {
-    const { controller, answer, question, end, ...shown } = attempt;
+    const { controller, answer, question, end, email, ...shown } = attempt;
     return { ...shown, paste: Boolean(question), question: question?.message ?? null, placeholder: question?.placeholder ?? null };
   }
 }
