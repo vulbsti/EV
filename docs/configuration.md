@@ -31,7 +31,11 @@ An account that hits its usage limit is marked limited until its reset time, and
 ## Agents and review
 
 - `EV_OPENCLAW_MODEL`: a different model for agents, named the same way.
-- `EV_MODEL_EV`, `EV_MODEL_REVIEWER`, `EV_MODEL_LEARNER` (unset by default): a model for one role only, overriding `EV_MODEL` for it, so cheap work can run on a cheap model.
+- `EV_MODEL_EV`, `EV_MODEL_REVIEWER`, `EV_MODEL_LEARNER`, `EV_MODEL_FILER`, `EV_MODEL_GROUPER` (unset by default): a model for one role only, overriding `EV_MODEL` for it, so cheap work can run on a cheap model. The filer files each new message into a thread of work and runs after every turn, so a small model suits it (`opencode-go/claude-haiku-5-5`). The grouper organises the threads every few days and should be a capable one.
+
+## Threads of work
+
+- `EV_REGROUP_EVERY` (default `7d`): how often the grouper organises the threads of work, as `30m`, `12h`, `7d` or `2w`. The first run comes this long after the first message, so it has days of context to work from. `0` turns the timer off; organising still happens when you ask for it in the conversation or from the list of threads.
 - `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you. The default is docker: each agent sees only its goal folder plus its own home folder. Either way each piece of work has its own home, never yours. `EV_OPENCLAW_IMAGE` overrides the image name.
 - Web search uses DuckDuckGo (no key) and is built into the image. In host mode, install the plugin with `npm i --prefix ~/.local/share/openclaw-plugins @openclaw/duckduckgo-plugin` and set `EV_OPENCLAW_SEARCH_PLUGIN` to its absolute path.
 - `EV_REVIEW_HOLD_MS` (default `30000,120000`): how long KenWise waits before retrying an unavailable reviewer. A result is never delivered unchecked.

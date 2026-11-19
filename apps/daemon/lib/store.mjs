@@ -320,6 +320,69 @@ CREATE TABLE IF NOT EXISTS outside_messages (
 );
 CREATE INDEX IF NOT EXISTS outside_messages_source ON outside_messages (source_id);
 
+-- Threads of work: groups over the one conversation, so what belongs to the
+-- same work can be read together across days. A thread is a view: nothing is
+-- moved out of the conversation. A thread merged into another keeps its id
+-- (merged_into), so a link to it still opens what it became.
+CREATE TABLE IF NOT EXISTS threads (
+  thread_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  card TEXT,
+  quiet INTEGER NOT NULL DEFAULT 0,
+  merged_into TEXT REFERENCES threads(thread_id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+-- Which thread an item is in. An item is the person's message
+-- (message:<id>), a piece of work (work:<id>) or an imported session
+-- (import:<id>); it may sit in two threads, or in none ("not grouped yet").
+-- by: inherited (code followed a link), filer, grouper, person.
+CREATE TABLE IF NOT EXISTS thread_links (
+  item TEXT NOT NULL,
+  thread_id TEXT NOT NULL REFERENCES threads(thread_id),
+  by TEXT NOT NULL CHECK (by IN ('inherited', 'filer', 'grouper', 'person')),
+  sure REAL,
+  at TEXT NOT NULL,
+  PRIMARY KEY (item, thread_id)
+);
+CREATE INDEX IF NOT EXISTS thread_links_thread ON thread_links (thread_id);
+-- What filing has done with each item: the filer's one-line gist, when it was
+-- filed, failed attempts, and whether the person placed it (pinned: nothing
+-- but the person moves it again).
+CREATE TABLE IF NOT EXISTS filing (
+  item TEXT PRIMARY KEY,
+  gist TEXT,
+  filed_at TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0
+);
+-- Each organise run, and what the threads and links were before it, so the
+-- latest one can be undone as a whole. summary is written by code.
+CREATE TABLE IF NOT EXISTS regroups (
+  regroup_id TEXT PRIMARY KEY,
+  why TEXT NOT NULL,
+  at TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  undone_at TEXT
+);
+CREATE TABLE IF NOT EXISTS regroup_threads (
+  regroup_id TEXT NOT NULL REFERENCES regroups(regroup_id),
+  thread_id TEXT NOT NULL,
+  existed INTEGER NOT NULL,
+  name TEXT,
+  card TEXT,
+  quiet INTEGER,
+  merged_into TEXT,
+  PRIMARY KEY (regroup_id, thread_id)
+);
+CREATE TABLE IF NOT EXISTS regroup_links (
+  regroup_id TEXT NOT NULL REFERENCES regroups(regroup_id),
+  item TEXT NOT NULL,
+  links_json TEXT NOT NULL,
+  PRIMARY KEY (regroup_id, item)
+);
+
 -- One full-text index over what EV holds: every message, every piece of work
 -- (its title and brief), every result, every version of every memory, every
 -- imported message, every line of the dated history.
@@ -355,6 +418,13 @@ CREATE TRIGGER IF NOT EXISTS index_work AFTER INSERT ON work BEGIN
   INSERT INTO search_refs (ref, conversation_id, at) VALUES ('work:' || new.work_id, new.conversation_id, new.created_at);
   INSERT INTO search_index (rowid, body) VALUES (last_insert_rowid(), concat_ws(char(10), json_extract(new.input_json, '$.metadata.title'), json_extract(new.input_json, '$.metadata.sourceRequest')));
 END;
+-- A piece of work renamed or rebriefed is found by its new words.
+CREATE TRIGGER IF NOT EXISTS reindex_work AFTER UPDATE OF input_json ON work
+WHEN json_extract(new.input_json, '$.metadata.title') IS NOT json_extract(old.input_json, '$.metadata.title')
+  OR json_extract(new.input_json, '$.metadata.sourceRequest') IS NOT json_extract(old.input_json, '$.metadata.sourceRequest') BEGIN
+  DELETE FROM search_index WHERE rowid = (SELECT id FROM search_refs WHERE ref = 'work:' || new.work_id);
+  INSERT INTO search_index (rowid, body) SELECT id, concat_ws(char(10), json_extract(new.input_json, '$.metadata.title'), json_extract(new.input_json, '$.metadata.sourceRequest')) FROM search_refs WHERE ref = 'work:' || new.work_id;
+END;
 CREATE TRIGGER IF NOT EXISTS index_result AFTER INSERT ON results BEGIN
   INSERT INTO search_refs (ref, conversation_id, at) VALUES ('result:' || new.result_id, (SELECT conversation_id FROM work WHERE work_id = new.work_id), new.at);
   INSERT INTO search_index (rowid, body) VALUES (last_insert_rowid(), concat_ws(char(10), (SELECT json_extract(input_json, '$.metadata.title') FROM work WHERE work_id = new.work_id), json_extract(new.result_json, '$.text')));
@@ -383,6 +453,10 @@ END;
 `;
 
 export const ERASED_TEXT = "[forgotten]";
+/** What a thread is called after something in it was forgotten, until the next organise run names it again. */
+export const FORGOTTEN_NAME = "Untitled (being renamed)";
+/** What a marked search excerpt puts around each matched word (characters no one types). */
+export const MARK = ["\u0002", "\u0003"];
 const ERASED_DATA = JSON.stringify({ erased: true });
 
 export function codedError(code, message, details = {}) {
@@ -630,6 +704,11 @@ export function openStore({ path = ":memory:" } = {}) {
     return db.prepare("SELECT * FROM messages WHERE conversation_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?").all(conversationId, before, limit).reverse().map(message);
   }
 
+  /** These messages, in the order they were said. */
+  function messagesByIds(ids) {
+    return ids.map(messageById).filter(Boolean).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.sequence - b.sequence);
+  }
+
   /** A message and the replies to it. */
   function messageWithReplies(messageId) {
     return db.prepare("SELECT * FROM messages WHERE message_id = ? OR reply_to = ? ORDER BY seq").all(messageId, messageId).map(message);
@@ -656,6 +735,34 @@ export function openStore({ path = ":memory:" } = {}) {
     }
   }
 
+  /**
+   * Takes an erased item out of the threads. Its gist goes, and so does its
+   * place in every thread. Each thread it was in loses its name and its card,
+   * now and in the record kept to undo a regroup, because either may repeat
+   * what was said. Until the next organise run (which the threads engine
+   * starts soon after) such a thread is called FORGOTTEN_NAME. A thread left
+   * with nothing in it goes, with any thread merged into it.
+   */
+  function dropFromThreads(item) {
+    db.prepare("UPDATE filing SET gist = NULL WHERE item = ?").run(item);
+    const touched = db.prepare("SELECT thread_id FROM thread_links WHERE item = ?").all(item).map((row) => row.thread_id);
+    db.prepare("DELETE FROM thread_links WHERE item = ?").run(item);
+    db.prepare("DELETE FROM regroup_links WHERE item = ?").run(item);
+    for (const threadId of touched) {
+      db.prepare("UPDATE threads SET name = ?, card = NULL, updated_at = ? WHERE thread_id = ?").run(FORGOTTEN_NAME, now(), threadId);
+      db.prepare("UPDATE regroup_threads SET name = ?, card = NULL WHERE thread_id = ?").run(FORGOTTEN_NAME, threadId);
+      if (db.prepare("SELECT 1 FROM thread_links WHERE thread_id = ?").get(threadId)) continue;
+      // Empty now: it goes, and so does every thread that was folded into it (they hold nothing either).
+      const gone = [threadId];
+      for (let index = 0; index < gone.length; index++) gone.push(...db.prepare("SELECT thread_id FROM threads WHERE merged_into = ?").all(gone[index]).map((row) => row.thread_id));
+      for (const id of gone.reverse()) {
+        db.prepare("DELETE FROM thread_links WHERE thread_id = ?").run(id);
+        db.prepare("UPDATE regroup_threads SET name = ?, card = NULL WHERE thread_id = ?").run(FORGOTTEN_NAME, id);
+        db.prepare("DELETE FROM threads WHERE thread_id = ?").run(id);
+      }
+    }
+  }
+
   /** Removes a message's words, and its reply's, and blanks every event about them and the history lines that rest on those. */
   function eraseMessage(messageId) {
     tx(() => {
@@ -664,6 +771,7 @@ export function openStore({ path = ":memory:" } = {}) {
         db.prepare("UPDATE messages SET content = ?, intent_json = NULL WHERE message_id = ?").run(ERASED_TEXT, id);
         db.prepare("UPDATE events SET data_json = ? WHERE message_id = ?").run(ERASED_DATA, id);
         for (const row of db.prepare("SELECT event_id FROM events WHERE message_id = ?").all(id)) dropFromHistory(row.event_id);
+        dropFromThreads(`message:${id}`);
       }
       // So an open page hears that these words are gone.
       for (const id of ids) {
@@ -690,6 +798,8 @@ export function openStore({ path = ":memory:" } = {}) {
   function eraseOutsideMessage(messageId) {
     tx(() => {
       db.prepare("UPDATE outside_messages SET content = ? WHERE message_id = ?").run(ERASED_TEXT, messageId);
+      const session = db.prepare("SELECT session_id FROM outside_messages WHERE message_id = ?").get(messageId);
+      if (session) dropFromThreads(`import:${session.session_id}`);
       scrubAfterCommit = true;
     });
   }
@@ -702,23 +812,24 @@ export function openStore({ path = ":memory:" } = {}) {
   /**
    * The best matches for `query` across everything indexed, as
    * { ref, conversationId, at, excerpt }. A record is found by any of the
-   * query's words (stemmed), ranked by how well it matches them all.
+   * query's words (stemmed), ranked by how well it matches them all. With
+   * `mark`, the matched words in the excerpt sit between MARK[0] and MARK[1].
    */
-  function search(query, { limit = 8, exclude = [] } = {}) {
+  function search(query, { limit = 8, exclude = [], mark = false } = {}) {
     const words = [...new Set(String(query ?? "").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].slice(0, 24);
     if (!words.length) return [];
     return db.prepare(`
-      SELECT r.ref, r.conversation_id, r.at, snippet(search_index, 0, '', '', '…', 40) AS excerpt
+      SELECT r.ref, r.conversation_id, r.at, snippet(search_index, 0, ?, ?, '…', 40) AS excerpt
       FROM search_index JOIN search_refs r ON r.id = search_index.rowid
       WHERE search_index MATCH ? ORDER BY rank LIMIT ?
-    `).all(words.map((word) => `"${word}"`).join(" OR "), limit + exclude.length)
+    `).all(mark ? MARK[0] : "", mark ? MARK[1] : "", words.map((word) => `"${word}"`).join(" OR "), limit + exclude.length)
       .filter((row) => !exclude.includes(row.ref)).slice(0, limit)
       .map((row) => ({ ref: row.ref, conversationId: row.conversation_id, at: row.at, excerpt: row.excerpt }));
   }
 
   return {
     db, path, tx, now, counter, bump, event, events, getEvent, onChange, setting, saveSetting, lastSeq, eventsAfter,
-    receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messageWithReplies, listTurns,
+    receive, nextItem, waitingConversations, handled, recordUpdate, getTurn, listMessages, messagesBefore, messagesByIds, messageWithReplies, listTurns,
     eraseMessage, eraseEvent, eraseOutsideMessage, erased, search,
     close: () => db.close()
   };

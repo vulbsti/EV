@@ -27,11 +27,11 @@ const strings = (description) => ({ type: "array", items: { type: "string" }, de
 const tool = (name, description, properties, required = Object.keys(properties)) => ({ name, description, parameters: { type: "object", properties, required, additionalProperties: false } });
 
 export const TOOLS = [
-  tool("search", "Full-text search over everything EV holds: this and every other conversation, every piece of work (its title, brief and results), memory, including earlier versions, the dated history (found by its words or by its dates, such as \"October 2026\"), and imported sessions from other tools. Returns ids with short excerpts; open one with read.", {
+  tool("search", "Full-text search over everything EV holds: this and every other conversation, every piece of work (its title, brief and results), memory, including earlier versions, the dated history (found by its words or by its dates, such as \"October 2026\"), and imported sessions from other tools. Returns ids with short excerpts and the threads of work each is in; open one with read.", {
     query: string("Words to look for.")
   }),
-  tool("read", "Open one record in full, with what surrounds it: a message with the messages around it; a piece of work with its brief, state, progress, reviews and its whole result; a result in full; a memory with its earlier versions and what it rests on; a history line with the messages and work it summarises; an imported session message with the ones around it and where it came from.", {
-    id: string("An id from search, the work list or the history, such as work:…, message:…, result:…, memory:…, history:… or session:….")
+  tool("read", "Open one record in full, with what surrounds it: a message with the messages around it; a piece of work with its brief, state, progress, reviews and its whole result; a result in full; a memory with its earlier versions and what it rests on; a history line with the messages and work it summarises; an imported session message with the ones around it and where it came from; a thread of work with everything in it across days.", {
+    id: string("An id from search, the work list or the history, such as work:…, message:…, result:…, memory:…, history:…, session:… or thread:….")
   }),
   tool("reply", "Say something to the person.", {
     text: string("What to say.")
@@ -49,6 +49,9 @@ export const TOOLS = [
     text: string("What to tell it. May be empty when only stopping."),
     stop: { type: "boolean", description: "True to put this work on hold." }
   }, ["task"]),
+  tool("regroup", "Organise the threads of work again now, instead of waiting for the next regular run: a stronger model regroups the conversation by the work it is about, creating, merging, splitting and renaming threads. Use it when the person asks for their work to be (re)organised or regrouped. It runs in the background after this turn.", {
+    note: string("What the person asked for, in their terms, such as \"keep billing apart from pricing\". Empty if they only asked to organise.")
+  }, []),
   tool("remember", "Save something the person has just told you about themselves, so EV knows it from now on. EV also learns from every conversation in the background; use this when it should hold from the next message. Secrets such as codes, passwords and keys are not for memory unless they ask EV to keep them.", {
     text: string("One short sentence in the third person, such as \"Prefers metric units.\""),
     quote: string("Their exact words in this message that it rests on. Without them it is kept only as a guess."),
