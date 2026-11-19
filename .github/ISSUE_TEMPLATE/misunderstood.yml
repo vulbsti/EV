@@ -1,5 +1,5 @@
-name: EV misunderstood me
-description: EV read what you meant wrong, asked too much, or delivered the wrong thing.
+name: KenWise misunderstood me
+description: KenWise read what you meant wrong, asked too much, or delivered the wrong thing.
 labels: [understanding]
 body:
   - type: markdown
@@ -22,7 +22,7 @@ body:
   - type: textarea
     id: did
     attributes:
-      label: What EV did
+      label: What KenWise did
       description: Its reply, question or the work it started.
     validations:
       required: true

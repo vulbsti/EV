@@ -6,7 +6,7 @@
 <text x="36" y="92" font-size="13" fill="#9198a1">say it roughly,</text>
 <text x="36" y="112" font-size="13" fill="#9198a1">in one conversation</text>
 <rect x="250" y="20" width="300" height="160" rx="12" fill="#0c2d6b" stroke="#4493f8" stroke-width="1.5"/>
-<text x="266" y="48" font-size="16" font-weight="600" fill="#e6edf3">EV</text>
+<text x="266" y="48" font-size="16" font-weight="600" fill="#e6edf3">KenWise</text>
 <text x="266" y="72" font-size="13" fill="#9198a1">reads every message with what it</text>
 <text x="266" y="92" font-size="13" fill="#9198a1">knows about you and the work</text>
 <text x="266" y="112" font-size="13" fill="#9198a1">under way, looks up anything else,</text>
@@ -32,7 +32,7 @@
 <text x="36" y="322" font-size="13" fill="#9198a1">sessions</text>
 <rect x="20" y="390" width="840" height="60" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
 <text x="440" y="416" font-size="15" font-weight="600" fill="#e6edf3" text-anchor="middle">One store on your machine</text>
-<text x="440" y="436" font-size="13" fill="#9198a1" text-anchor="middle">SQLite, files and one full-text index that EV, agents and the reviewer all search; forget removes from all of it</text>
+<text x="440" y="436" font-size="13" fill="#9198a1" text-anchor="middle">SQLite, files and one full-text index that KenWise, agents and the reviewer all search; forget removes from all of it</text>
 <path d="M170 75L248 75" stroke="#6e7681" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
 <text x="209" y="68" font-size="12" fill="#9198a1" text-anchor="middle">message</text>
 <path d="M248 115L172 115" stroke="#6e7681" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
