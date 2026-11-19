@@ -63,7 +63,14 @@ Judgement, with a real model (`npm run qa`, scenario ids in `qa/scenarios/`):
 
 - One real run on the test server: a real account forced into its limit, and an agent in docker reaching its model through the relay.
 
-## Task 11: Threads of work
+## Task 12: Live work
+
+The person can watch an agent work, step by step, and come back to it later. Under that view are two guarantees that hold whatever EV or its agents decide: the steps reach a page that lost its connection with nothing missing and nothing twice, and work on hold shows nothing new from an agent it has stopped. Everything else about the live view (labels, the "now" line, the pane) was walked through once against its state chart (design/build/verification/live-work.md), not checked on every push.
+
+- ✓ **L-01** A page that loses its connection while an agent works catches up on exactly the steps it missed: none lost, none twice.
+- ✓ **L-02** Once work is on hold, nothing more from its agent shows up in it, even while that agent is slow to stop.
+
+## Task 13: Threads of work
 
 The one conversation is grouped by the work it is about. A small model files each new message into a thread that exists, or leaves it under "not grouped yet"; a stronger model, following the grouping skill, creates and reshapes threads every few days or when asked. Which thread something belongs in is the models' judgement and was walked through once (design/build/verification/threads-of-work.md). What is checked here holds whatever they decide: nothing goes missing, the person's own moves stand, a regroup lands whole and can be undone, a thread's id lasts, filing never delays a reply, and forgetting reaches the threads.
 
@@ -72,14 +79,7 @@ The one conversation is grouped by the work it is about. A small model files eac
 - ✓ **G-03** An organise run changes the threads all at once or not at all, and undoing it puts back exactly what was there before.
 - ✓ **G-04** A thread keeps its id when it is renamed or merged into another, so a link to it still opens the work it became.
 - ✓ **G-05** Filing never holds up a reply: while the filer is still working on one message, the person's next message is answered.
-- ✓ **G-06** Forgetting a message takes its words out of the threads too: the filer's gist of it, and any thread card that may repeat it.
-
-## Task 12: Live work
-
-The person can watch an agent work, step by step, and come back to it later. Under that view are two guarantees that hold whatever EV or its agents decide: the steps reach a page that lost its connection with nothing missing and nothing twice, and work on hold shows nothing new from an agent it has stopped. Everything else about the live view (labels, the "now" line, the pane) was walked through once against its state chart (design/build/verification/live-work.md), not checked on every push.
-
-- ✓ **L-01** A page that loses its connection while an agent works catches up on exactly the steps it missed: none lost, none twice.
-- ✓ **L-02** Once work is on hold, nothing more from its agent shows up in it, even while that agent is slow to stop.
+- ✓ **G-06** Forgetting a message takes its words out of the threads too: the filer's gist of it, and any thread name or card that may repeat it.
 
 ## Task 3: One store with real ids
 

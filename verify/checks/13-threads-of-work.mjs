@@ -37,7 +37,7 @@ async function organise(ev) {
 const SAID = ["pricing call is weekly now, fridays", "need the pricing comparison for friday", "draft the onboarding email", "what's the weather like"];
 
 export default {
-  task: 11,
+  task: 13,
   name: "Threads of work",
   goal: "The one conversation is grouped by the work it is about. A small model files each new message into a thread that exists, or leaves it under \"not grouped yet\"; a stronger model, following the grouping skill, creates and reshapes threads every few days or when asked. Which thread something belongs in is the models' judgement and was walked through once (design/build/verification/threads-of-work.md). What is checked here holds whatever they decide: nothing goes missing, the person's own moves stand, a regroup lands whole and can be undone, a thread's id lasts, filing never delays a reply, and forgetting reaches the threads.",
   live: [],
@@ -171,18 +171,20 @@ export default {
     },
     {
       id: "G-06",
-      expect: "Forgetting a message takes its words out of the threads too: the filer's gist of it, and any thread card that may repeat it.",
+      expect: "Forgetting a message takes its words out of the threads too: the filer's gist of it, and any thread name or card that may repeat it.",
       async run({ start, assert }) {
         const marker = "TANGIER-58";
         const ev = await start({ script: {
           ev: on([/forget/, async (turn) => { const { hits } = await turn.search(marker); await turn.forget(hits.map((hit) => hit.id)); return turn.reply("Forgotten."); }], [/.*/, (turn) => turn.reply("Noted.")]),
           filer: (call) => ({ items: [...call.text.matchAll(/\[(message:[A-Za-z0-9-]+)\] at [^\n]*\n([^\n]*)/g)].map((match) => ({ item: match[1], gist: match[2].includes(marker) ? `Door code ${marker}` : "The landlord", threads: [] })) }),
-          grouper: (call) => ({ ops: [{ op: "create", name: "Flat", card: `The new flat, door code ${marker}.`, items: [itemFor(call.text, marker)] }] })
+          // The first run names and describes the thread with the words; any later run leaves the threads as they are.
+          grouper: (call) => (threadId(call.text, `Flat ${marker}`) || !itemFor(call.text, marker) ? { ops: [] } : { ops: [{ op: "create", name: `Flat ${marker}`, card: `The new flat, door code ${marker}.`, items: [itemFor(call.text, marker), itemFor(call.text, "The landlord")] }] })
         } });
         await ev.say(`the door code for the new flat is ${marker}`);
         await ev.say("and the landlord is called Ines");
         await ev.until("the filer to write gists", async () => JSON.stringify(await threads(ev)).includes(marker));
         const view = await organise(ev);
+        assert.ok(view.threads.some((thread) => thread.name.includes(marker)), "The stand-in grouper's thread did not land, so this check proves nothing");
         await ev.say("forget the door code");
         const after = JSON.stringify([await threads(ev), ...await Promise.all(view.threads.map(async (thread) => (await ev.api(`/api/assistant/threads/${encodeURIComponent(thread.threadId)}`)).value))]);
         assert.ok(!after.includes(marker), "The threads still hold words the person asked EV to forget");

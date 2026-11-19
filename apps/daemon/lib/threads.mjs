@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { ERASED_TEXT, codedError } from "./store.mjs";
+import { ERASED_TEXT, FORGOTTEN_NAME, codedError } from "./store.mjs";
 import { callModel, modelTurn, parseModelJson, sessionHeader, toolResult, userMessage } from "./ev-model.mjs";
 
 /**
@@ -296,6 +296,7 @@ export class Threads {
   }
 
   async _fileAll() {
+    this._renameAfterForget();
     for (let guard = 0; guard < 200; guard++) {
       this._inherit();
       if (!this.hasModel(this.file, fileItems)) return;
@@ -341,6 +342,18 @@ export class Threads {
       this._announce(changed);
     });
     return true;
+  }
+
+  /**
+   * A thread that lost its name and card to a forget is renamed by an organise
+   * run soon, not at the next timer (it is invisible to the filer meanwhile).
+   * One try an hour, so a grouper that cannot name it does not loop.
+   */
+  _renameAfterForget() {
+    if (!this.db.prepare("SELECT 1 FROM threads WHERE merged_into IS NULL AND name = ?").get(FORGOTTEN_NAME)) return;
+    if (this.lastRename && this.now() - this.lastRename < 3_600_000) return;
+    this.lastRename = this.now();
+    void this.regroup({ why: "forgot" });
   }
 
   // ----------------------------------------------------------- organising
@@ -391,7 +404,7 @@ export class Threads {
     });
     const loose = facts.items(facts.unlinked);
     return [
-      `Today is ${this.iso().slice(0, 10)}. This organise run was ${why === "asked" ? `asked for by the person${note ? `: "${clip(note, 500)}"` : ""}` : why === "first" ? "the first: EV has been collecting until now" : "due on its timer"}.`,
+      `Today is ${this.iso().slice(0, 10)}. This organise run was ${why === "asked" ? `asked for by the person${note ? `: "${clip(note, 500)}"` : ""}` : why === "first" ? "the first: EV has been collecting until now" : why === "forgot" ? `needed because the person asked EV to forget something that was in one or more threads. Each such thread is called "${FORGOTTEN_NAME}" and has no card: give it a name and card from what is still in it, without guessing at what was forgotten` : "due on its timer"}.`,
       `What EV knows about this person (data):\n${this.profile() || "Nothing recorded yet."}`,
       `Threads now (data):\n${threads.length ? threads.join("\n\n") : "None yet."}`,
       `Not grouped yet, oldest first (data, ${loose.length} item(s)):\n${loose.slice(-200).map(facts.itemLine).join("\n") || "Nothing."}`,
@@ -554,11 +567,12 @@ export class Threads {
       for (const row of db.prepare("SELECT * FROM regroup_links WHERE regroup_id = ?").all(regroupId)) {
         if (pinned(row.item)) continue;
         db.prepare("DELETE FROM thread_links WHERE item = ?").run(row.item);
-        for (const link of JSON.parse(row.links_json)) db.prepare("INSERT OR IGNORE INTO thread_links (item, thread_id, by, sure, at) VALUES (?, ?, ?, ?, ?)").run(row.item, link.thread_id, link.by, link.sure, link.at);
+        // A thread removed since (emptied by a forget) is not brought back.
+        for (const link of JSON.parse(row.links_json)) if (db.prepare("SELECT 1 FROM threads WHERE thread_id = ?").get(link.thread_id)) db.prepare("INSERT OR IGNORE INTO thread_links (item, thread_id, by, sure, at) VALUES (?, ?, ?, ?, ?)").run(row.item, link.thread_id, link.by, link.sure, link.at);
         items.push(row.item);
       }
       for (const thread of threads) {
-        if (thread.existed) db.prepare("UPDATE threads SET name = ?, card = ?, quiet = ?, merged_into = ?, updated_at = ? WHERE thread_id = ?").run(thread.name, thread.card, thread.quiet, thread.merged_into, this.iso(), thread.thread_id);
+        if (thread.existed) db.prepare("UPDATE threads SET name = ?, card = ?, quiet = ?, merged_into = (SELECT thread_id FROM threads WHERE thread_id = ?), updated_at = ? WHERE thread_id = ?").run(thread.name, thread.card, thread.quiet, thread.merged_into, this.iso(), thread.thread_id);
         else {
           db.prepare("DELETE FROM thread_links WHERE thread_id = ?").run(thread.thread_id);
           db.prepare("UPDATE threads SET merged_into = NULL WHERE merged_into = ?").run(thread.thread_id);

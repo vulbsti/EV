@@ -843,6 +843,7 @@ async function handleApi(request, response, url) {
     }
     if (action === "erase") {
       const tombstone = assistantMemory.erase({ ownerId: assistantOwnerId, targetType: "claim", targetId: claimId, scope: body.scope ?? null });
+      threadsEngine.kick(); // a thread that held what was erased is renamed soon
       return json(response, 200, { tombstone });
     }
     throw Object.assign(new Error("action must be remember, correct, stop_use, or erase"), { statusCode: 400 });

@@ -453,6 +453,8 @@ END;
 `;
 
 export const ERASED_TEXT = "[forgotten]";
+/** What a thread is called after something in it was forgotten, until the next organise run names it again. */
+export const FORGOTTEN_NAME = "Untitled (being renamed)";
 /** What a marked search excerpt puts around each matched word (characters no one types). */
 export const MARK = ["\u0002", "\u0003"];
 const ERASED_DATA = JSON.stringify({ erased: true });
@@ -734,16 +736,30 @@ export function openStore({ path = ":memory:" } = {}) {
   }
 
   /**
-   * Takes an erased item's words out of the threads: the filer's gist of it,
-   * and the card of every thread it is in (a card may repeat what was said),
-   * now and in the record kept to undo a regroup. The card is written again
-   * at the next organise run.
+   * Takes an erased item out of the threads. Its gist goes, and so does its
+   * place in every thread. Each thread it was in loses its name and its card,
+   * now and in the record kept to undo a regroup, because either may repeat
+   * what was said. Until the next organise run (which the threads engine
+   * starts soon after) such a thread is called FORGOTTEN_NAME. A thread left
+   * with nothing in it goes, with any thread merged into it.
    */
   function dropFromThreads(item) {
     db.prepare("UPDATE filing SET gist = NULL WHERE item = ?").run(item);
-    for (const { thread_id: threadId } of db.prepare("SELECT thread_id FROM thread_links WHERE item = ?").all(item)) {
-      db.prepare("UPDATE threads SET card = NULL WHERE thread_id = ?").run(threadId);
-      db.prepare("UPDATE regroup_threads SET card = NULL WHERE thread_id = ?").run(threadId);
+    const touched = db.prepare("SELECT thread_id FROM thread_links WHERE item = ?").all(item).map((row) => row.thread_id);
+    db.prepare("DELETE FROM thread_links WHERE item = ?").run(item);
+    db.prepare("DELETE FROM regroup_links WHERE item = ?").run(item);
+    for (const threadId of touched) {
+      db.prepare("UPDATE threads SET name = ?, card = NULL, updated_at = ? WHERE thread_id = ?").run(FORGOTTEN_NAME, now(), threadId);
+      db.prepare("UPDATE regroup_threads SET name = ?, card = NULL WHERE thread_id = ?").run(FORGOTTEN_NAME, threadId);
+      if (db.prepare("SELECT 1 FROM thread_links WHERE thread_id = ?").get(threadId)) continue;
+      // Empty now: it goes, and so does every thread that was folded into it (they hold nothing either).
+      const gone = [threadId];
+      for (let index = 0; index < gone.length; index++) gone.push(...db.prepare("SELECT thread_id FROM threads WHERE merged_into = ?").all(gone[index]).map((row) => row.thread_id));
+      for (const id of gone.reverse()) {
+        db.prepare("DELETE FROM thread_links WHERE thread_id = ?").run(id);
+        db.prepare("UPDATE regroup_threads SET name = ?, card = NULL WHERE thread_id = ?").run(FORGOTTEN_NAME, id);
+        db.prepare("DELETE FROM threads WHERE thread_id = ?").run(id);
+      }
     }
   }
 
