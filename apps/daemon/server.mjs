@@ -792,11 +792,10 @@ async function handleApi(request, response, url) {
     return json(response, 200, { output: assistantWorkers.stepOutput(taskId, stepId) });
   }
   if (request.method === "GET" && /^\/api\/assistant\/tasks\/[^/]+\/drafts$/.test(url.pathname)) {
-    // What the agent has made, read-only: unreviewed while it works, the reviewed result once delivered. ?path= gives one file's text.
+    // What the agent has made so far: not reviewed, read-only. ?path= gives one file's text.
     const taskId = decodeURIComponent(url.pathname.slice("/api/assistant/tasks/".length, -"/drafts".length));
     if (url.searchParams.has("path")) return json(response, 200, { draft: await assistantWorkers.draft(taskId, url.searchParams.get("path")) });
-    const files = await assistantWorkers.drafts(taskId);
-    return json(response, 200, { files, reviewed: (await assistantSupervisor.getTask(taskId)).status === "completed" });
+    return json(response, 200, { files: await assistantWorkers.drafts(taskId), reviewed: false });
   }
   if (request.method === "GET" && url.pathname === "/api/assistant/search") {
     const query = String(url.searchParams.get("q") ?? "").slice(0, 500);
