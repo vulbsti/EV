@@ -39,6 +39,7 @@ An account that hits its usage limit is marked limited until its reset time, and
 - `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you. The default is docker: each agent sees only its goal folder plus its own home folder. Either way each piece of work has its own home, never yours. `EV_OPENCLAW_IMAGE` overrides the image name.
 - Web search uses DuckDuckGo (no key) and is built into the image. In host mode, install the plugin with `npm i --prefix ~/.local/share/openclaw-plugins @openclaw/duckduckgo-plugin` and set `EV_OPENCLAW_SEARCH_PLUGIN` to its absolute path.
 - `EV_REVIEW_HOLD_MS` (default `30000,120000`): how long KenWise waits before retrying an unavailable reviewer. A result is never delivered unchecked.
+- `EV_STEER_WAIT_MS` (default `120000`): when you tell a running agent something, how long KenWise waits for the step it is in to finish before it cuts that step short to pass your message on.
 - `EV_WORKER_STALL_MS` (default `600000`): how long an agent may show no progress before it is restarted in the same session. There is no limit on how long an agent that keeps making progress may take.
 - `EV_MAX_WORKERS` (default `3`): how many agents may run at once.
 

@@ -79,7 +79,7 @@ export function revisionPrompt({ request, brief, review, round, sharedPath = nul
 export function continuationPrompt({ request, brief, answers = [], instructions = [], cameBack = null }) {
   const listed = (items) => items.map((item) => `- ${item}`).join("\n");
   return [
-    cameBack ? `The person came back to this work after ${cameBack.after === "held" ? "it was put on hold and you were stopped" : "your result was delivered to them"}. What they said (it updates the brief where they differ):\n${listed(cameBack.said)}` : "",
+    cameBack ? `The person came back to this work after ${cameBack.after === "held" ? "it was put on hold and you were stopped" : "your result was delivered to them"}. ${cameBack.said.length ? `What they said (it updates the brief where they differ):\n${listed(cameBack.said)}` : "They asked you to carry on as you were."}` : "",
     answers.length ? `Answer to your question:\n${listed(answers)}` : "",
     instructions.length ? `While you were working, the person told EV this about the task (it updates the brief where they differ):\n${listed(instructions)}` : "",
     cameBack || answers.length || instructions.length ? "Take this into account and carry on from where you are. Keep the work that still fits, change what no longer does, and check the actual result again." : "You were interrupted. Check what is already in your workspace and carry on from where you left off.",
@@ -88,6 +88,20 @@ export function continuationPrompt({ request, brief, answers = [], instructions 
     NEEDS_INPUT,
     `Return a complete replacement JSON task report only: ${REPORT}.`
   ].filter(Boolean).join("\n\n");
+}
+
+/**
+ * Sent in the same session after EV stopped the agent so that what the
+ * person just said reaches it (steering). `cut` says the step it was in the
+ * middle of was cut short.
+ */
+export function steeredPrompt({ request, brief, instructions = [], cut = false }) {
+  return [
+    cut
+      ? "EV stopped you in the middle of your last action so that a message from the person could reach you. That action may be half done: check its effect before you rely on it."
+      : "EV paused you between steps so that a message from the person could reach you. Nothing you were doing was cut short.",
+    continuationPrompt({ request, brief, instructions })
+  ].join("\n\n");
 }
 
 /** Sent once, in the same session, when an agent is stopped at its budget. */

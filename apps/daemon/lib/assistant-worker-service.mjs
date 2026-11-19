@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, open, readFile, realpath } from "node:fs/promises";
+import { access, open, readFile, realpath, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { reviewOpenClawReport } from "./ev-quality-gate.mjs";
 import { OpenClawWorkerAdapter, stopLeftoverRun } from "./openclaw-worker-adapter.mjs";
 import { readTranscript } from "./openclaw-transcript.mjs";
 import { validateOpenClawTaskReport } from "./openclaw-task-report.mjs";
-import { continuationPrompt, executionPrompt, revisionPrompt, workBrief, wrapUpPrompt } from "./ev-work-prompts.mjs";
+import { continuationPrompt, executionPrompt, revisionPrompt, steeredPrompt, workBrief, wrapUpPrompt } from "./ev-work-prompts.mjs";
 import { PiWorkerAdapter } from "./pi-worker-adapter.mjs";
 import { ScopedWorkspace } from "./scoped-workspace.mjs";
 import { renderBrief, renderReviews, sharedLayout, writeSharedFiles } from "./shared-workspace.mjs";
@@ -30,6 +30,14 @@ const PRIORITY = Object.freeze({ continuing: 0, interactive: 1, background: 2 })
 // The "now" line follows the agent's newest step, at most this often so a
 // burst of steps is one write; a change of phase goes out at once.
 const NOW_EVERY_MS = 2_000;
+// Steering waits this long for the agent's running step to finish before it
+// cuts the step short (and tells the agent it may be half done).
+const STEER_WAIT_MS = Number(process.env.EV_STEER_WAIT_MS ?? 120_000);
+// Files EV writes into a work folder, and files that may hold secrets: never shown as a draft.
+const NOT_DRAFTS = /(?:^|\/)(?:CONTEXT|BRIEF|REVIEW)\.md$|(?:^|\/)(?:\.|node_modules\/)|(?:^|\/)(?:\.env(?:\..*)?|\.ssh|[^/]*(?:secret|credential)[^/]*)(?:\/|$)|\.(?:pem|key|p12)$/i;
+const DRAFT_BYTES = 256 * 1024;
+// A step's output, as shown when opened: cut in the middle past this (Codex keeps 64 KB).
+const OUTPUT_BYTES = 64 * 1024;
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -345,6 +353,109 @@ export class AssistantWorkerService {
     return task;
   }
 
+  /**
+   * Brings what the person just said to a running agent now rather than when
+   * its turn ends. An agent cannot be handed a message mid-run (GitHub issue
+   * 27), so EV stops it and resumes the same session with the message:
+   * "next" waits for the step it is in to finish (at most STEER_WAIT_MS),
+   * "interrupt" stops it at once. Either way nothing is lost; a step cut
+   * short is named to the agent as possibly half done. Returns whether a
+   * running agent was reached; otherwise the message waits for its next turn.
+   */
+  steer(taskId, { mode = "next" } = {}) {
+    const active = this.activeRuns.get(taskId);
+    if (!active?.isGeneral || !active.run || active.stopRequested || active.shutdownRequested) return false;
+    if (active.steering) {
+      if (mode === "interrupt") this._steerStop(active);
+      return true;
+    }
+    // "next" waits for the step under way when the message came, not for a
+    // quiet moment: a busy agent may start its next step in the same read.
+    const waitFor = active.maker?.running()?.id ?? null;
+    active.steering = { mode, waitFor };
+    if (mode === "interrupt" || !waitFor) this._steerStop(active);
+    else {
+      active.steering.timer = setTimeout(() => this._steerStop(active), STEER_WAIT_MS);
+      active.steering.timer.unref?.();
+    }
+    return true;
+  }
+
+  _steerStop(active) {
+    const steering = active.steering;
+    if (!steering || steering.stopping || !active.run) return;
+    clearTimeout(steering.timer);
+    steering.stopping = true;
+    const running = active.maker?.running();
+    steering.cut = Boolean(running);
+    if (running) this._steps(active, [{ ...running, label: `${running.label} (cut short to pass on your message)`, cut: true }]);
+    active.adapter.stop(active.run, { steer: true }).catch(() => {});
+  }
+
+  /** Work on hold carries on as it was, replay-safe by the page's command id. */
+  async carryOnTask({ taskId, commandId, expectedRevision = null }) {
+    const command = await this.supervisor.commandTask({ taskId, commandId, type: "carry_on", expectedRevision });
+    const task = await this.supervisor.getTask(taskId);
+    if (task.status === "queued") this.dispatch(taskId);
+    return { replayed: command.replayed, task };
+  }
+
+  /**
+   * What an agent has made so far in its work folder: drafts, not reviewed,
+   * read-only. EV's own files and anything that may hold a secret are left out.
+   */
+  async drafts(taskId) {
+    const task = await this.supervisor.getTask(taskId);
+    const root = resolve(this.workspaceRoot, relativePath(task.input.workspace, "workspace"));
+    let workspace;
+    try { workspace = await ScopedWorkspace.open(root); } catch { return []; }
+    const files = [];
+    const walk = async (dir, depth) => {
+      if (depth > 4 || files.length >= 200) return;
+      let entries = [];
+      try { entries = await workspace.list(dir); } catch { return; }
+      for (const entry of entries) {
+        if (NOT_DRAFTS.test(entry.path)) continue;
+        if (entry.type === "directory") await walk(entry.path, depth + 1);
+        else if (entry.type === "file" && files.length < 200) {
+          try { const info = await stat(join(workspace.root, entry.path)); files.push({ path: entry.path, bytes: info.size, modifiedAt: info.mtime.toISOString() }); } catch {}
+        }
+      }
+    };
+    await walk(".", 0);
+    return files.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  }
+
+  /** One draft's text as it is now (up to DRAFT_BYTES), never anything outside the work folder. */
+  async draft(taskId, path) {
+    if (typeof path !== "string" || !path || NOT_DRAFTS.test(path)) throw codedError("DRAFT_NOT_FOUND", "No such draft");
+    const task = await this.supervisor.getTask(taskId);
+    const workspace = await ScopedWorkspace.open(resolve(this.workspaceRoot, relativePath(task.input.workspace, "workspace")));
+    let info;
+    try { info = await stat(join(workspace.root, relativePath(path, "path"))); } catch { throw codedError("DRAFT_NOT_FOUND", "No such draft"); }
+    if (!info.isFile()) throw codedError("DRAFT_NOT_FOUND", "No such draft");
+    const meta = { path, bytes: info.size, modifiedAt: info.mtime.toISOString(), reviewed: false };
+    if (info.size > DRAFT_BYTES) return { ...meta, tooLarge: true };
+    const bytes = Buffer.from(await workspace.read(path, { encoding: "latin1", maxBytes: DRAFT_BYTES }), "latin1");
+    if (bytes.includes(0)) return { ...meta, binary: true };
+    return { ...meta, text: bytes.toString("utf8") };
+  }
+
+  /**
+   * What one step printed, read from the agent's own transcript when asked
+   * (it is not copied into EV's store), cut in the middle to OUTPUT_BYTES.
+   * Null when the transcript no longer has it.
+   */
+  stepOutput(taskId, stepId) {
+    const result = this._transcriptEvents(taskId).find((event) => event?.message?.role === "toolResult" && event.message.toolCallId === stepId)?.message;
+    if (!result) return null;
+    const text = String(result.details?.aggregated ?? (result.content ?? []).filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n"));
+    const bytes = Buffer.from(text);
+    if (bytes.length <= OUTPUT_BYTES) return { text, cut: 0 };
+    const half = OUTPUT_BYTES / 2;
+    return { text: `${bytes.subarray(0, half).toString("utf8")}\n… ${bytes.length - OUTPUT_BYTES} bytes cut …\n${bytes.subarray(bytes.length - half).toString("utf8")}`, cut: bytes.length - OUTPUT_BYTES };
+  }
+
   async _hasPendingInstructions(active) {
     const task = await this.supervisor.getTask(active.taskId);
     const through = task.history.findLast((event) => event.type === "instructions_applied")?.through ?? 0;
@@ -533,7 +644,7 @@ export class AssistantWorkerService {
    * caller, which puts the problem to the person.
    */
   async _runWorker(active, prompt, options = {}) {
-    let result = await this._runOnce(active, prompt, options);
+    let result = await this._runSteerable(active, prompt, options);
     for (let restart = 1; active.isGeneral && ["failed", "stalled"].includes(result?.status) && restart <= RESTARTS_BEFORE_ASKING; restart++) {
       if (active.stopRequested || active.shutdownRequested) break;
       // The agent stopped because its model account is limited or signed
@@ -542,12 +653,26 @@ export class AssistantWorkerService {
       if (wait) {
         await this._holdForAccount(active, wait, "the agent");
         restart--;
-        result = await this._runOnce(active, `You were interrupted while working on this. Check what is already in your workspace and carry on from where you left off.\n\n${prompt}`, { ...options, reuseCompleted: false, phase: "Carrying on now the account is back" });
+        result = await this._runSteerable(active, `You were interrupted while working on this. Check what is already in your workspace and carry on from where you left off.\n\n${prompt}`, { ...options, reuseCompleted: false, phase: "Carrying on now the account is back" });
         continue;
       }
       this._steps(active, [{ kind: "restarted", label: `The agent stopped (${result.message ?? result.status}), so it was restarted in the same session`, code: result.code ?? null }]);
-      result = await this._runOnce(active, `You were interrupted while working on this. Check what is already in your workspace and carry on from where you left off.\n\n${prompt}`, { ...options, reuseCompleted: false, phase: "Restarted in the same session; carrying on" });
+      result = await this._runSteerable(active, `You were interrupted while working on this. Check what is already in your workspace and carry on from where you left off.\n\n${prompt}`, { ...options, reuseCompleted: false, phase: "Restarted in the same session; carrying on" });
     }
+    return result;
+  }
+
+  /** One agent turn, resumed in the same session each time the person steers it. */
+  async _runSteerable(active, prompt, options = {}) {
+    let result = await this._runOnce(active, prompt, options);
+    while (result?.status === "steered" && !active.stopRequested && !active.shutdownRequested) {
+      const cut = Boolean(active.steering?.cut);
+      active.steering = null;
+      const instructions = await this._takeInstructions(active);
+      const metadata = active.task.input.metadata ?? {};
+      result = await this._runOnce(active, steeredPrompt({ request: metadata.sourceRequest ?? active.task.input.prompt, brief: active.brief ?? workBrief(metadata), instructions, cut }), { ...options, reuseCompleted: false, phase: "Taking your message into account" });
+    }
+    active.steering = null;
     return result;
   }
 
@@ -572,10 +697,14 @@ export class AssistantWorkerService {
     // What the agent does, read from its transcript as it works: finished
     // steps go out at once, the step running now becomes the "now" line.
     const maker = new StepMaker({ runId: runRow });
+    active.maker = maker;
     const onEvents = (events) => {
       const { done, running } = maker.add(events);
       const latest = running ?? done.at(-1);
       this._steps(active, done, latest && { text: latest.label, step: { id: latest.id, kind: latest.kind, startedAt: latest.startedAt, running: Boolean(running) }, model: maker.model });
+      // Once the step steering waits for has finished, the message goes in; a
+      // step the agent already began after it is the one cut short.
+      if (active.steering && !maker.isOpen(active.steering.waitFor)) this._steerStop(active);
     };
     try {
       if (active.shutdownRequested || active.stopRequested) return { status: "stopped" };
@@ -880,7 +1009,7 @@ export class AssistantWorkerService {
         // minute, without counting towards giving up.
         if (error.wait) {
           attempt--;
-          await this._holdForAccount(active, error.wait, "EV's quality check");
+          await this._holdForAccount(active, error.wait, "the review");
           continue;
         }
         if (attempt >= this.reviewHoldMs.length) {
@@ -1086,7 +1215,7 @@ export class AssistantWorkerService {
       const question = this._stuckQuestion(active, review, unresolved);
       if (question) throw codedError("NEEDS_INPUT", question, { question, answerSoFar: report.answer });
       await this._sendBack(active, task);
-      const revised = await this._runWorker(active, revisionPrompt({ request, brief: active.brief, review: review ?? { missing: hostNotes }, round: active.round - 1, sharedPath }), { reuseCompleted: false, phase: "Revising its work from EV's review" });
+      const revised = await this._runWorker(active, revisionPrompt({ request, brief: active.brief, review: review ?? { missing: hostNotes }, round: active.round - 1, sharedPath }), { reuseCompleted: false, phase: "Revising its work from the review" });
       if (active.shutdownRequested || active.stopRequested) throw codedError("STALE_FENCING_TOKEN", "Task was stopped");
       if (revised.status === "budget_exceeded" && revised.text) { stopReason = "budget"; result = revised; continue; }
       if (revised.status !== "completed") {

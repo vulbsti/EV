@@ -6,7 +6,7 @@ const busy = (count, waitMs) => Array.from({ length: count }, (_, index) => ({ w
 export default {
   task: 12,
   name: "Live work",
-  goal: "The person can watch an agent work, step by step, and come back to it later. Under that view are two guarantees that hold whatever EV or its agents decide: the steps reach a page that lost its connection with nothing missing and nothing twice, and work on hold shows nothing new from an agent it has stopped. Everything else about the live view (labels, the \"now\" line, the pane) was walked through once against its state chart (design/build/verification/live-work.md), not checked on every push.",
+  goal: "The person can watch an agent work, step by step, and come back to it later. Under that view are two guarantees that hold whatever EV or its agents decide: the steps reach a page that lost its connection with nothing missing and nothing twice, work on hold shows nothing new from an agent it has stopped, and the drafts the page can open are only the agent's own unreviewed files, never anything outside its folder or anything that may hold a secret. Everything else about the live view (labels, the \"now\" line, the pane) was walked through once against its state chart (design/build/verification/live-work.md), not checked on every push.",
   live: [],
   checks: [
     {
@@ -48,6 +48,25 @@ export default {
         const { value } = await AUTH_STEPS(ev, taskId);
         const late = value.steps.filter((step) => step.seq > holdSeq);
         assert.equal(late.length, 0, `${late.length} step(s) from the stopped agent appeared after the hold`);
+      }
+    },
+    {
+      id: "L-03",
+      expect: "Drafts show only what the agent made in its own folder, marked as not reviewed: never a file outside it, never one that may hold a secret.",
+      async run({ start, assert }) {
+        const ev = await start({ script: { ev: work("Price table"), worker: (job) => ({ ...job.done("Table."), files: { "out/table.md": "| plan | price |", ".env": "KEY=hidden", "api-secret.txt": "hidden", "deploy.pem": "hidden" } }) } });
+        const { taskId } = await ev.say("make the price table");
+        await ev.settled();
+        const drafts = (path) => ev.api(`/api/assistant/tasks/${encodeURIComponent(taskId)}/drafts${path === undefined ? "" : `?path=${encodeURIComponent(path)}`}`);
+        const listed = (await drafts()).value;
+        assert.deepEqual(listed.files.map((file) => file.path), ["out/table.md"], `The drafts list shows ${listed.files.map((file) => file.path).join(", ")}`);
+        assert.equal(listed.reviewed, false, "Drafts are not marked as unreviewed");
+        const shown = (await drafts("out/table.md")).value?.draft;
+        assert.ok(shown?.text?.includes("plan") && shown.reviewed === false, "The agent's own draft cannot be opened, or is not marked as unreviewed");
+        for (const path of [".env", "api-secret.txt", "deploy.pem", "../shared/BRIEF.md", "../../../ev.sqlite", "/etc/passwd"]) {
+          const { ok, value } = await drafts(path);
+          assert.ok(!ok && !JSON.stringify(value ?? "").includes("hidden"), `The page could open ${path} as a draft`);
+        }
       }
     }
   ]

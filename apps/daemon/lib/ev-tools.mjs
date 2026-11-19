@@ -294,7 +294,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       if (resting) return answer("reopened", `It ${task.status === "completed" ? "was delivered" : "was on hold"}; when this turn ends the same agent picks it up again in its own session, with its files and this message, and its new result is reviewed before the person sees it.`);
       return answer("passed on", task.status === "waiting"
         ? "It was waiting for the person; it carries on with this in the same session when this turn ends."
-        : "The same agent gets it at its next step, in the same session, and it is taken into account before the result is reviewed.");
+        : "When this turn ends, EV waits for the step the agent is in to finish, stops it there and resumes the same session with this message. It is taken into account before the result is reviewed.");
     },
     regroup({ note = "" }) {
       if (!regroup) throw codedError("NOT_AVAILABLE", "Threads of work cannot be organised here");
@@ -402,6 +402,8 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       });
       for (const { taskId } of started) workers.dispatch(taskId);
       for (const taskId of queued) workers.dispatch(taskId);
+      // Running work gets what it was told at its next step, not when its turn ends.
+      for (const { taskId } of told) if (!queued.includes(taskId)) workers.steer?.(taskId, { mode: "next" });
       for (const note of regroups) regroup(note);
       for (const { taskId } of stopped) workers.stopRun(taskId).catch((error) => log(`[${new Date().toISOString()}] Could not stop the agent of work:${taskId}: ${error.message}`));
     }
