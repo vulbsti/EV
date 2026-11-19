@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { ensurePrivateDirectorySync, ensurePrivateFileSync } from "./file-permissions.mjs";
 
 function clone(value) {
@@ -47,8 +47,11 @@ async function ensureDirectory(path, { recursive = false } = {}) {
 async function ensureWorkspaceRoot(path) {
   const requested = resolve(path);
   await ensureDirectory(requested, { recursive: true });
+  // Folders above the root may be symlinks (macOS keeps temp folders under
+  // /var -> /private/var); only the root itself must not lead elsewhere.
+  const expected = join(await realpath(dirname(requested)), basename(requested));
   const actual = await realpath(requested);
-  if (actual !== requested) throw unsafeWorkspace(`Workspace root resolves outside its requested path: ${requested}`);
+  if (actual !== expected) throw unsafeWorkspace(`Workspace root resolves outside its requested path: ${requested}`);
 }
 
 async function writeNoFollow(path, contents) {

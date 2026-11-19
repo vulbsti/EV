@@ -28,11 +28,13 @@ async function observeLocalSource(source, localRoots) {
   try { path = fileURLToPath(source.url); }
   catch { return { url: source.url, state: "unavailable", reason: "invalid local file URL" }; }
   if (SENSITIVE_LOCAL_PATH.test(path)) return { url: source.url, state: "unavailable", reason: "sensitive path is not reviewable" };
-  const roots = await Promise.all(localRoots.map((root) => realpath(root).catch(() => null)));
+  // The path as written must sit under the root as written, and where it really
+  // leads must sit under where the root really leads (folders above may be symlinks).
+  const roots = await Promise.all(localRoots.map(async (root) => ({ lexical: resolve(root), real: await realpath(root).catch(() => null) })));
   let actual;
   try { actual = await realpath(path); }
   catch { return { url: source.url, state: "unavailable", reason: "local path does not exist" }; }
-  if (!roots.some((root) => root && inside(root, resolve(path)) && inside(root, actual)) || SENSITIVE_LOCAL_PATH.test(actual)) {
+  if (!roots.some((root) => root.real && inside(root.lexical, resolve(path)) && inside(root.real, actual)) || SENSITIVE_LOCAL_PATH.test(actual)) {
     return { url: source.url, state: "unavailable", reason: "outside the configured local evidence roots" };
   }
   try {
