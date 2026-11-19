@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="assistant.css">
 </head>
 <body>
-<div id="ev" class="ev ytab-portrait focus-all theme-aurora accent-sky glass-frosted layout-column density-cosy font-sans">
+<div id="ev" class="ev ytab-portrait stab-models focus-all theme-aurora accent-sky glass-frosted layout-column density-cosy font-sans">
   <div class="bg" aria-hidden="true"></div>
 
   <header class="top">
@@ -33,7 +33,7 @@
         <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"></path><path d="M4.5 20a7.5 7.5 0 0 1 15 0"></path></svg>
         <span class="t">You</span>
       </button>
-      <button id="open-look" class="pbtn" type="button" aria-label="Look">
+      <button id="open-look" class="pbtn" type="button" aria-label="Settings: models and look">
         <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M16 4.5v5M8 14.5v5"></path></svg>
       </button>
     </nav>
@@ -170,14 +170,51 @@
     </form>
   </aside>
 
-  <aside id="sheet-look" class="sheet sh-settings" aria-label="Look">
+  <aside id="sheet-look" class="sheet sh-settings" aria-label="Settings">
     <div class="sheet-h look-h">
-      <h2>Look</h2>
+      <div id="settings-tabs" class="seg" aria-label="Settings section">
+        <button type="button" data-stab="models" aria-pressed="true">Models</button>
+        <button type="button" data-stab="look" aria-pressed="false">Look</button>
+      </div>
       <button class="ibtn" type="button" data-close aria-label="Close">
         <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
       </button>
     </div>
     <div class="sheet-b">
+     <div class="stab st-models">
+      <p class="lede">I choose the model for each piece of work, then the account to reach it through. There is nothing to set. This is what I've learnt so far.</p>
+      <p id="models-status" class="note" role="status"></p>
+      <div id="models-list" class="stack"></div>
+      <p id="models-unknown" class="why" hidden></p>
+      <section>
+        <div class="addh"><h3>Lately</h3><button id="models-run" class="lnk" type="button">Look at my work now</button></div>
+        <p id="models-runs" class="why"></p>
+        <div id="models-changes" class="tile rows"></div>
+      </section>
+      <section>
+        <h3>What you know that I don't</h3>
+        <form id="model-note-form" class="field">
+          <input id="model-note" class="in" type="text" maxlength="500" aria-label="Tell KenWise something about a model" placeholder="For example: never use Haiku for anything a customer reads">
+        </form>
+        <div id="model-notes" class="stack"></div>
+      </section>
+      <section>
+        <h3>When a subscription runs out</h3>
+        <div class="stack">
+          <div id="limit-choice" class="seg" aria-label="When a subscription runs out">
+            <button type="button" data-limit="decide">Decide for me</button>
+            <button type="button" data-limit="wait">Prefer waiting</button>
+            <button type="button" data-limit="switch">Always switch</button>
+            <button type="button" data-limit="ask">Ask me first</button>
+          </div>
+          <p id="limit-explain" class="why"></p>
+          <div class="set"><label for="limit-cap">Monthly cap on paid use, in dollars</label><input id="limit-cap" class="in cap" type="number" min="0" step="1" inputmode="decimal" placeholder="No cap"></div>
+          <p id="limit-spent" class="why"></p>
+          <button id="limit-allow" class="btn" type="button" hidden>Use paid routes until my subscriptions are back</button>
+        </div>
+      </section>
+     </div>
+     <div class="stab st-look">
       <section>
         <h3>Theme</h3>
         <div class="themes">
@@ -221,6 +258,7 @@
           </div></div>
         </div>
       </section>
+     </div>
     </div>
   </aside>
 </div>

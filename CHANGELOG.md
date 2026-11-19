@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Models tab in settings: what KenWise has learnt about each model from your work and from the shared research, with its standing and source; what changed lately with Undo; your own notes; switching a model off; and the limit setting with the monthly cap.
+- Times KenWise tells you (limit notices, when a passing state ends, the time in its own prompt) are in your own time zone, which the page reports.
 - One-line installer for macOS and Linux (`install.sh`) and a `kenwise` command to start, stop, open and update the daemon.
 - The page is the approved interface: one ongoing conversation kept live by a single stream of changes that resumes after a dropped connection, work cards under the messages they belong to (one message can be about several pieces of work), a Work sheet, look settings that follow you to every device, notes and history, search and a phone layout.
 - A model per role: `EV_MODEL_EV`, `EV_MODEL_REVIEWER`, `EV_MODEL_LEARNER`.

@@ -515,3 +515,15 @@ body { background: #0a0d13; }
   .ev .hist ul { padding-left: 14px; }
   .ev .waitbar.status { bottom: 74px; width: calc(100% - 20px); }
 }
+
+/* Settings: Models and Look tabs */
+.ev .stab { display: none; flex-direction: column; gap: var(--gap-l); }
+.ev.stab-models .st-models, .ev.stab-look .st-look { display: flex; }
+.ev .mem .src { font-size: 11.5px; color: var(--ink3); padding: 0 8px; }
+.ev .mem .preview, .ev .mem .all { display: flex; flex-direction: column; gap: 8px; }
+.ev .mem .all, .ev .mem.open .preview { display: none; }
+.ev .mem.open .all { display: flex; }
+.ev #models-status:empty { display: none; }
+.ev .mem.off { opacity: .6; }
+.ev .in.cap { width: 120px; }
+.ev .row .undone { font-size: 12.5px; color: var(--ink3); }

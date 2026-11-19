@@ -1,4 +1,5 @@
 import { callModel, parseModelJson, sessionHeader } from "./ev-model.mjs";
+import { clock } from "./local-time.mjs";
 
 /**
  * When a subscription runs out: switch to a route paid per token, or wait for
@@ -104,7 +105,9 @@ export class LimitDecision {
 
   view() {
     const { choice, monthlyCapUsd, allowed } = this.setting();
-    return { choice, monthlyCapUsd, spentThisMonthUsd: Number(this.spentThisMonth().toFixed(4)), allowed };
+    // Accounts out of use now: what a say-so (allow) would be for.
+    const outNow = this.connections.list().filter((connection) => !this.connections.usable(connection)).map((connection) => this.connections.providerName(connection.provider));
+    return { choice, monthlyCapUsd, spentThisMonthUsd: Number(this.spentThisMonth().toFixed(4)), allowed, allowedNow: this.allowedNow(), outNow };
   }
 
   // ------------------------------------------------------------ deciding
@@ -180,7 +183,7 @@ export class LimitDecision {
   switched({ subject, limited, paid, conversationId = null }) {
     const decision = this.decisions.get(this._key(subject, limited));
     const work = subject.startsWith("work:") ? this._work(subject.slice(5)) : null;
-    const until = limited.status === "limited" ? `until about ${limited.until.slice(11, 16)} UTC` : "until it is signed in again";
+    const until = limited.status === "limited" ? `until about ${clock(limited.until, this.now())}` : "until it is signed in again";
     const what = work ? `"${work.title}" carries` : "my replies carry";
     const content = `My ${this.connections.providerName(limited.provider)} account is out of use ${until}, so ${what} on through ${this.connections.providerName(paid.model.provider)}, paid per token (${money(paid.model.cost?.input)} in / ${money(paid.model.cost?.output)} out per million; ${money(this.spentThisMonth())} spent this month${this.setting().monthlyCapUsd ? ` of your ${money(this.setting().monthlyCapUsd)} cap` : ""}).${decision?.why ? ` ${decision.why}` : ""}`;
     try { this.onSwitch?.({ conversationId: conversationId ?? work?.conversationId ?? "default", key: `switch:${this._key(subject, limited)}`, content }); } catch {}

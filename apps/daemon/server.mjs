@@ -19,6 +19,7 @@ import { ModelRelay } from "./lib/model-relay.mjs";
 import { ModelGuide } from "./lib/model-guide.mjs";
 import { ModelLearning } from "./lib/model-learning.mjs";
 import { LimitDecision } from "./lib/limit-decision.mjs";
+import { useTimeZone, clock, stamp, nowLine } from "./lib/local-time.mjs";
 import { workerAccountWait } from "./lib/openclaw-worker-adapter.mjs";
 import { AssistantMemoryStore, memoryText } from "./lib/assistant-memory.mjs";
 import { MemoryLearner, historyView, memoryView, rightNow } from "./lib/ev-memory.mjs";
@@ -85,6 +86,7 @@ const modelGuide = new ModelGuide({ routes: currentRoutes(), store });
 // The personal layer: a weekly analysis of the person's own work rewrites their claims about models.
 const modelLearning = new ModelLearning({ store, guide: modelGuide });
 modelLearning.noticeAtlas(modelGuide.atlas);
+useTimeZone(store.setting("timeZone"));
 // When a subscription runs out: switch to a paid route or wait (issue 21). A switch is told once in the conversation.
 const limitDecision = new LimitDecision({ store, routes: currentRoutes(), onSwitch: ({ conversationId, key, content }) => store.recordUpdate({ conversationId, key, content }) });
 void modelLearning.kick();
@@ -353,7 +355,7 @@ async function openStream(request, response, conversationId) {
   await pump();
 }
 
-const time = (iso) => `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+const time = stamp;
 
 /**
  * The conversation before message `before`, newest last. What EV posted on
@@ -411,6 +413,7 @@ function newWork({ taskId, conversationId, message, title, request, notes = [], 
     "# EV delegated goal",
     `Task ID: ${taskId}`,
     `Current UTC time: ${new Date().toISOString()}`,
+    nowLine(),
     `Context manifest: ${manifest.manifestId}`,
     ...(process.env.EV_OPENCLAW_SANDBOX !== "host" ? [] : [`Local project directory: ${resolve(projectRoot, "..")} (a place to inspect for project requests, not an authoritative status or complete personal portfolio)`]),
     "Use this task workspace for files and temporary installs. You may use OpenClaw's tools to fulfill the user's request.",
@@ -492,7 +495,7 @@ function waitForAccount(conversationId, item, wait) {
   const content = wait.reason === "cap"
     ? `Answering would mean paying for ${wait.providerName} past your monthly cap of $${wait.capUsd}, so I’m holding your message. Raise the cap or say I may go past it under Accounts, and I’ll answer it straight away.`
     : wait.reason === "limited"
-    ? `My ${who} account has reached its usage limit, so I’m holding your message until about ${time(wait.until)} UTC and will answer it then.${paid || " Adding another account in settings would let me carry on sooner."}`
+    ? `My ${who} account has reached its usage limit, so I’m holding your message until about ${clock(wait.until)} and will answer it then.${paid || " Adding another account in settings would let me carry on sooner."}`
     : wait.reason === "needs-sign-in"
       ? `My ${who} account is no longer being accepted (${String(wait.message ?? "").slice(0, 160)}), so I’m holding your message. Sign in again or add a key in settings and I’ll answer it straight away.${paid}`
       : `I have no account to reach my model at ${who} yet, so I’m holding your message. Add one in settings and I’ll answer it straight away.`;
@@ -625,6 +628,8 @@ async function handleSetup(request, response, url) {
   // The model guide: what KenWise has learnt about each model it can choose, for the Models tab.
   if (method === "GET" && path === "/guide") return json(response, 200, guideView());
   // The limit setting: what to do when a subscription runs out, and the monthly cap on paid spend.
+  // The browser's time zone, reported by the page: every time told to the person is in it.
+  if (method === "POST" && path === "/time-zone") { const body = await readJson(request); const timeZone = useTimeZone(body.timeZone); if (timeZone) store.saveSetting("timeZone", timeZone); return json(response, 200, { timeZone }); }
   if (method === "GET" && path === "/limit") return json(response, 200, limitDecision.view());
   if (method === "POST" && path === "/limit") { const body = await readJson(request); return json(response, 200, limitDecision.save({ choice: body.choice, monthlyCapUsd: body.monthlyCapUsd })); }
   if (method === "POST" && path === "/limit/allow") return json(response, 200, limitDecision.allow());
@@ -669,7 +674,7 @@ async function handleSetup(request, response, url) {
 
 /** The model guide as the page shows it: each model's claims with their standing, what changed lately, notes and what is switched off. */
 function guideView() {
-  const view = (claim) => ({ id: claim.id ?? null, text: claim.text, state: claim.state, source: claim.source ?? null, evidence: claim.evidence ?? [] });
+  const view = (claim) => ({ id: claim.id ?? null, text: claim.text, state: claim.state, why: claim.why ?? null, source: claim.source ?? null, evidence: claim.evidence ?? [] });
   return {
     models: modelGuide.entries().map((entry) => ({
       key: entry.key, name: entry.name, spec: entry.spec, via: [...new Set(currentRoutes().routes(entry.record).map((route) => connections.providerName(route.model.provider)))],
