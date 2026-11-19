@@ -52,6 +52,17 @@
     <p class="sub">Say it roughly. I'll work out what you mean, hand the work to an agent, and show you what comes back. You can keep talking while it runs.</p>
   </section>
 
+  <section id="first" class="center first" aria-label="Connect a model">
+    <svg class="mark big" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><circle class="pupil" cx="14.6" cy="9.4" r="2.3"></circle></svg>
+    <h1 class="hero">First, a model to think with.</h1>
+    <p class="sub">Use a subscription you already pay for, or a key. Add as many as you like. I'll learn which one suits which work.</p>
+    <div class="opts">
+      <button class="opt glass" type="button" data-first="sub"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M4 12h11M11 8l4 4-4 4"></path></svg><b>Sign in</b><span>Use a subscription you already pay for</span></button>
+      <button class="opt glass" type="button" data-first="key"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 19a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM11 12l9-9M16 7l3 3"></path></svg><b>Paste a key</b><span>From a provider or a coding plan</span></button>
+    </div>
+    <p class="note">Sign-ins and keys stay on this machine.</p>
+  </section>
+
   <aside id="rail" class="rail glass" aria-label="Now">
     <section><h3>Work</h3><div id="rail-work" class="rows"></div></section>
   </aside>
@@ -72,6 +83,7 @@
   </aside>
 
   <div id="statusbar" class="waitbar glass status" role="status" hidden></div>
+  <div id="restbar" class="waitbar glass" role="status"><span class="pdot rest"></span><span id="restbar-text"></span><button id="restbar-open" class="btn quiet" type="button">Accounts</button></div>
 
   <form id="composer" class="composer glass">
     <textarea id="message-input" rows="1" aria-label="Message KenWise" placeholder="Say it roughly. I'll work out the rest."></textarea>
@@ -174,6 +186,7 @@
     <div class="sheet-h look-h">
       <div id="settings-tabs" class="seg" aria-label="Settings section">
         <button type="button" data-stab="models" aria-pressed="true">Models</button>
+        <button type="button" data-stab="accounts" aria-pressed="false">Accounts</button>
         <button type="button" data-stab="look" aria-pressed="false">Look</button>
       </div>
       <button class="ibtn" type="button" data-close aria-label="Close">
@@ -198,6 +211,14 @@
         </form>
         <div id="model-notes" class="stack"></div>
       </section>
+     </div>
+     <div class="stab st-accounts">
+      <p id="accounts-status" class="note" role="status"></p>
+      <div class="tabp-main">
+        <section>
+          <h3>Connected</h3>
+          <div id="accounts-list" class="tile rows"></div>
+        </section>
       <section>
         <h3>When a subscription runs out</h3>
         <div class="stack">
@@ -213,6 +234,41 @@
           <button id="limit-allow" class="btn" type="button" hidden>Use paid routes until my subscriptions are back</button>
         </div>
       </section>
+      </div>
+      <section>
+        <div class="addh"><h3>Add a connection</h3><button class="lnk back" type="button" data-add="none">Back to accounts</button></div>
+        <div class="stack">
+          <div class="opts">
+            <button class="opt" type="button" data-add="sub" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M4 12h11M11 8l4 4-4 4"></path></svg><b>Sign in</b><span>A subscription you already pay for</span></button>
+            <button class="opt" type="button" data-add="key" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 19a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM11 12l9-9M16 7l3 3"></path></svg><b>Paste a key</b><span>A provider or a coding plan</span></button>
+          </div>
+          <div class="addp ap-sub">
+            <div id="signin-providers" class="tile rows si si-idle"></div>
+            <div class="tile box si si-wait">
+              <div class="line"><span class="spin"></span><span id="signin-title" class="row-t">Approve KenWise in the browser tab that just opened</span></div>
+              <p id="signin-detail" class="row-s">This finishes by itself once you approve.</p>
+              <a id="signin-link" class="btn" target="_blank" rel="noopener noreferrer" hidden>Open the sign-in page</a>
+              <form id="signin-code-form" class="field" hidden>
+                <label id="signin-question" for="signin-code">If I run on another machine, paste the code or the address the page ends on</label>
+                <input id="signin-code" class="in mono" type="text" autocomplete="off" placeholder="Code or address">
+              </form>
+              <div class="acts"><button id="signin-cancel" class="btn quiet" type="button">Cancel</button></div>
+            </div>
+            <div class="tile box si si-done">
+              <div class="line"><span id="signin-result" class="row-t">Connected</span></div>
+              <p id="signin-result-detail" class="row-s"></p>
+              <div class="acts"><button class="btn" type="button" data-add="none">Done</button></div>
+            </div>
+          </div>
+          <form id="key-form" class="addp ap-key">
+            <div class="field"><label for="key-provider">Provider</label><select id="key-provider" class="in"></select></div>
+            <div class="field"><label for="key-value">Key</label><input id="key-value" class="in mono" type="password" autocomplete="off" maxlength="4096" placeholder="Paste the key"></div>
+            <div class="field"><label for="key-label">Name, if you have more than one</label><input id="key-label" class="in" type="text" maxlength="80" placeholder="Work account"></div>
+            <div class="acts"><button id="key-save" class="btn primary" type="submit">Test and save</button><span id="key-note" class="row-s" role="status"></span></div>
+          </form>
+        </div>
+      </section>
+      <p class="note">Sign-ins and keys stay on this machine.</p>
      </div>
      <div class="stab st-look">
       <section>
