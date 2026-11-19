@@ -12,7 +12,7 @@ import { executionPrompt, workBrief } from "./lib/ev-work-prompts.mjs";
 import { takeTurn, taskUpdate, turnPrompt } from "./lib/ev-main-agent.mjs";
 import { createTurn, lookups, workState } from "./lib/ev-tools.mjs";
 import { importSessions } from "./lib/outside-sessions.mjs";
-import { sessionHeader, tryKey, useConnections } from "./lib/ev-model.mjs";
+import { currentRoutes, sessionHeader, tryKey, useConnections } from "./lib/ev-model.mjs";
 import { Connections } from "./lib/connections.mjs";
 import { SignIns } from "./lib/sign-in.mjs";
 import { ModelRelay } from "./lib/model-relay.mjs";
@@ -67,7 +67,16 @@ const threadsEngine = new Threads({
 threadsEngine.kick();
 const facts = threadsEngine.facts;
 // Agents reach their model through EV, so no key enters their container.
-const modelRelay = await new ModelRelay({ connections }).start();
+// A change of route mid-task shows as a step of the work.
+const modelRelay = await new ModelRelay({
+  connections, routes: currentRoutes(),
+  onRouteChange: ({ taskId, from, to, why }) => {
+    const at = new Date().toISOString();
+    const reason = why?.status === "limited" ? "hit its usage limit" : why?.status === "needs-sign-in" ? "needs a new sign-in" : why?.status === "removed" ? "was removed" : "could no longer be used";
+    const label = `Switched to ${connections.providerName(to.provider)}${to.model !== from.model ? ` (${to.model})` : ""}: ${connections.providerName(from.provider)} ${reason}`;
+    store.tx(() => store.event({ type: "step", workId: taskId, data: { id: `route:${at}`, kind: "route", label, route: to, startedAt: at, endedAt: at } }));
+  }
+}).start();
 const assistantWorkers = new AssistantWorkerService({ supervisor: assistantSupervisor, workerRoot: assistantWorkerRoot, onTaskSettled: postTaskUpdate, relay: modelRelay, accountWait: workerAccountWait });
 await assistantWorkers.start();
 const standingStore = StandingResponsibilityStore.open({ store });
