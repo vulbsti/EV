@@ -78,8 +78,8 @@ export async function startEV({ script = {}, env = {}, keep = false } = {}) {
     await closed;
   }
 
-  async function api(path, body) {
-    const response = await fetch(`${baseUrl}${path}`, body === undefined ? { headers: AUTH } : { method: "POST", headers: { "Content-Type": "application/json", ...AUTH }, body: JSON.stringify(body) });
+  async function api(path, body, method = body === undefined ? "GET" : "POST") {
+    const response = await fetch(`${baseUrl}${path}`, body === undefined ? { method, headers: AUTH } : { method, headers: { "Content-Type": "application/json", ...AUTH }, body: JSON.stringify(body) });
     const value = await response.json().catch(() => null);
     return { status: response.status, ok: response.ok, value };
   }
@@ -180,6 +180,20 @@ export async function startEV({ script = {}, env = {}, keep = false } = {}) {
     importSession({ source, path }) { return planned("importing outside sessions", "/api/assistant/import", { source, path }); },
     /** The dated history EV keeps of what happened, oldest first. */
     async timeline() { return (await planned("the memory timeline", "/api/assistant/timeline")).lines; },
+    /** The accounts EV reaches models through, as the settings screen shows them. */
+    setup() { return planned("connected accounts", "/api/assistant/setup"); },
+    /** Pastes a key for a provider, as the settings screen does. Returns { ok, status, value }: a refused key is not an exception. */
+    async addKey(provider, key, label) {
+      const result = await api("/api/assistant/setup/connections", { provider, key, ...(label ? { label } : {}) });
+      if (result.status === 404 || result.status === 405) throw new NotBuilt("adding an account (no POST /api/assistant/setup/connections)");
+      return result;
+    },
+    /** Removes an account from the settings screen. Returns { ok, status, value }. */
+    removeConnection(id) { return api(`/api/assistant/setup/connections/${encodeURIComponent(id)}`, undefined, "DELETE"); },
+    /** Starts, reads and cancels a subscription sign-in. */
+    signIn(provider) { return planned("subscription sign-in", "/api/assistant/setup/signin", { provider }); },
+    signInState(id) { return planned("subscription sign-in", `/api/assistant/setup/signin/${encodeURIComponent(id)}`); },
+    cancelSignIn(id) { return api(`/api/assistant/setup/signin/${encodeURIComponent(id)}`, undefined, "DELETE"); },
     /** The same search EV1 and the agents use, as the person's own page would call it. */
     async search(query) { return (await planned("search over everything EV holds", `/api/assistant/search?q=${encodeURIComponent(query)}`)).hits; },
 
