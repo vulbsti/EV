@@ -27,6 +27,11 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
  * catalogue does not know the model. The key is OPENCODE_API, passed
  * explicitly, so pi-ai never looks up keys or credentials of its own.
  *
+ * Each role can have its own model: EV_MODEL_<ROLE> (EV, REVIEWER, LEARNER,
+ * and the roles later engines add, such as FILER, GROUPER, PORTRAIT) wins over
+ * EV_MODEL for that role, so a cheap model can do cheap work. `modelFor` is
+ * the one place that decides which model a role gets.
+ *
  * Every call writes one log line (role, session, attempts, duration, tokens,
  * outcome), so cost and failures of EV's own thinking are visible.
  */
@@ -41,6 +46,15 @@ const models = createModels();
 models.setProvider(opencodeGo);
 
 const configError = (message) => Object.assign(new Error(message), { code: "MODEL_NOT_CONFIGURED" });
+
+/** Which role each call label belongs to, for its EV_MODEL_<ROLE> setting. */
+const ROLES = { "main-agent": "EV", "quality-gate": "REVIEWER", memory: "LEARNER" };
+
+/** The model spec (provider/model) a role uses: its own setting, else EV_MODEL. */
+export function modelFor(role, env = process.env) {
+  const name = (ROLES[role] ?? String(role ?? "")).toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+  return (name && env[`EV_MODEL_${name}`]) || env.EV_MODEL || DEFAULT_MODEL;
+}
 
 /** The model record (pi-ai's shape: id, provider, api, baseUrl, compat) that EV_MODEL names. */
 export function modelSettings(env = process.env, spec = env.EV_MODEL || DEFAULT_MODEL) {
@@ -124,10 +138,10 @@ function listening(fetchImpl, heard, quiet, seen) {
  * `parse(text, message)` gives `value`; a reply it rejects is retried like a
  * provider blip. Throws an error with `code` once retries are spent.
  */
-export async function modelTurn({ context, parse = (text) => text, session, code, label, silenceMs = SILENCE_MS, apiKey = process.env.OPENCODE_API, fetchImpl, signal, retryDelaysMs = RETRY_DELAYS_MS, env = process.env }) {
+export async function modelTurn({ context, parse = (text) => text, session, code, label, role = label, silenceMs = SILENCE_MS, apiKey = process.env.OPENCODE_API, fetchImpl, signal, retryDelaysMs = RETRY_DELAYS_MS, env = process.env }) {
   if (!apiKey) throw Object.assign(new Error("The model key (OPENCODE_API) is not configured"), { code });
   let model;
-  try { model = modelSettings(env); } catch (error) { throw Object.assign(error, { code }); }
+  try { model = modelSettings(env, modelFor(role, env)); } catch (error) { throw Object.assign(error, { code }); }
   const started = Date.now();
   const log = (outcome, attempts, extra = {}) => logCall({ role: label, session, model: `${model.provider}/${model.id}`, attempts, ms: Date.now() - started, inputChars: chars(context.messages), outcome, ...extra });
   let failure;

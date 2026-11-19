@@ -17,6 +17,7 @@ Open the link the daemon prints (`http://127.0.0.1:4317/?token=…`). The token 
 Settings in `.env` (all optional):
 
 - `EV_MODEL` (default `opencode-go/gpt-6-luna`): the model EV and its agents use, as `provider/model`; a bare model id means `opencode-go`. Its API shape, base URL and quirks come from pi-ai's OpenCode Go catalogue, and `OPENCODE_API` is its key.
+- `EV_MODEL_EV`, `EV_MODEL_REVIEWER`, `EV_MODEL_LEARNER` (unset by default): a model for one role only, overriding `EV_MODEL` for it, so cheap work can run on a cheap model. Agents keep `EV_OPENCLAW_MODEL`.
 - `EV_MODEL_URL` sends the calls (EV's and the agents') to another endpoint, such as a stub model in tests or any OpenAI- or Anthropic-compatible server. A model the catalogue does not know also needs `EV_MODEL_API`: `openai-responses`, `openai-completions` or `anthropic-messages`. Give OpenAI-style base URLs with their `/v1`; an Anthropic base URL has none.
 - `EV_OPENCLAW_MODEL`: a different model for agents, named the same way.
 - `EV_OPENCLAW_SANDBOX=host` runs agents uncontained, as you. The default is docker: each agent sees only its goal folder plus its own home folder. Either way each piece of work has its own home, never yours. `EV_OPENCLAW_IMAGE` overrides the image name.
