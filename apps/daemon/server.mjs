@@ -715,9 +715,10 @@ function guideView() {
   return {
     models: modelGuide.entries().map((entry) => ({
       key: entry.key, name: entry.name, spec: entry.spec, via: [...new Set(currentRoutes().routes(entry.record).map((route) => connections.providerName(route.model.provider)))],
-      subscription: entry.subscription, personal: entry.personal.map(view), atlas: entry.claims.map(view), speed: entry.speed
+      subscription: entry.subscription, own: entry.own, personal: entry.personal.map(view), atlas: entry.claims.map(view), speed: entry.speed
     })),
     unknown: modelGuide.unknown(),
+    thinking: (({ provider, id, name } = {}) => provider ? { spec: `${provider}/${id}`, name: name ?? id } : null)(modelGuide.thinking() ?? undefined),
     general: modelLearning.claims(null).map(view),
     changes: modelLearning.changes({ since: Date.now() - 30 * 24 * 60 * 60 * 1000 }),
     off: modelGuide.off(),

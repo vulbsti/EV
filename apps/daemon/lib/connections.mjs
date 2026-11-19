@@ -139,7 +139,8 @@ export class Connections {
     const signal = AbortSignal.timeout(10_000);
     await Promise.all(this.models.getProviders().map(async (provider) => {
       const auth = provider.auth.apiKey;
-      if (!auth) return;
+      // An own endpoint resolves without a key ("none"); that is not a key found in the environment.
+      if (!auth || this.isOwn(provider.id)) return;
       try {
         const found = auth.check ? await auth.check({ ctx: this.authContext, signal }) : await auth.resolve({ ctx: this.authContext, signal });
         if (!found) return;
@@ -247,6 +248,7 @@ export class Connections {
 
   /** Where in the environment this provider's key was found, if it was. */
   envKeys(providerId) {
+    if (this.isOwn(providerId)) return [];
     if (this.envSources.has(providerId)) return [this.envSources.get(providerId)];
     // A provider of EV's own (EV_MODEL_URL) takes EV's old key.
     return this.models.getProvider(providerId)?.custom && this.env[LEGACY_KEY] ? [LEGACY_KEY] : [];

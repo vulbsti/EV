@@ -1771,12 +1771,14 @@ function renderModels(view) {
     const all = atlas.length ? `<div class="all">${atlas.map((claim) => claimLine(claim, false, { sources: true })).join("")}</div>` : "";
     const more = atlas.length ? `<button class="lnk" type="button" data-more aria-expanded="false">${atlas.length > 2 ? `${atlas.length - 2} more, and sources` : "Sources"}</button>` : "";
     const lines = [...own, shown].join("");
-    return `<div class="tile mem"><div class="card-h"><span class="card-t">${escapeHtml(model.name)}</span><span class="row-x">${escapeHtml(model.via.join(", "))}</span></div>`
+    const via = model.own ? `Your own server, ${model.via.join(", ")}` : model.via.join(", ");
+    return `<div class="tile mem"><div class="card-h"><span class="card-t">${escapeHtml(model.name)}</span><span class="row-x">${escapeHtml(via)}</span></div>`
       + `${lines || `<p class="why">Nothing known yet. I learn it from the work it does for you.</p>`}`
       + `${all}<div class="links">${more}<button class="lnk" type="button" data-model-off="${escapeHtml(model.key)}">Don't use this model</button></div></div>`;
   });
   const off = view.off.map((key) => `<div class="tile mem off"><div class="card-h"><span class="card-t">${escapeHtml(key)}</span><span class="row-x">Not used</span></div><div class="links"><button class="lnk" type="button" data-model-on="${escapeHtml(key)}">Use it again</button></div></div>`);
-  $("models-list").innerHTML = [...cards, ...off].join("") || `<p class="note">No models are reachable yet. Connect an account to start.</p>`;
+  const thinking = view.thinking ? `<p class="note">I'm thinking with ${escapeHtml(view.thinking.name)} myself, since no account reaches my usual model.</p>` : "";
+  $("models-list").innerHTML = thinking + ([...cards, ...off].join("") || `<p class="note">No models are reachable yet. Connect an account to start.</p>`);
   const unknown = $("models-unknown");
   unknown.hidden = !view.unknown.length;
   unknown.textContent = view.unknown.length ? `Also within your subscriptions, with nothing known yet: ${view.unknown.map((model) => model.name).join(", ")}.` : "";
