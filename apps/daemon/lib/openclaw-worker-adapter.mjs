@@ -23,8 +23,8 @@ export const workerModel = () => modelSettings(process.env, process.env.EV_OPENC
 const RELAY_PORT_IN_CONTAINER = 4319;
 
 /** What an agent's model waits for (every route limited, a sign-in, no account), or null when a route is usable. */
-export function workerAccountWait(model = workerModel()) {
-  try { currentRoutes().pick(model, "AGENT_MODEL_UNAVAILABLE", { sameApi: true }); return null; }
+export function workerAccountWait(model = workerModel(), taskId = null) {
+  try { currentRoutes().pick(model, "AGENT_MODEL_UNAVAILABLE", { sameApi: true, subject: taskId ? `work:${taskId}` : null }); return null; }
   catch (error) { return error.wait ?? null; }
 }
 
