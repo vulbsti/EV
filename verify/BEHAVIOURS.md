@@ -83,6 +83,14 @@ The one conversation is grouped by the work it is about. A small model files eac
 - ✓ **G-05** Filing never holds up a reply: while the filer is still working on one message, the person's next message is answered.
 - ✓ **G-06** Forgetting a message takes its words out of the threads too: the filer's gist of it, and any thread name or card that may repeat it.
 
+## Task 14: Understanding you
+
+EV holds an understanding of the person, not a list of facts: notes keep the situation they were seen in, and a portrait of a few sentences, written by a decent model following the portrait skill, says who they are to work with. What the sentences say, and how EV weighs them case by case, is judgement: it was walked through once (design/build/verification/understanding-you.md) and is tested in pairs in the real-model run. What is checked here holds whatever the models decide: every sentence rests on evidence, forgetting reaches the portrait, and the portrait never reaches an agent.
+
+- ✓ **U-01** Every sentence of the portrait rests on at least one note. A sentence the writer gives with nothing behind it is never shown, to the person or to EV.
+- ✓ **U-02** Forgetting a note, or what was going on when it was seen, takes every portrait sentence resting on it away at once, from the page, from what EV is shown, and from every earlier version.
+- ✓ **U-03** Nothing from the portrait reaches an agent. Its brief carries only the notes EV named for that work, as background with their situation.
+
 ## Task 3: One store with real ids
 
 Everything EV holds lives in one place and is linked: a message to the work it started, the work to its result, a memory to where it came from. Because of that, forgetting reaches every copy, a restart loses nothing, and a result can never be too large to keep.

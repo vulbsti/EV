@@ -269,8 +269,10 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       done.push(`asked: ${asked.join(" ")}`);
       return "Added to your message to the person. Their answer arrives as their next message.";
     },
-    async start_work({ title, request }) {
-      const work = await newWork({ taskId: randomUUID(), title: required(title, "title").slice(0, 140), request: required(request, "request").slice(0, 8_000) });
+    async start_work({ title, request, notes = [] }) {
+      // The notes EV judged bear on this work, by id; anything that is not a memory is ignored.
+      const claims = list(notes).flatMap((id) => { try { const ref = parseRef(store, id); return ref.kind === "memory" ? [ref.key] : []; } catch { return []; } });
+      const work = await newWork({ taskId: randomUUID(), title: required(title, "title").slice(0, 140), request: required(request, "request").slice(0, 8_000), notes: claims });
       started.push(work);
       done.push(`started work:${work.taskId} "${work.input.metadata.title}"`);
       return JSON.stringify({ work: `work:${work.taskId}`, title: work.input.metadata.title, outcome: "started", note: "It is queued for an agent when this turn ends." });
@@ -317,9 +319,17 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
       const before = forgotten.length;
       for (const id of named) {
         let ref;
-        try { ref = parseRef(store, id); } catch (error) { notErased.push({ id, why: error.message }); continue; }
+        const situationsOnly = /#situations$/.test(id);
+        try { ref = parseRef(store, id.replace(/#situations$/, "")); } catch (error) { notErased.push({ id, why: error.message }); continue; }
         let key = ref.key, what;
-        if (ref.kind === "memory") {
+        if (situationsOnly) {
+          const row = ref.kind === "memory" && store.db.prepare("SELECT claim_id FROM memory_revisions WHERE revision_id = ?").get(key);
+          const claim = row && memory.getClaim(row.claim_id);
+          if (!claim || claim.ownerId !== ownerId) { notErased.push({ id, why: "no such memory" }); continue; }
+          key = claim.claimId;
+          ref = { kind: "situations", key };
+          what = `what was going on when "${clip(memoryText(claim.current.value), 200)}" was seen; the memory itself stays`;
+        } else if (ref.kind === "memory") {
           const row = store.db.prepare("SELECT claim_id FROM memory_revisions WHERE revision_id = ?").get(key);
           const claim = row && memory.getClaim(row.claim_id);
           if (!claim || claim.ownerId !== ownerId) { notErased.push({ id, why: "no such memory" }); continue; }
@@ -386,6 +396,7 @@ export function createTurn({ store, supervisor, workers, memory, ownerId, item, 
         // was learned from, a message to its reply, its events and the history.
         for (const { kind, key } of forgotten) {
           if (kind === "memory") memory.erase({ ownerId, targetType: "claim", targetId: key });
+          else if (kind === "situations") memory.eraseSituations({ ownerId, claimId: key });
           else if (kind === "message") store.eraseMessage(key);
           else if (kind === "session") store.eraseOutsideMessage(key);
           else memory.forgetHistoryLine(key);

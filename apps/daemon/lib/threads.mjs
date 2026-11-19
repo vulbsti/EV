@@ -43,14 +43,17 @@ const clip = (value, max) => {
 };
 const when = (iso) => iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}` : "unknown";
 
-/** EV_REGROUP_EVERY as milliseconds: "7d", "12h", "90m", "2w", or a bare number of days. 0 or "off" turns the timer off. */
-export function regroupEvery(text = process.env.EV_REGROUP_EVERY) {
-  const value = String(text ?? "7d").trim().toLowerCase();
+/** A setting such as EV_REGROUP_EVERY as milliseconds: "7d", "12h", "90m", "2w", or a bare number of days. 0 or "off" turns it off. */
+export function every(name, fallback, text = process.env[name]) {
+  const value = String(text ?? fallback).trim().toLowerCase();
   if (!value || value === "off" || value === "0") return 0;
   const match = /^(\d+(?:\.\d+)?)\s*([smhdw]?)$/.exec(value);
-  if (!match) throw codedError("INVALID_CONFIG", `EV_REGROUP_EVERY must look like 7d, 12h or 0, not "${text}"`);
+  if (!match) throw codedError("INVALID_CONFIG", `${name} must look like 7d, 12h or 0, not "${text}"`);
   return Math.round(Number(match[1]) * UNITS[match[2] || "d"]);
 }
+
+/** How often the threads are organised (EV_REGROUP_EVERY, default 7d). */
+export const regroupEvery = (text = process.env.EV_REGROUP_EVERY) => every("EV_REGROUP_EVERY", "7d", text);
 
 // ------------------------------------------------------------- reading
 

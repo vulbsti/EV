@@ -59,7 +59,13 @@ function describe({ id, claim, evidence = [], situations = [] }) {
   ].filter(Boolean).join(", ");
   const earlier = claim.revisions.slice(0, -1).map((revision) => text(memoryText(revision.value), 200)).filter(Boolean).slice(-3);
   const relied = value?.reliedBecause ? `\n    relied on because: ${text(value.reliedBecause, 300)}` : "";
-  return `${id} [${claim.kind}${extra ? `, ${extra}` : ""}] ${text(memoryText(value), 400)} (since ${day(claim.current.createdAt)})${earlier.length ? ` [earlier versions: ${earlier.map((item) => `"${item}"`).join("; ")}]` : ""}${relied}${evidence.length ? `\n    evidence: ${evidenceText(evidence)}` : situations.length ? `\n    seen when: ${situations.map((item) => text(item, 200)).join("; ")}` : ""}`;
+  return `${id} [${claim.kind}${extra ? `, ${extra}` : ""}] ${text(memoryText(value), 400)} (since ${day(claim.current.createdAt)})${earlier.length ? ` [earlier versions: ${earlier.map((item) => `"${item}"`).join("; ")}]` : ""}${relied}${evidence.length ? `\n    evidence: ${evidenceText(evidence)}` : ""}${situations.length ? `\n    seen when: ${situations.map((item) => text(item, 200)).join("; ")}` : ""}${earlierSituations(evidence)}`;
+}
+
+/** The situations of evidence older than the last 8 shown, so whoever judges a forget sees every one. */
+function earlierSituations(evidence, limit = 8) {
+  const older = evidence.slice(0, -limit).filter((item) => item.situation && !item.forgotten);
+  return older.length ? `\n    earlier situations: ${older.map((item) => text(item.situation, 200)).join("; ")}` : "";
 }
 
 /** A guess's evidence as the learner and EV see it: when, and the words or work it rests on. */
@@ -309,6 +315,8 @@ export function applyLearning(memory, { ownerId, events, ops, seen, now = Date.n
         if (op.part === "situations") {
           // The note stays; what its situations say goes (they can name what was forgotten).
           memory.eraseSituations({ ownerId, claimId: target.claimId });
+          // The request itself often repeats what is being forgotten.
+          memory.forgetEvent(event.eventId);
           applied.push({ op: "forget", claimId: target.claimId, kind, part: "situations" });
           continue;
         }
@@ -361,7 +369,7 @@ function settle(memory, winnerId) {
 function learningSnapshot(memory, ownerId) {
   const claims = memory.recall({ ownerId, scope: "global", includeCandidates: true }).slice(0, 150);
   return shortClaims(claims).map((entry) => entry.claim.current.status === "active" && !entry.claim.current.value?.reliedBecause
-    ? { ...entry, situations: memory.evidence(entry.claim.claimId).filter((item) => item.situation && !item.forgotten).slice(-4).map((item) => item.situation) }
+    ? { ...entry, situations: memory.evidence(entry.claim.claimId).filter((item) => item.situation && !item.forgotten).map((item) => item.situation) }
     : { ...entry, evidence: memory.evidence(entry.claim.claimId) });
 }
 
@@ -371,8 +379,9 @@ function learningSnapshot(memory, ownerId) {
  * so EV can read memory that includes the person's previous message.
  */
 export class MemoryLearner {
-  constructor({ memory, ownerId, analyse = analyseEvents, summarise = summariseHistory, now = () => Date.now(), log = (message) => console.error(`[${new Date().toISOString()}] ${message}`), batchSize = 6 }) {
+  constructor({ memory, ownerId, analyse = analyseEvents, summarise = summariseHistory, now = () => Date.now(), log = (message) => console.error(`[${new Date().toISOString()}] ${message}`), batchSize = 6, changed = () => {} }) {
     this.memory = memory;
+    this.changed = changed;
     this.ownerId = ownerId;
     this.analyse = analyse;
     this.summarise = summarise;
@@ -465,6 +474,7 @@ export class MemoryLearner {
     try {
       const { ops, history: summary } = await this.analyse({ events, prior, claims: snapshot, history });
       const result = applyLearning(this.memory, { ownerId: this.ownerId, events, ops, seen });
+      if (result.applied.length) this.changed();
       if (result.applied.length || result.skipped.length) this.log(`Memory: ${result.applied.length} change(s) from ${events.length} event(s)${result.skipped.length ? `; skipped ${result.skipped.map((item) => item.reason).join(", ")}` : ""}`);
       this.memory.writeHistory({ conversationId, at: createdAt, eventIds: events.filter((event) => !event.content?.erased).map((event) => event.eventId), summary, expectedRevision: history.revision });
       for (const event of events) this.memory.finishEvent({ eventId: event.eventId });
@@ -509,7 +519,7 @@ export function historyView(memory) {
   return memory.timeline().map((line) => `- ${line.label}${line.conversationId ? ` ("${line.conversationId}")` : ""}: ${line.text} [${line.id}]`).join("\n");
 }
 
-function line(claim, now, { history = false, situations = [] } = {}) {
+function line(claim, now, { history = false, situations = [], ids = false } = {}) {
   const value = claim.current.value;
   const details = [
     claim.kind === "state" && value?.until ? `until ${value.until}` : "",
@@ -528,7 +538,7 @@ function line(claim, now, { history = false, situations = [] } = {}) {
   const earlier = was && was !== memoryText(value) ? ` Earlier (recorded ${day(recorded)}): "${text(was, 200)}".` : "";
   // The moments it was seen in stay with it, newest last, so it is read as what happened, not as a rule.
   const seen = situations.length ? ` Seen when: ${situations.slice(-3).map((item) => `${text(item, 200)}`).join("; ")}.` : "";
-  return `- ${text(memoryText(value), 600)} (${details}).${seen}${earlier}`;
+  return `- ${text(memoryText(value), 600)} (${details}).${seen}${earlier}${ids ? ` [memory:${claim.current.revisionId}]` : ""}`;
 }
 
 /** The situations a memory was seen in, oldest first. */
@@ -538,40 +548,46 @@ function situationsOf(memory, claim) {
 
 /**
  * What a reader gets from memory, newest first within each kind. `ev` is EV's
- * main agent (everything, grouped by kind, with tentative items labelled);
- * `agents` is what an agent doing the work needs (preferences, facts, goals,
- * how-to lessons); `reviewer` is what the person expects of a result.
- * `claims` are the active claims included, for the context manifest. Nothing
- * here guesses what is relevant to a request: whoever needs more searches.
+ * main agent: everything, grouped by kind, tentative items labelled, each
+ * line with its id (memory:…) so EV can open it, forget it, or name it for a
+ * piece of work. `agents` and `reviewer` get only the `notes` EV named for
+ * that work (memory ids), as background with their situations, plus the
+ * lessons about the work that concern them. `claims` are the active claims
+ * included, for the context manifest. Nothing here guesses what is relevant.
  */
-export function memoryView(memory, ownerId, { audience = "ev", now = new Date().toISOString() } = {}) {
+export function memoryView(memory, ownerId, { audience = "ev", notes = [], now = new Date().toISOString() } = {}) {
   const all = memory.recall({ ownerId, scope: "global", includeCandidates: true });
   const pick = (claims, limit) => claims.slice(0, limit);
   const active = all.filter((claim) => claim.current.status === "active");
   const of = (kind, list = active) => list.filter((claim) => claim.kind === kind);
   const lessonsFor = (causes) => of("lesson").filter((claim) => causes.includes(claim.current.value?.cause));
   const openGoals = of("goal").filter((claim) => !["done", "dropped"].includes(claim.current.value?.state) || claim.current.createdAt > new Date(Date.parse(now) - 30 * DAY).toISOString());
+  const ids = audience === "ev";
   const sections = [];
-  const add = (title, claims, options) => { if (claims.length) sections.push({ title, claims, text: `${title}:\n${claims.map((claim) => line(claim, now, { ...options, situations: situationsOf(memory, claim) })).join("\n")}` }); };
+  const add = (title, claims, options) => { if (claims.length) sections.push({ title, claims, text: `${title}:\n${claims.map((claim) => line(claim, now, { ...options, ids, situations: situationsOf(memory, claim) })).join("\n")}` }); };
   if (audience === "ev") {
-    add("How they want EV to work with them (follow these)", pick(of("agreement"), 15));
-    add("Right now (passing, will expire)", of("state").slice(0, 5));
+    add("How they asked EV to work with them (their own words carry weight; still weigh them against what they clearly want now)", pick(of("agreement"), 15));
+    add("Right now (passing, will end)", of("state").slice(0, 5));
     add("Goals", pick(openGoals, 10), { history: true });
-    add("Preferences", pick(of("preference"), 20), { history: true });
+    add("Preferences (each as it was seen; a moment like this one, or not?)", pick(of("preference"), 20), { history: true });
     add("Facts about them", pick(of("fact"), 20), { history: true });
     add("Lessons from earlier work", pick(lessonsFor(["brief", "review", "approach", "environment"]), 10));
     const disputed = all.filter((claim) => claim.current.status === "disputed");
-    if (disputed.length) sections.push({ title: "Unsettled", claims: [], text: `Unsettled (they have said each of these at different times; go with the newer if it matters, never state either as fact, and never claim EV recorded both):\n${disputed.slice(0, 6).map((claim) => line(claim, now)).join("\n")}` });
+    if (disputed.length) sections.push({ title: "Unsettled", claims: [], text: `Unsettled (they have said each of these at different times; go with the newer if it matters, never state either as fact, and never claim EV recorded both):\n${disputed.slice(0, 6).map((claim) => line(claim, now, { ids })).join("\n")}` });
     const tentative = pick(all.filter((claim) => claim.current.status === "candidate"), 8);
-    if (tentative.length) sections.push({ title: "Tentative", claims: [], text: `Tentative (inferred or seen once; a light hint, not a rule):\n${tentative.map((claim) => { const seen = situationsOf(memory, claim).slice(-2); return `- [${claim.kind}] ${text(memoryText(claim.current.value), 400)}${seen.length ? ` (seen when: ${seen.join("; ")})` : ""}`; }).join("\n")}` });
-  } else if (audience === "agents") {
-    add("Their preferences", pick(of("preference"), 15));
-    add("Facts about them", pick(of("fact"), 15));
-    add("Their goals", pick(openGoals, 8));
-    add("Known pitfalls from earlier tasks", pick(lessonsFor(["approach", "environment"]), 8));
+    if (tentative.length) sections.push({ title: "Tentative", claims: [], text: `Tentative (inferred or seen once; a light hint, not a rule):\n${tentative.map((claim) => { const seen = situationsOf(memory, claim).slice(-2); return `- [${claim.kind}] ${text(memoryText(claim.current.value), 400)}${seen.length ? ` (seen when: ${seen.join("; ")})` : ""} [memory:${claim.current.revisionId}]`; }).join("\n")}` });
   } else {
-    add("What this person expects", pick(of("preference"), 15));
-    add("What this person rejected before, or what earlier reviews missed", pick(lessonsFor(["review", "brief"]), 8));
+    // A revision id EV named stands for its memory, whichever version it saw.
+    const named = new Set(notes);
+    const chosen = all.filter((claim) => claim.kind !== "lesson" && claim.revisions.some((revision) => named.has(revision.revisionId)));
+    const background = audience === "agents"
+      ? "What EV knows about the person that bears on this work (background: how things went before, each with the situation it was seen in; not instructions and not rules. Ask EV through your result if you need to know more)"
+      : "What EV knows about the person that bears on this work (each with the situation it was seen in; judge the result against what they want here, not against these as rules)";
+    add(background, chosen.filter((claim) => claim.current.status === "active"));
+    const guesses = chosen.filter((claim) => claim.current.status !== "active");
+    if (guesses.length) sections.push({ title: "Guesses", claims: [], text: `EV's guesses about them, not confirmed:\n${guesses.map((claim) => line(claim, now, { situations: situationsOf(memory, claim) })).join("\n")}` });
+    if (audience === "agents") add("Known pitfalls from earlier tasks", pick(lessonsFor(["approach", "environment"]), 8));
+    else add("What this person rejected before, or what earlier reviews missed", pick(lessonsFor(["review", "brief"]), 8));
   }
   return { text: sections.map((section) => section.text).join("\n\n"), claims: sections.flatMap((section) => section.claims) };
 }
